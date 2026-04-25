@@ -38,6 +38,7 @@
                 <div class="sidebar-resize-handle" id="sidebar-resize-handle"></div>
                 <nav class="tabs">
                     <button class="tab active" data-tab="terrain">Perfil Terreno</button>
+                    <button class="tab" data-tab="barriers">Barreras</button>
                     <button class="tab" data-tab="parameters">Parámetros</button>
                     <button class="tab" data-tab="results">Resultados</button>
                 </nav>
@@ -119,30 +120,32 @@
                     </div>
                 </div>
 
-                <div class="section" style="margin-bottom:8px;">
-                    <h3>Barreras de Contención</h3>
-                    <p class="help-text">Define barreras como segmentos de línea. Las rocas rebotan al impactarlas.</p>
-                    <div class="control-group">
-                        <label>X1 (m):</label>
-                        <input type="number" id="barrier-x1" value="50" step="0.5" style="width:60px;">
-                        <label>Y1 (m):</label>
-                        <input type="number" id="barrier-y1" value="0" step="0.5" style="width:60px;">
-                        <label>X2 (m):</label>
-                        <input type="number" id="barrier-x2" value="50" step="0.5" style="width:60px;">
-                        <label>Y2 (m):</label>
-                        <input type="number" id="barrier-y2" value="10" step="0.5" style="width:60px;">
+                <div class="tab-content" id="tab-barriers">
+                    <div class="section">
+                        <h3>Barreras de Contención</h3>
+                        <p class="help-text">Define barreras como segmentos de línea. Las rocas rebotan al impactarlas.</p>
+                        <div class="control-group">
+                            <label>X1 (m):</label>
+                            <input type="number" id="barrier-x1" value="50" step="0.5" style="width:60px;">
+                            <label>Y1 (m):</label>
+                            <input type="number" id="barrier-y1" value="0" step="0.5" style="width:60px;">
+                            <label>X2 (m):</label>
+                            <input type="number" id="barrier-x2" value="50" step="0.5" style="width:60px;">
+                            <label>Y2 (m):</label>
+                            <input type="number" id="barrier-y2" value="10" step="0.5" style="width:60px;">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de restitución normal (0=absorbe todo, 1=rebote perfecto).">Cn:</label>
+                            <input type="number" id="barrier-cn" value="0.3" step="0.05" min="0" max="1" style="width:55px;">
+                            <label data-tooltip="Coeficiente de restitución tangencial (0=se detiene, 1=desliza).">Ct:</label>
+                            <input type="number" id="barrier-ct" value="0.5" step="0.05" min="0" max="1" style="width:55px;">
+                        </div>
+                        <div class="button-row">
+                            <button id="btn-add-barrier" class="btn btn-small" data-tooltip="Agrega una barrera con las coordenadas y coeficientes ingresados.">+ Agregar Barrera</button>
+                            <button id="btn-clear-barriers" class="btn btn-danger btn-small" data-tooltip="Elimina todas las barreras.">Limpiar</button>
+                        </div>
+                        <div id="barrier-list" class="segments-list" style="margin-top:4px;max-height:200px;overflow-y:auto;"></div>
                     </div>
-                    <div class="control-group">
-                        <label data-tooltip="Coeficiente de restitución normal (0=absorbe todo, 1=rebote perfecto).">Cn:</label>
-                        <input type="number" id="barrier-cn" value="0.3" step="0.05" min="0" max="1" style="width:55px;">
-                        <label data-tooltip="Coeficiente de restitución tangencial (0=se detiene, 1=desliza).">Ct:</label>
-                        <input type="number" id="barrier-ct" value="0.5" step="0.05" min="0" max="1" style="width:55px;">
-                    </div>
-                    <div class="button-row">
-                        <button id="btn-add-barrier" class="btn btn-small" data-tooltip="Agrega una barrera con las coordenadas y coeficientes ingresados.">+ Agregar Barrera</button>
-                        <button id="btn-clear-barriers" class="btn btn-danger btn-small" data-tooltip="Elimina todas las barreras.">Limpiar</button>
-                    </div>
-                    <div id="barrier-list" class="segments-list" style="margin-top:4px;max-height:100px;overflow-y:auto;"></div>
                 </div>
 
                 <div class="tab-content" id="tab-parameters">
