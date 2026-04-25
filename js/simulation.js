@@ -216,4 +216,4 @@ class Simulation {
     }
 }
 
-RockFall.Simulation = Simulation;
+SimRocas.Simulation = Simulation;

@@ -1,12 +1,12 @@
 /**
- * RockFall 2D — Shared namespace.
+ * SimRocas 2D — Shared namespace.
  * All modules attach their classes to this object to avoid global scope pollution.
  */
-const RockFall = window.RockFall || {};
+const SimRocas = window.SimRocas || {};
 
 /**
  * Preset terrain types with default coefficients.
- * Based on RocFall2 / CRSP / Pierre2 calibration tables.
+ * Based on CRSP / Pierre2 calibration tables.
  */
 const TerrainPresets = {
     'roca-dura': { label: 'Roca Dura', cn: 0.80, ct: 0.20, color: '#8B7355' },
@@ -399,5 +399,5 @@ class Terrain {
     }
 }
 
-RockFall.Terrain = Terrain;
-RockFall.TerrainPresets = TerrainPresets;
+SimRocas.Terrain = Terrain;
+SimRocas.TerrainPresets = TerrainPresets;

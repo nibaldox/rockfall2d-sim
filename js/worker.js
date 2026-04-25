@@ -1,5 +1,5 @@
 /**
- * RockFall 2D — Web Worker for simulation
+ * SimRocas 2D — Web Worker for simulation
  *
  * Runs rock physics in a separate thread to avoid blocking the main thread.
  * Receives serialized terrain + rock config, returns finished rock results.

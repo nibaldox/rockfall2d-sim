@@ -819,4 +819,4 @@ class Renderer {
     }
 }
 
-RockFall.Renderer = Renderer;
+SimRocas.Renderer = Renderer;

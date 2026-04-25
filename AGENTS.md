@@ -1,8 +1,8 @@
-# AGENTS.md — RockFall 2D Simulator
+# AGENTS.md — SimRocas 2D
 
 ## Project Overview
 
-2D rockfall simulation web app. 100% vanilla JavaScript + HTML Canvas. Zero dependencies, no build tools, no bundler, no linter, no test framework.
+2D simulation of falling rocks web app. 100% vanilla JavaScript + HTML Canvas. Zero dependencies, no build tools, no bundler, no linter, no test framework.
 
 ## Running the App
 
@@ -26,10 +26,11 @@ rockfall2d-sim/
     ├── simulation.js   # Simulation controller — main loop, rock lifecycle
     ├── renderer.js     # Renderer — Canvas 2D drawing, histogram
     ├── stats.js        # Stats — statistics, CSV/text export
+    ├── worker.js       # Web Worker — simulation in separate thread
     └── app.js          # App — wiring, UI controls, DOM event handlers
 ```
 
-JS files are loaded in order by `<script>` tags in `index.html`. Each file defines one or more ES6 classes on the global scope. No `import`/`export`, no modules.
+JS files are loaded in order by `<script>` tags in `index.html`. Each file defines one or more ES6 classes on the global `SimRocas` namespace. No `import`/`export`, no modules.
 
 ## Code Style
 

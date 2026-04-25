@@ -13,14 +13,14 @@ function clamp(value, min, max, fallback) {
 
 class App {
     constructor() {
-        this.terrain = new RockFall.Terrain();
-        this.physics = new RockFall.PhysicsEngine();
-        this.simulation = new RockFall.Simulation(this.terrain, this.physics);
-        this.stats = new RockFall.Stats();
+        this.terrain = new SimRocas.Terrain();
+        this.physics = new SimRocas.PhysicsEngine();
+        this.simulation = new SimRocas.Simulation(this.terrain, this.physics);
+        this.stats = new SimRocas.Stats();
 
         this.canvas = document.getElementById('main-canvas');
         this.histogramCanvas = document.getElementById('histogram-canvas');
-        this.renderer = new RockFall.Renderer(this.canvas, this.terrain);
+        this.renderer = new SimRocas.Renderer(this.canvas, this.terrain);
 
         this.releasePoint = { x: 10, y: 55 };
         this.isSettingRelease = false;
@@ -89,7 +89,7 @@ class App {
         const MIN_W = 260;
         const MAX_W = 700;
 
-        const saved = localStorage.getItem('rockfall-sidebar-width');
+        const saved = localStorage.getItem('simrocas-sidebar-width');
         if (saved) {
             const w = parseInt(saved);
             if (w >= MIN_W && w <= MAX_W) sidebar.style.width = w + 'px';
@@ -120,14 +120,14 @@ class App {
             document.body.style.userSelect = '';
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onEnd);
-            localStorage.setItem('rockfall-sidebar-width', sidebar.offsetWidth);
+            localStorage.setItem('simrocas-sidebar-width', sidebar.offsetWidth);
         };
 
         handle.addEventListener('mousedown', onStart);
     }
 
     loadTheme() {
-        const saved = localStorage.getItem('rockfall-theme') || 'dark';
+        const saved = localStorage.getItem('simrocas-theme') || 'dark';
         document.documentElement.setAttribute('data-theme', saved);
     }
 
@@ -137,7 +137,7 @@ class App {
             const current = document.documentElement.getAttribute('data-theme');
             const next = current === 'dark' ? 'light' : 'dark';
             document.documentElement.setAttribute('data-theme', next);
-            localStorage.setItem('rockfall-theme', next);
+            localStorage.setItem('simrocas-theme', next);
         });
     }
 
@@ -268,7 +268,7 @@ class App {
     }
 
     setupSegmentEditor() {
-        const presets = RockFall.TerrainPresets;
+        const presets = SimRocas.TerrainPresets;
         const presetBtns = document.querySelectorAll('.preset-btn');
         const applyBtn = document.getElementById('btn-apply-preset');
         this.segFrom = document.getElementById('seg-from');
@@ -299,7 +299,7 @@ class App {
 
     updateSegmentsList() {
         const list = document.getElementById('segments-list');
-        const presets = RockFall.TerrainPresets;
+        const presets = SimRocas.TerrainPresets;
         const count = this.terrain.segmentCount;
 
         this.segFrom.max = count - 1;
@@ -677,7 +677,7 @@ class App {
     setupExportControls() {
         document.getElementById('btn-export-image').addEventListener('click', () => {
             const link = document.createElement('a');
-            link.download = 'rockfall-simulation.png';
+            link.download = 'simrocas-simulation.png';
             link.href = this.canvas.toDataURL('image/png');
             link.click();
         });
@@ -688,7 +688,7 @@ class App {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'rockfall-results.csv';
+            a.download = 'simrocas-results.csv';
             a.click();
             URL.revokeObjectURL(url);
         });
@@ -699,7 +699,7 @@ class App {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'rockfall-report.txt';
+            a.download = 'simrocas-report.txt';
             a.click();
             URL.revokeObjectURL(url);
         });
@@ -1390,6 +1390,6 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Export to namespace
-RockFall.App = App;
-RockFall.clamp = clamp;
-window.RockFall = RockFall; // Make namespace globally accessible
+SimRocas.App = App;
+SimRocas.clamp = clamp;
+window.SimRocas = SimRocas; // Make namespace globally accessible

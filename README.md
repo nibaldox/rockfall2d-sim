@@ -1,6 +1,6 @@
-# RockFall 2D Simulator
+# SimRocas 2D
 
-Simulador de caída de rocas en 2D inspirado en RocFall2. Aplicación web gratuita y open-source para análisis de trayectorias de rockfall, evaluación de alcance probabilístico y diseño de medidas de protección.
+Simulador de caída de rocas en 2D. Aplicación web gratuita y open-source para análisis de trayectorias, evaluación de alcance probabilístico y diseño de medidas de protección.
 
 ## Demo en vivo
 
@@ -35,7 +35,7 @@ Tres métodos de cálculo:
 | Método | Descripción | Referencia |
 |--------|-------------|------------|
 | **Cuerpos Rígidos** (default) | Colisión poligonal con impulso, torque y momento de inercia | Leine et al. (2013) |
-| **Lumped Mass (2DLM)** | Masa puntual con Kn/Kt, sin rotación | RocFall2, CRSP, GeoRock |
+| **Lumped Mass (2DLM)** | Masa puntual con Kn/Kt, sin rotación | GeoRock, CRSP |
 | **Nonsmooth Dynamics** | Contacto duro, ley de impacto Poisson, cono de fricción Coulomb | Moreau (1988) |
 
 Características del motor:
@@ -155,8 +155,8 @@ Impulso fricción:      j_t = (1-ct)(v·t) / (1/m + (r×t)²/I)
 |-----------|-------|--------|
 | Gravedad | 9.81 | m/s² |
 | Paso de tiempo | 0.005 | s |
-| Cn (Rigid Body) | 0.6 | — |
-| Ct (Rigid Body) | 0.4 | — |
+| Cn (Cuerpos Rígidos) | 0.6 | — |
+| Ct (Cuerpos Rígidos) | 0.4 | — |
 | Kn (Lumped Mass) | 0.35 | — |
 | Kt (Lumped Mass) | 0.75 | — |
 | Fricción rodadura | 0.15 | — |
@@ -175,7 +175,6 @@ Impulso fricción:      j_t = (1-ct)(v·t) / (1/m + (r×t)²/I)
 - Corominas (2000) "Use of runout models"
 - Davis & McInnes (1991) "Rolling resistance of spheres"
 - Savigny (1983) "Rockfall prediction by the angle of reach"
-- Lenoir et al. (2009) "RocFall2 verification manual"
 - Leine et al. (2013) "Simulation of rockfall trajectories with consideration of rock shape"
 - Moreau (1988) "Numerical analysis of the unilateral contact problem"
 - Pierson et al. (2000) "Colorado Rockfall Simulation Program (CRSP)"

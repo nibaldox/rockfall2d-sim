@@ -1,9 +1,9 @@
 /**
- * RockFall 2D — Physics Engine
+ * SimRocas 2D — Physics Engine
  *
  * Four calculation methods:
  *   - Rigid Body (Impulse / Energy Ratio) — polygonal collision with torque
- *   - Lumped Mass (2DLM) — point mass with Kn/Kt restitution (RocFall2, GeoRock, CRSP)
+ *   - Lumped Mass (2DLM) — point mass with Kn/Kt restitution (GeoRock, CRSP)
  *   - Nonsmooth Dynamics (NSD) — hard contact, Poisson impact, Coulomb friction cone
  *
  * Rolling resistance: simple friction and Davis & McInnes deformation models.
@@ -13,7 +13,7 @@
  *   - Corominas (2000) "Use of runout models"
  *   - Davis & McInnes (1991) "Rolling resistance of spheres"
  *   - Savigny (1983) "Rockfall prediction by the angle of reach"
- *   - Lenoir et al. (2009) "RocFall2 verification manual"
+ *   - Lenoir et al. (2009) "Verification of lumped mass rockfall models"
  *   - Leine et al. (2013) "Simulation of rockfall trajectories with consideration of rock shape"
  *   - Moreau (1988) "Numerical analysis of the unilateral contact problem"
  */
@@ -112,7 +112,7 @@ class Rock {
 
     /**
      * Sphere: regular polygon with 24 vertices approximating a circle.
-     * Classic ROCKFALL2D approach — no angular effects from shape.
+     * Classic approach — no angular effects from shape.
      */
     _generateSphere() {
         const n = 24;
@@ -381,7 +381,7 @@ class Rock {
     /**
      * Handles rock-terrain collision using one of three calculation methods:
      *   - 'rigid-body': polygonal collision with impulse or energy-ratio models
-     *   - 'lumped-mass': point mass with Kn/Kt coefficients (RocFall2, GeoRock, CRSP)
+     *   - 'lumped-mass': point mass with Kn/Kt coefficients (GeoRock, CRSP)
      *   - 'nonsmooth': hard contact, Poisson impact law, Coulomb friction cone (NSD)
      *
      * @param {Terrain} terrain
@@ -500,8 +500,8 @@ class Rock {
      * Velocity decomposed into normal/tangential at impact;
      * normal reversed and scaled by Kn, tangential scaled by Kt.
      *
-     * Used by: RocFall2 (lumped mode), GeoRock 2D, CRSP, Pierre2.
-     * Reference: Lenoir et al. (2009) "RocFall2 verification manual"
+     * Used by: GeoRock 2D, CRSP, Pierre2 and similar tools.
+     * Reference: Lenoir et al. (2009) "Verification of lumped mass models"
      */
     _handleLumpedMass(terrain, kn, kt) {
         const terrainY = terrain.getHeightAt(this.x);
@@ -841,7 +841,7 @@ class PhysicsEngine {
         this.ctVariability = 10;
         // Calculation method
         this.calcMethod = 'rigid-body';
-        // Lumped mass coefficients (RocFall2 typical values for soil/rock mix)
+        // Lumped mass coefficients (typical values for soil/rock mix)
         this.kn = 0.35;
         this.kt = 0.75;
         // Energy dissipation model (rigid-body only)
@@ -936,5 +936,5 @@ class PhysicsEngine {
     }
 }
 
-RockFall.Rock = Rock;
-RockFall.PhysicsEngine = PhysicsEngine;
+SimRocas.Rock = Rock;
+SimRocas.PhysicsEngine = PhysicsEngine;
