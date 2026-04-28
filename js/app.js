@@ -66,6 +66,7 @@ class App {
         this.setupExportControls();
         this.setupKeyboardShortcuts();
         this.setupBarrierControls();
+        this.setupDashboardControls();
         this.setupResize();
         this.loadDefaultTerrain();
         this.renderer.resize();
@@ -75,12 +76,40 @@ class App {
     setupTabs() {
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
+                // Special handling for results tab
+                if (tab.dataset.tab === 'results') {
+                    this.showResultsTab();
+                    return;
+                }
+
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
                 document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
             });
         });
+    }
+
+    showResultsTab() {
+        // Activate the results tab visually
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelector('[data-tab="results"]').classList.add('active');
+        document.getElementById('tab-results').classList.add('active');
+
+        const hasResults = this.simulation.rocks.length > 0 &&
+            this.simulation.rocks.some(r => r.isResting);
+
+        const placeholder = document.getElementById('results-placeholder-msg');
+        const content = document.getElementById('results-sidebar-content');
+
+        if (hasResults) {
+            placeholder.style.display = 'none';
+            content.style.display = 'block';
+        } else {
+            placeholder.style.display = 'block';
+            content.style.display = 'none';
+        }
     }
 
     setupSidebarResize() {
@@ -718,8 +747,13 @@ class App {
                 return;
             }
 
-            // Escape — detener simulación
+            // Escape — close dashboard or stop simulation
             if (e.key === 'Escape') {
+                const dashboard = document.getElementById('results-dashboard');
+                if (!dashboard.classList.contains('hidden')) {
+                    this.hideResultsDashboard();
+                    return;
+                }
                 if (this.simulation.isRunning) this.stopSimulation();
                 return;
             }
@@ -790,6 +824,131 @@ class App {
             this.updateBarrierList();
             this.render();
         });
+    }
+
+    setupDashboardControls() {
+        // Open dashboard button
+        document.getElementById('btn-open-dashboard').addEventListener('click', () => {
+            this.showResultsDashboard();
+        });
+
+        // Close dashboard button
+        document.getElementById('btn-dashboard-close').addEventListener('click', () => {
+            this.hideResultsDashboard();
+        });
+
+        // Dashboard export buttons
+        document.getElementById('btn-dashboard-png').addEventListener('click', () => {
+            this.exportDashboardPNG();
+        });
+
+        document.getElementById('btn-dashboard-csv').addEventListener('click', () => {
+            const csv = this.stats.generateCSV();
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas-results.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        document.getElementById('btn-dashboard-report').addEventListener('click', () => {
+            const report = this.stats.generateReport();
+            const blob = new Blob([report], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas-report.txt';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    showResultsDashboard() {
+        const hasResults = this.simulation.rocks.length > 0 &&
+            this.simulation.rocks.some(r => r.isResting);
+
+        if (!hasResults) {
+            alert('Ejecuta una simulación para ver resultados.');
+            return;
+        }
+
+        const dashboard = document.getElementById('results-dashboard');
+        dashboard.classList.remove('hidden');
+
+        // Update stat badges
+        const r = this.stats.results;
+        if (r) {
+            document.getElementById('dash-stat-total').textContent = r.finishedRocks;
+            document.getElementById('dash-stat-max-ke').textContent = r.kineticEnergy.max.toFixed(1);
+            document.getElementById('dash-stat-max-bounce').textContent = r.bounceHeight.max.toFixed(1);
+            document.getElementById('dash-stat-max-runout').textContent = r.runoutDistance.max.toFixed(1);
+            document.getElementById('dash-stat-max-vel').textContent = r.impactVelocity.max.toFixed(1);
+            document.getElementById('dash-stat-savigny').textContent =
+                r.savignyAngle !== null ? r.savignyAngle.toFixed(1) : '-';
+            document.getElementById('dash-stat-p95').textContent = r.runoutDistance.p95.toFixed(1);
+        }
+
+        // Render charts after a frame so the DOM has updated dimensions
+        requestAnimationFrame(() => {
+            this.renderer.renderResultsDashboard(
+                this.simulation.rocks,
+                this.terrain,
+                this.releasePoint,
+                r
+            );
+        });
+    }
+
+    hideResultsDashboard() {
+        const dashboard = document.getElementById('results-dashboard');
+        dashboard.classList.add('hidden');
+    }
+
+    exportDashboardPNG() {
+        const dashboard = document.getElementById('results-dashboard');
+        // Create a temporary canvas combining all chart canvases
+        const charts = dashboard.querySelectorAll('.chart-panel canvas');
+        if (charts.length === 0) return;
+
+        const cols = 2;
+        const rows = 3;
+        const chartW = charts[0].width;
+        const chartH = charts[0].height;
+        const gap = 10;
+        const headerH = 50;
+
+        const totalW = cols * chartW + (cols - 1) * gap + 40;
+        const totalH = headerH + rows * chartH + (rows - 1) * gap + 40;
+
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = totalW;
+        tempCanvas.height = totalH;
+        const ctx = tempCanvas.getContext('2d');
+
+        // Background
+        ctx.fillStyle = '#0f0f0f';
+        ctx.fillRect(0, 0, totalW, totalH);
+
+        // Title
+        ctx.fillStyle = '#e4e4e4';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText('SimRocas 2D — Resultados de Simulación', 20, 30);
+
+        // Draw each chart
+        for (let i = 0; i < charts.length; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = 20 + col * (chartW + gap);
+            const y = headerH + row * (chartH + gap);
+            ctx.drawImage(charts[i], x, y);
+        }
+
+        const link = document.createElement('a');
+        link.download = 'simrocas-dashboard.png';
+        link.href = tempCanvas.toDataURL('image/png');
+        link.click();
     }
 
     updateBarrierList() {

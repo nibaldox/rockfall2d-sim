@@ -817,6 +817,631 @@ class Renderer {
         ctx.fillText('Frecuencia', 0, 0);
         ctx.restore();
     }
+
+    // =============================================
+    // Results Dashboard Chart Methods
+    // =============================================
+
+    /**
+     * Resizes all dashboard chart canvases to their container dimensions.
+     */
+    resizeDashboardCanvases() {
+        const ids = [
+            'chart-energy-hist', 'chart-energy-distance', 'chart-accumulation',
+            'chart-bounce-distance', 'chart-velocity-distance', 'chart-runout-dist'
+        ];
+        for (const id of ids) {
+            const canvas = document.getElementById(id);
+            if (!canvas) continue;
+            const parent = canvas.parentElement;
+            const titleEl = parent.querySelector('h4');
+            const titleH = titleEl ? titleEl.offsetHeight + 1 : 30;
+            const w = parent.clientWidth;
+            const h = parent.clientHeight - titleH;
+            if (w > 0 && h > 0) {
+                canvas.width = w;
+                canvas.height = Math.max(h, 150);
+            }
+        }
+    }
+
+    /**
+     * Renders all six dashboard charts.
+     */
+    renderResultsDashboard(rocks, terrain, releasePoint, stats) {
+        this.resizeDashboardCanvases();
+
+        const restingRocks = rocks.filter(r => r.isResting);
+
+        this.renderEnergyHistogram(
+            document.getElementById('chart-energy-hist'),
+            restingRocks
+        );
+        this.renderEnergyVsDistance(
+            document.getElementById('chart-energy-distance'),
+            restingRocks, terrain, releasePoint
+        );
+        this.renderAccumulationZones(
+            document.getElementById('chart-accumulation'),
+            restingRocks, terrain, releasePoint
+        );
+        this.renderBounceHeightVsDistance(
+            document.getElementById('chart-bounce-distance'),
+            restingRocks, terrain, releasePoint
+        );
+        this.renderImpactVelocityVsDistance(
+            document.getElementById('chart-velocity-distance'),
+            restingRocks, terrain, releasePoint
+        );
+        this.renderRunoutDistribution(
+            document.getElementById('chart-runout-dist'),
+            restingRocks, terrain, releasePoint, stats
+        );
+    }
+
+    /**
+     * Draws terrain profile as a transparent filled silhouette at the bottom of a chart.
+     */
+    drawTerrainSilhouette(ctx, terrain, w, h, padding) {
+        const points = terrain.points;
+        if (!points || points.length < 2) return;
+
+        let minX = points[0].x, maxX = points[0].x;
+        let minY = points[0].y, maxY = points[0].y;
+        for (let i = 1; i < points.length; i++) {
+            if (points[i].x < minX) minX = points[i].x;
+            if (points[i].x > maxX) maxX = points[i].x;
+            if (points[i].y < minY) minY = points[i].y;
+            if (points[i].y > maxY) maxY = points[i].y;
+        }
+
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+        const rangeX = maxX - minX || 1;
+        const rangeY = maxY - minY || 1;
+
+        // Silhouette occupies the bottom 30% of plot area
+        const silH = plotH * 0.30;
+
+        const scaleX = plotW / rangeX;
+
+        ctx.save();
+        ctx.beginPath();
+
+        // Start from bottom-left
+        const startX = padding.left;
+        const bottomY = padding.top + plotH;
+        ctx.moveTo(startX, bottomY);
+
+        for (let i = 0; i < points.length; i++) {
+            const px = padding.left + (points[i].x - minX) / rangeX * plotW;
+            const normalizedY = (points[i].y - minY) / rangeY;
+            const py = bottomY - normalizedY * silH;
+            ctx.lineTo(px, py);
+        }
+
+        // Close to bottom-right
+        ctx.lineTo(padding.left + plotW, bottomY);
+        ctx.closePath();
+
+        ctx.fillStyle = 'rgba(139, 90, 43, 0.15)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(139, 90, 43, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    /**
+     * Draws labeled axes with grid lines for a chart.
+     */
+    drawChartAxes(ctx, w, h, padding, xLabel, yLabel, xTicks, yTicks) {
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        // Grid lines and Y tick labels
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+        ctx.lineWidth = 0.5;
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'right';
+
+        for (let i = 0; i < yTicks.length; i++) {
+            const y = padding.top + plotH - (yTicks[i].norm) * plotH;
+            ctx.beginPath();
+            ctx.moveTo(padding.left, y);
+            ctx.lineTo(w - padding.right, y);
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.fillText(yTicks[i].label, padding.left - 6, y + 3);
+        }
+
+        // X tick labels
+        ctx.textAlign = 'center';
+        for (let i = 0; i < xTicks.length; i++) {
+            const x = padding.left + xTicks[i].norm * plotW;
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+            ctx.beginPath();
+            ctx.moveTo(x, padding.top);
+            ctx.lineTo(x, padding.top + plotH);
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.fillText(xTicks[i].label, x, padding.top + plotH + 14);
+        }
+
+        // Axis labels
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(xLabel, padding.left + plotW / 2, h - 2);
+
+        ctx.save();
+        ctx.translate(10, padding.top + plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText(yLabel, 0, 0);
+        ctx.restore();
+
+        // Border
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padding.left, padding.top, plotW, plotH);
+    }
+
+    /**
+     * Generates nice tick values for a numeric range.
+     */
+    _niceTicks(min, max, targetCount) {
+        const range = max - min || 1;
+        const roughStep = range / targetCount;
+        const magnitude = Math.pow(10, Math.floor(Math.log10(roughStep)));
+        const residual = roughStep / magnitude;
+        let niceStep;
+        if (residual <= 1.5) niceStep = magnitude;
+        else if (residual <= 3) niceStep = 2 * magnitude;
+        else if (residual <= 7) niceStep = 5 * magnitude;
+        else niceStep = 10 * magnitude;
+
+        const ticks = [];
+        const start = Math.ceil(min / niceStep) * niceStep;
+        for (let v = start; v <= max; v += niceStep) {
+            ticks.push(v);
+        }
+        return ticks;
+    }
+
+    /**
+     * Chart 1: Energy Distribution Histogram (enhanced with terrain silhouette).
+     */
+    renderEnergyHistogram(canvas, rocks) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+
+        // Background
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-surface').trim() || '#161616';
+        ctx.fillRect(0, 0, w, h);
+
+        const energies = rocks.map(r => r.maxKineticEnergy / 1000).filter(e => e > 0);
+
+        if (energies.length === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Sin datos de energía', w / 2, h / 2);
+            ctx.textAlign = 'left';
+            return;
+        }
+
+        const padding = { top: 20, right: 20, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        const bins = Math.min(25, Math.max(8, Math.floor(energies.length / 5)));
+        const histogram = this.computeHistogram(energies, bins);
+        let maxCount = 0;
+        for (const b of histogram) {
+            if (b.count > maxCount) maxCount = b.count;
+        }
+        const lastBin = histogram[histogram.length - 1];
+        const maxEnergy = lastBin.bin + lastBin.width;
+
+        // Y ticks
+        const yRawTicks = this._niceTicks(0, maxCount, 5);
+        const yTicks = yRawTicks.map(v => ({
+            value: v,
+            norm: maxCount > 0 ? v / maxCount : 0,
+            label: v.toFixed(0)
+        }));
+
+        // X ticks
+        const xRawTicks = this._niceTicks(0, maxEnergy, 6);
+        const xTicks = xRawTicks.map(v => ({
+            value: v,
+            norm: maxEnergy > 0 ? v / maxEnergy : 0,
+            label: v.toFixed(1)
+        }));
+
+        // Draw axes
+        this.drawChartAxes(ctx, w, h, padding, 'Energía (kJ)', 'Frecuencia', xTicks, yTicks);
+
+        // Draw histogram bars with blue-to-red gradient
+        const barWidth = plotW / histogram.length;
+        for (let i = 0; i < histogram.length; i++) {
+            const bin = histogram[i];
+            const barH = maxCount > 0 ? (bin.count / maxCount) * plotH : 0;
+            const x = padding.left + i * barWidth;
+            const y = padding.top + plotH - barH;
+
+            const intensity = maxEnergy > 0 ? (bin.bin + bin.width / 2) / maxEnergy : 0;
+            const r = Math.floor(60 + 195 * intensity);
+            const g = Math.floor(130 - 70 * intensity);
+            const b = Math.floor(220 - 180 * intensity);
+
+            ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.85)`;
+            ctx.fillRect(x + 1, y, barWidth - 2, barH);
+        }
+    }
+
+    /**
+     * Chart 2: Energy vs Distance scatter plot.
+     */
+    renderEnergyVsDistance(canvas, rocks, terrain, releasePoint) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-surface').trim() || '#161616';
+        ctx.fillRect(0, 0, w, h);
+
+        const padding = { top: 20, right: 20, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        this.drawTerrainSilhouette(ctx, terrain, w, h, padding);
+
+        if (rocks.length === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Sin datos', w / 2, h / 2);
+            ctx.textAlign = 'left';
+            return;
+        }
+
+        let minX = rocks[0].finalX, maxX = rocks[0].finalX;
+        let maxKE = 0;
+        for (const r of rocks) {
+            if (r.finalX < minX) minX = r.finalX;
+            if (r.finalX > maxX) maxX = r.finalX;
+            const ke = r.maxKineticEnergy / 1000;
+            if (ke > maxKE) maxKE = ke;
+        }
+        const rangeX = maxX - minX || 1;
+        const rangeKE = maxKE || 1;
+
+        const yTicks = this._niceTicks(0, maxKE, 5).map(v => ({
+            value: v, norm: v / rangeKE, label: v.toFixed(1)
+        }));
+        const xTicks = this._niceTicks(minX, maxX, 6).map(v => ({
+            value: v, norm: (v - minX) / rangeX, label: v.toFixed(0)
+        }));
+
+        this.drawChartAxes(ctx, w, h, padding, 'Distancia (m)', 'Energía (kJ)', xTicks, yTicks);
+
+        // Scatter dots
+        for (const r of rocks) {
+            const ke = r.maxKineticEnergy / 1000;
+            const px = padding.left + ((r.finalX - minX) / rangeX) * plotW;
+            const py = padding.top + plotH - (ke / rangeKE) * plotH;
+
+            const intensity = ke / rangeKE;
+            const cr = Math.floor(60 + 195 * intensity);
+            const cg = Math.floor(130 - 70 * intensity);
+            const cb = Math.floor(220 - 180 * intensity);
+
+            ctx.beginPath();
+            ctx.arc(px, py, 3, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.7)`;
+            ctx.fill();
+        }
+    }
+
+    /**
+     * Chart 3: Rock Accumulation Zones histogram.
+     */
+    renderAccumulationZones(canvas, rocks, terrain, releasePoint) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-surface').trim() || '#161616';
+        ctx.fillRect(0, 0, w, h);
+
+        const padding = { top: 20, right: 20, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        this.drawTerrainSilhouette(ctx, terrain, w, h, padding);
+
+        if (rocks.length === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Sin datos', w / 2, h / 2);
+            ctx.textAlign = 'left';
+            return;
+        }
+
+        const positions = rocks.map(r => r.finalX);
+        const bins = Math.min(25, Math.max(8, Math.floor(positions.length / 5)));
+        const histogram = this.computeHistogram(positions, bins);
+
+        let maxCount = 0;
+        for (const b of histogram) {
+            if (b.count > maxCount) maxCount = b.count;
+        }
+
+        let minBin = histogram[0].bin;
+        let maxBin = histogram[histogram.length - 1].bin + histogram[0].width;
+        const rangeX = maxBin - minBin || 1;
+
+        const yTicks = this._niceTicks(0, maxCount, 5).map(v => ({
+            value: v, norm: maxCount > 0 ? v / maxCount : 0, label: v.toFixed(0)
+        }));
+        const xTicks = this._niceTicks(minBin, maxBin, 6).map(v => ({
+            value: v, norm: (v - minBin) / rangeX, label: v.toFixed(0)
+        }));
+
+        this.drawChartAxes(ctx, w, h, padding, 'Distancia (m)', 'Cantidad de rocas', xTicks, yTicks);
+
+        // Draw bars colored by density
+        const barWidth = plotW / histogram.length;
+        for (let i = 0; i < histogram.length; i++) {
+            const bin = histogram[i];
+            const barH = maxCount > 0 ? (bin.count / maxCount) * plotH : 0;
+            const x = padding.left + ((bin.bin - minBin) / rangeX) * plotW;
+            const y = padding.top + plotH - barH;
+
+            const intensity = maxCount > 0 ? bin.count / maxCount : 0;
+            // Light gray → bright accent
+            const cr = Math.floor(100 + 120 * intensity);
+            const cg = Math.floor(100 + 80 * intensity);
+            const cb = Math.floor(120 + 80 * intensity);
+
+            ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.85)`;
+            ctx.fillRect(x, y, barWidth - 1, barH);
+        }
+    }
+
+    /**
+     * Chart 4: Bounce Height vs Distance scatter plot.
+     */
+    renderBounceHeightVsDistance(canvas, rocks, terrain, releasePoint) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-surface').trim() || '#161616';
+        ctx.fillRect(0, 0, w, h);
+
+        const padding = { top: 20, right: 20, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        this.drawTerrainSilhouette(ctx, terrain, w, h, padding);
+
+        if (rocks.length === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Sin datos', w / 2, h / 2);
+            ctx.textAlign = 'left';
+            return;
+        }
+
+        let minX = rocks[0].finalX, maxX = rocks[0].finalX;
+        let maxBH = 0;
+        for (const r of rocks) {
+            if (r.finalX < minX) minX = r.finalX;
+            if (r.finalX > maxX) maxX = r.finalX;
+            if (r.maxBounceHeight > maxBH) maxBH = r.maxBounceHeight;
+        }
+        const rangeX = maxX - minX || 1;
+        const rangeBH = maxBH || 1;
+
+        const yTicks = this._niceTicks(0, maxBH, 5).map(v => ({
+            value: v, norm: v / rangeBH, label: v.toFixed(1)
+        }));
+        const xTicks = this._niceTicks(minX, maxX, 6).map(v => ({
+            value: v, norm: (v - minX) / rangeX, label: v.toFixed(0)
+        }));
+
+        this.drawChartAxes(ctx, w, h, padding, 'Distancia (m)', 'Altura Rebote (m)', xTicks, yTicks);
+
+        // Teal/cyan dots
+        for (const r of rocks) {
+            const px = padding.left + ((r.finalX - minX) / rangeX) * plotW;
+            const py = padding.top + plotH - (r.maxBounceHeight / rangeBH) * plotH;
+
+            ctx.beginPath();
+            ctx.arc(px, py, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(78, 205, 196, 0.65)';
+            ctx.fill();
+        }
+    }
+
+    /**
+     * Chart 5: Impact Velocity vs Distance scatter plot.
+     */
+    renderImpactVelocityVsDistance(canvas, rocks, terrain, releasePoint) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-surface').trim() || '#161616';
+        ctx.fillRect(0, 0, w, h);
+
+        const padding = { top: 20, right: 20, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        this.drawTerrainSilhouette(ctx, terrain, w, h, padding);
+
+        if (rocks.length === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Sin datos', w / 2, h / 2);
+            ctx.textAlign = 'left';
+            return;
+        }
+
+        let minX = rocks[0].finalX, maxX = rocks[0].finalX;
+        let maxV = 0;
+        for (const r of rocks) {
+            if (r.finalX < minX) minX = r.finalX;
+            if (r.finalX > maxX) maxX = r.finalX;
+            if (r.maxImpactVelocity > maxV) maxV = r.maxImpactVelocity;
+        }
+        const rangeX = maxX - minX || 1;
+        const rangeV = maxV || 1;
+
+        const yTicks = this._niceTicks(0, maxV, 5).map(v => ({
+            value: v, norm: v / rangeV, label: v.toFixed(1)
+        }));
+        const xTicks = this._niceTicks(minX, maxX, 6).map(v => ({
+            value: v, norm: (v - minX) / rangeX, label: v.toFixed(0)
+        }));
+
+        this.drawChartAxes(ctx, w, h, padding, 'Distancia (m)', 'Velocidad (m/s)', xTicks, yTicks);
+
+        // Orange dots
+        for (const r of rocks) {
+            const px = padding.left + ((r.finalX - minX) / rangeX) * plotW;
+            const py = padding.top + plotH - (r.maxImpactVelocity / rangeV) * plotH;
+
+            ctx.beginPath();
+            ctx.arc(px, py, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(243, 156, 18, 0.7)';
+            ctx.fill();
+        }
+    }
+
+    /**
+     * Chart 6: Cumulative Runout Distance Distribution (S-curve).
+     */
+    renderRunoutDistribution(canvas, rocks, terrain, releasePoint, stats) {
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+
+        ctx.fillStyle = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bg-surface').trim() || '#161616';
+        ctx.fillRect(0, 0, w, h);
+
+        const padding = { top: 20, right: 20, bottom: 35, left: 55 };
+        const plotW = w - padding.left - padding.right;
+        const plotH = h - padding.top - padding.bottom;
+
+        if (rocks.length === 0 || !releasePoint) {
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Sin datos', w / 2, h / 2);
+            ctx.textAlign = 'left';
+            return;
+        }
+
+        // Runout = horizontal distance from release point
+        const runouts = rocks.map(r => Math.abs(r.finalX - releasePoint.x)).sort((a, b) => a - b);
+        const maxRunout = runouts[runouts.length - 1] || 1;
+        const n = runouts.length;
+
+        const yTicks = [0, 25, 50, 75, 100].map(v => ({
+            value: v, norm: v / 100, label: v + '%'
+        }));
+
+        const xTicks = this._niceTicks(0, maxRunout, 6).map(v => ({
+            value: v, norm: v / maxRunout, label: v.toFixed(0)
+        }));
+
+        this.drawChartAxes(ctx, w, h, padding, 'Distancia runout (m)', 'Porcentaje acumulado (%)', xTicks, yTicks);
+
+        // Draw S-curve
+        ctx.beginPath();
+        ctx.moveTo(padding.left, padding.top + plotH);
+        for (let i = 0; i < n; i++) {
+            const px = padding.left + (runouts[i] / maxRunout) * plotW;
+            const py = padding.top + plotH - ((i + 1) / n * 100 / 100) * plotH;
+            ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = 'rgba(78, 205, 196, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Fill area under curve
+        ctx.lineTo(padding.left + plotW, padding.top + plotH);
+        ctx.lineTo(padding.left, padding.top + plotH);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(78, 205, 196, 0.1)';
+        ctx.fill();
+
+        // Draw percentile lines: compute percentiles from sorted runouts
+        const pVal = (arr, pct) => {
+            const idx = (pct / 100) * (arr.length - 1);
+            const lo = Math.floor(idx);
+            const hi = Math.ceil(idx);
+            const f = idx - lo;
+            return arr[lo] * (1 - f) + arr[hi] * f;
+        };
+
+        const percentiles = [
+            { pct: 50, label: 'P50', color: '#3498db', value: pVal(runouts, 50) },
+            { pct: 83, label: 'P83', color: '#f39c12', value: pVal(runouts, 83) },
+            { pct: 95, label: 'P95', color: '#e74c3c', value: pVal(runouts, 95) }
+        ];
+
+        for (const p of percentiles) {
+            const yNorm = p.pct / 100;
+            const py = padding.top + plotH - yNorm * plotH;
+
+            ctx.setLineDash([6, 4]);
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(padding.left, py);
+            ctx.lineTo(padding.left + plotW, py);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Dot at intersection
+            const px = padding.left + (p.value / maxRunout) * plotW;
+            ctx.beginPath();
+            ctx.arc(Math.min(px, padding.left + plotW), py, 4, 0, Math.PI * 2);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+
+            // Label
+            const labelText = `${p.label}: ${p.value.toFixed(1)}m`;
+            ctx.fillStyle = p.color;
+            ctx.font = 'bold 10px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillText(labelText, padding.left + plotW - 4, py - 5);
+        }
+    }
 }
 
 SimRocas.Renderer = Renderer;

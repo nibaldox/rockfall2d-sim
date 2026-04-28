@@ -349,70 +349,29 @@
 
                 <div class="tab-content" id="tab-results">
                     <div class="section">
-                        <h3>Estadísticas</h3>
-                        <div id="stats-container">
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Máxima energía cinética alcanzada por cualquier roca durante la simulación. Indica el peor caso de impacto.">Energía Cinética Máx</span>
-                                <span class="stat-value" id="stat-max-ke">-</span>
-                                <span class="stat-unit">kJ</span>
+                        <h3>Panel de Resultados</h3>
+                        <p class="help-text" id="results-placeholder-msg">Ejecuta una simulación para ver resultados.</p>
+                        <div id="results-sidebar-content" style="display:none;">
+                            <div class="control-group">
+                                <label data-tooltip="Resalta en el canvas las zonas donde las rocas llegan con más del 50% de su energía máxima.">Mostrar zonas de riesgo:</label>
+                                <label class="checkbox-label">
+                                    <input type="checkbox" id="show-risk-zones"> Superior al 50% energía
+                                </label>
+                                <label class="checkbox-label" data-tooltip="Muestra bandas de probabilidad de alcance (P10, P50, P83, P95) sobre el perfil. Se calcula al finalizar la simulación.">
+                                    <input type="checkbox" id="show-probability-map"> Mapa de probabilidad
+                                </label>
                             </div>
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Energía cinética promedio de todas las rocas. Valor representativo del peligro general.">Energía Cinética Media</span>
-                                <span class="stat-value" id="stat-mean-ke">-</span>
-                                <span class="stat-unit">kJ</span>
+                            <div class="button-row">
+                                <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Resultados Completos</button>
                             </div>
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Máxima altura de rebote registrada. Importante para dimensionar muros de contención.">Altura Máx Rebote</span>
-                                <span class="stat-value" id="stat-max-bounce">-</span>
-                                <span class="stat-unit">m</span>
+                            <div class="section" style="margin-top:12px;">
+                                <h3>Exportar</h3>
+                                <div class="button-row">
+                                    <button id="btn-export-image" class="btn btn-small" data-tooltip="Guarda una captura del canvas como imagen PNG.">📷 Captura PNG</button>
+                                    <button id="btn-export-csv" class="btn btn-small" data-tooltip="Exporta los datos de la simulación (posición, energía, rebotes) como archivo CSV.">📊 Datos CSV</button>
+                                    <button id="btn-export-report" class="btn btn-small" data-tooltip="Genera un reporte de texto con todos los parámetros y estadísticas de la simulación.">📋 Reporte</button>
+                                </div>
                             </div>
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Distancia horizontal máxima recorrida desde el punto de liberación. Define la zona de influencia.">Distancia Final Máx</span>
-                                <span class="stat-value" id="stat-max-runout">-</span>
-                                <span class="stat-unit">m</span>
-                            </div>
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Velocidad de impacto más alta registrada. Relacionada directamente con la energía de destrucción.">Velocidad Máx Impacto</span>
-                                <span class="stat-value" id="stat-max-velocity">-</span>
-                                <span class="stat-unit">m/s</span>
-                            </div>
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Número máximo de rebotes de una sola roca. Indica la trayectoria más compleja.">Rebotes Máx</span>
-                                <span class="stat-value" id="stat-max-bounces">-</span>
-                                <span class="stat-unit">nº</span>
-                            </div>
-                            <div class="stat-card">
-                                <span class="stat-label" data-tooltip="Ángulo ficticio de fricción que representa la disipación total de energía. Menor ángulo = más energía perdida.">Ángulo de Savigny</span>
-                                <span class="stat-value" id="stat-savigny-angle">-</span>
-                                <span class="stat-unit">°</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <h3>Distribución de Energía</h3>
-                        <canvas id="histogram-canvas" width="380" height="200"></canvas>
-                    </div>
-
-                    <div class="section">
-                        <h3>Zonas de Impacto</h3>
-                        <div class="control-group">
-                            <label data-tooltip="Resalta en el canvas las zonas donde las rocas llegan con más del 50% de su energía máxima.">Mostrar zonas de riesgo:</label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="show-risk-zones"> Superior al 50% energía
-                            </label>
-                            <label class="checkbox-label" data-tooltip="Muestra bandas de probabilidad de alcance (P10, P50, P83, P95) sobre el perfil. Se calcula al finalizar la simulación.">
-                                <input type="checkbox" id="show-probability-map"> Mapa de probabilidad
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <h3>Exportar</h3>
-                        <div class="button-row">
-                            <button id="btn-export-image" class="btn btn-small" data-tooltip="Guarda una captura del canvas como imagen PNG.">📷 Captura PNG</button>
-                            <button id="btn-export-csv" class="btn btn-small" data-tooltip="Exporta los datos de la simulación (posición, energía, rebotes) como archivo CSV.">📊 Datos CSV</button>
-                            <button id="btn-export-report" class="btn btn-small" data-tooltip="Genera un reporte de texto con todos los parámetros y estadísticas de la simulación.">📋 Reporte</button>
                         </div>
                     </div>
                 </div>
@@ -451,6 +410,95 @@
                 </div>
             </main>
         </div>
+
+        <!-- Full-Screen Results Dashboard Overlay -->
+        <div id="results-dashboard" class="results-dashboard hidden">
+            <div class="dashboard-header">
+                <div class="dashboard-title-row">
+                    <h2>Resultados de Simulación</h2>
+                    <div class="dashboard-actions">
+                        <button id="btn-dashboard-close" class="btn btn-small">✕ Cerrar</button>
+                        <button id="btn-dashboard-png" class="btn btn-small">📷 PNG</button>
+                        <button id="btn-dashboard-csv" class="btn btn-small">📊 CSV</button>
+                        <button id="btn-dashboard-report" class="btn btn-small">📋 Reporte</button>
+                    </div>
+                </div>
+                <div class="dashboard-stats" id="dashboard-stats-row">
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">Rocas</span>
+                        <span class="dash-stat-val" id="dash-stat-total">-</span>
+                    </div>
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">Energía Máx</span>
+                        <span class="dash-stat-val" id="dash-stat-max-ke">-</span>
+                        <span class="dash-stat-unit">kJ</span>
+                    </div>
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">Altura Máx Rebote</span>
+                        <span class="dash-stat-val" id="dash-stat-max-bounce">-</span>
+                        <span class="dash-stat-unit">m</span>
+                    </div>
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">Runout Máx</span>
+                        <span class="dash-stat-val" id="dash-stat-max-runout">-</span>
+                        <span class="dash-stat-unit">m</span>
+                    </div>
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">Vel. Impacto Máx</span>
+                        <span class="dash-stat-val" id="dash-stat-max-vel">-</span>
+                        <span class="dash-stat-unit">m/s</span>
+                    </div>
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">Ángulo Savigny</span>
+                        <span class="dash-stat-val" id="dash-stat-savigny">-</span>
+                        <span class="dash-stat-unit">°</span>
+                    </div>
+                    <div class="dash-stat-badge">
+                        <span class="dash-stat-label">P95 Runout</span>
+                        <span class="dash-stat-val" id="dash-stat-p95">-</span>
+                        <span class="dash-stat-unit">m</span>
+                    </div>
+                </div>
+            </div>
+            <div class="dashboard-grid">
+                <div class="chart-panel">
+                    <h4>Distribución de Energía Cinética</h4>
+                    <canvas id="chart-energy-hist" width="600" height="350"></canvas>
+                </div>
+                <div class="chart-panel">
+                    <h4>Energía vs Distancia</h4>
+                    <canvas id="chart-energy-distance" width="600" height="350"></canvas>
+                </div>
+                <div class="chart-panel">
+                    <h4>Zonas de Acumulación</h4>
+                    <canvas id="chart-accumulation" width="600" height="350"></canvas>
+                </div>
+                <div class="chart-panel">
+                    <h4>Altura de Rebote vs Distancia</h4>
+                    <canvas id="chart-bounce-distance" width="600" height="350"></canvas>
+                </div>
+                <div class="chart-panel">
+                    <h4>Velocidad de Impacto vs Distancia</h4>
+                    <canvas id="chart-velocity-distance" width="600" height="350"></canvas>
+                </div>
+                <div class="chart-panel">
+                    <h4>Distribución de Runout</h4>
+                    <canvas id="chart-runout-dist" width="600" height="350"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden stat elements for updateUI compatibility -->
+    <div style="display:none;">
+        <span id="stat-max-ke">-</span>
+        <span id="stat-mean-ke">-</span>
+        <span id="stat-max-bounce">-</span>
+        <span id="stat-max-runout">-</span>
+        <span id="stat-max-velocity">-</span>
+        <span id="stat-max-bounces">-</span>
+        <span id="stat-savigny-angle">-</span>
+        <canvas id="histogram-canvas" width="380" height="200"></canvas>
     </div>
 
     <script src="js/terrain.js"></script>
