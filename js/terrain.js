@@ -9,13 +9,13 @@ const SimRocas = window.SimRocas || {};
  * Based on CRSP / Pierre2 calibration tables.
  */
 const TerrainPresets = {
-    'roca-dura': { label: 'Roca Dura', cn: 0.80, ct: 0.20, color: '#8B7355' },
-    'roca-suave': { label: 'Roca Suave', cn: 0.60, ct: 0.30, color: '#A08060' },
-    'suelo': { label: 'Suelo', cn: 0.40, ct: 0.40, color: '#6B8E23' },
-    'vegetacion': { label: 'Vegetación', cn: 0.30, ct: 0.50, color: '#228B22' },
-    'relleno': { label: 'Relleno', cn: 0.20, ct: 0.60, color: '#556B2F' },
-    'concreto': { label: 'Concreto', cn: 0.85, ct: 0.15, color: '#808080' },
-    'asfalto': { label: 'Asfalto', cn: 0.50, ct: 0.35, color: '#404040' }
+    'roca-dura': { label: 'Roca Dura', cn: 0.80, ct: 0.20, color: '#8B7355', roughness: 2 },
+    'roca-suave': { label: 'Roca Suave', cn: 0.60, ct: 0.30, color: '#A08060', roughness: 8 },
+    'suelo': { label: 'Suelo', cn: 0.40, ct: 0.40, color: '#6B8E23', roughness: 5 },
+    'vegetacion': { label: 'Vegetación', cn: 0.30, ct: 0.50, color: '#228B22', roughness: 12 },
+    'relleno': { label: 'Relleno', cn: 0.20, ct: 0.60, color: '#556B2F', roughness: 15 },
+    'concreto': { label: 'Concreto', cn: 0.85, ct: 0.15, color: '#808080', roughness: 0 },
+    'asfalto': { label: 'Asfalto', cn: 0.50, ct: 0.35, color: '#404040', roughness: 1 }
 };
 
 class Terrain {
@@ -47,7 +47,7 @@ class Terrain {
     addPoint(x, y, segmentType = 'roca-suave') {
         const newPoint = { x, y };
         const preset = TerrainPresets[segmentType] || TerrainPresets['roca-suave'];
-        const newSeg = { type: segmentType, cn: preset.cn, ct: preset.ct, color: preset.color };
+        const newSeg = { type: segmentType, cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness };
 
         const idx = this._findInsertIndex(x);
         // Reject duplicate X coordinates to prevent division by zero
@@ -128,11 +128,13 @@ class Terrain {
                     this.segments[index].cn = preset.cn;
                     this.segments[index].ct = preset.ct;
                     this.segments[index].color = preset.color;
+                    this.segments[index].roughness = preset.roughness !== undefined ? preset.roughness : 0;
                 }
             }
             if (props.cn !== undefined) this.segments[index].cn = props.cn;
             if (props.ct !== undefined) this.segments[index].ct = props.ct;
             if (props.color !== undefined) this.segments[index].color = props.color;
+            if (props.roughness !== undefined) this.segments[index].roughness = props.roughness;
         }
     }
 
@@ -145,7 +147,13 @@ class Terrain {
         fromIdx = Math.max(0, fromIdx);
         toIdx = Math.min(this.segments.length - 1, toIdx);
         for (let i = fromIdx; i <= toIdx; i++) {
-            this.segments[i] = { type: type, cn: preset.cn, ct: preset.ct, color: preset.color };
+            this.segments[i] = { 
+                type: type, 
+                cn: preset.cn, 
+                ct: preset.ct, 
+                color: preset.color, 
+                roughness: preset.roughness !== undefined ? preset.roughness : 0 
+            };
         }
     }
 
@@ -154,11 +162,11 @@ class Terrain {
      * Falls back to global defaults if X is outside terrain bounds.
      */
     getSegmentPropertiesAt(x, defaultCn, defaultCt) {
-        if (this.points.length < 2) return { cn: defaultCn, ct: defaultCt, type: '', color: '' };
+        if (this.points.length < 2) return { cn: defaultCn, ct: defaultCt, type: '', color: '', roughness: 0 };
 
         const idx = this._findSegmentIndexCached(x);
         if (idx < 0 || idx >= this.segments.length) {
-            return { cn: defaultCn, ct: defaultCt, type: '', color: '' };
+            return { cn: defaultCn, ct: defaultCt, type: '', color: '', roughness: 0 };
         }
 
         const seg = this.segments[idx];
@@ -166,7 +174,8 @@ class Terrain {
             cn: seg.cn,
             ct: seg.ct,
             type: seg.type,
-            color: seg.color
+            color: seg.color,
+            roughness: seg.roughness !== undefined ? seg.roughness : 0
         };
     }
 
@@ -315,11 +324,11 @@ class Terrain {
     }
 
     toCSV() {
-        let csv = 'X,Y,Type,Cn,Ct\n';
+        let csv = 'X,Y,Type,Cn,Ct,Roughness\n';
         for (let i = 0; i < this.points.length; i++) {
             const p = this.points[i];
-            const seg = this.segments[i] || { type: '', cn: 0, ct: 0 };
-            csv += `${p.x},${p.y},${seg.type},${seg.cn},${seg.ct}\n`;
+            const seg = this.segments[i] || { type: '', cn: 0, ct: 0, roughness: 0 };
+            csv += `${p.x},${p.y},${seg.type},${seg.cn},${seg.ct},${seg.roughness || 0}\n`;
         }
         return csv;
     }
@@ -328,12 +337,20 @@ class Terrain {
         const data = JSON.parse(json);
         this.points = data.points || [];
         this.segments = data.segments || [];
+        // Ensure each segment has a roughness parameter, defaulting to its preset's roughness if missing
+        for (let i = 0; i < this.segments.length; i++) {
+            const seg = this.segments[i];
+            if (seg && seg.roughness === undefined) {
+                const preset = TerrainPresets[seg.type] || TerrainPresets['roca-suave'];
+                seg.roughness = preset.roughness || 0;
+            }
+        }
         // If no segments data, create defaults
         if (!data.segments && this.points.length >= 2) {
             this.segments = [];
             for (let i = 0; i < this.points.length - 1; i++) {
                 const preset = TerrainPresets['roca-suave'];
-                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color });
+                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
             }
         }
         this.scale = data.scale || this.scale;
@@ -356,17 +373,19 @@ class Terrain {
                 if (!isNaN(x) && !isNaN(y)) {
                     this.points.push({ x, y });
                 }
-                // Optional: type, cn, ct
+                // Optional: type, cn, ct, roughness
                 if (parts.length >= 5) {
                     const type = parts[2] || 'roca-suave';
                     const cn = parseFloat(parts[3]) || 0.6;
                     const ct = parseFloat(parts[4]) || 0.4;
+                    const roughness = parts[5] !== undefined ? (parseFloat(parts[5]) || 0) : null;
                     const preset = TerrainPresets[type] || TerrainPresets['roca-suave'];
                     this.segments.push({
                         type: type,
                         cn: cn,
                         ct: ct,
-                        color: preset.color
+                        color: preset.color,
+                        roughness: roughness !== null ? roughness : (preset.roughness || 0)
                     });
                 }
             }
@@ -377,7 +396,7 @@ class Terrain {
         if (this.segments.length === 0 && this.points.length >= 2) {
             for (let i = 0; i < this.points.length - 1; i++) {
                 const preset = TerrainPresets['roca-suave'];
-                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color });
+                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
             }
         }
     }

@@ -56,13 +56,14 @@ class WorkerTerrain {
                 if (mat) {
                     return {
                         cn: mat.cn !== undefined ? mat.cn : defaultCn,
-                        ct: mat.ct !== undefined ? mat.ct : defaultCt
+                        ct: mat.ct !== undefined ? mat.ct : defaultCt,
+                        roughness: mat.roughness !== undefined ? mat.roughness : 0
                     };
                 }
                 break;
             }
         }
-        return { cn: defaultCn, ct: defaultCt };
+        return { cn: defaultCn, ct: defaultCt, roughness: 0 };
     }
 
     _findSegmentIndex(x) {
@@ -107,6 +108,13 @@ class WorkerRock {
 
         // Generate shape vertices
         this.shape = this._generateShape(shapeType, aspectRatio);
+
+        // Fragmentation properties
+        this.id = null;
+        this.generation = 0;
+        this.parentId = null;
+        this.isFragmented = false;
+        this._lastCollision = null;
     }
 
     _generateShape(type, ar) {
@@ -154,7 +162,29 @@ class WorkerRock {
         this.bounces++;
 
         const normal = terrain.getSurfaceNormalAt(this.x);
-        const vn = this.vx * normal.nx + this.vy * normal.ny;
+
+        // Fetch segment properties including cn, ct and roughness!
+        const segProps = terrain.getSegmentPropertiesAt(this.x, cn, ct);
+        const segCn = segProps.cn;
+        const segCt = segProps.ct;
+        const roughness = segProps.roughness || 0;
+
+        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
+        let rnx = normal.nx;
+        let rny = normal.ny;
+        if (roughness > 0) {
+            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
+            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
+            if (proposedRny > 0) {
+                rnx = proposedRnx;
+                rny = proposedRny;
+            }
+        }
+
+        const vn = this.vx * rnx + this.vy * rny;
 
         if (vn >= 0) return;
 
@@ -162,11 +192,11 @@ class WorkerRock {
         const impactSpeed = Math.abs(vn);
         if (impactSpeed > this.maxImpactVelocity) this.maxImpactVelocity = impactSpeed;
 
-        const vtX = this.vx - vn * normal.nx;
-        const vtY = this.vy - vn * normal.ny;
+        const vtX = this.vx - vn * rnx;
+        const vtY = this.vy - vn * rny;
 
-        this.vx = -cn * vn * normal.nx + ct * vtX;
-        this.vy = -cn * vn * normal.ny + ct * vtY;
+        this.vx = -segCn * vn * rnx + segCt * vtX;
+        this.vy = -segCn * vn * rny + segCt * vtY;
 
         this.y = terrainY + 0.01;
 
@@ -174,6 +204,9 @@ class WorkerRock {
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
         if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
         this.impactEnergies.push(keBefore / 1000);
+
+        // Save for fragmentation check
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
 
         const bounceH = this.y - terrainY;
         if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
@@ -238,6 +271,9 @@ class WorkerRock {
         this.x += nx * (penetration + 0.01);
         this.y += ny * (penetration + 0.01);
         this.bounces++;
+
+        // Save for fragmentation check
+        this._lastCollision = { normal: { nx: nx, ny: ny }, vn: vn };
     }
 }
 
@@ -263,10 +299,25 @@ function runWorkerSimulation(msg) {
     const maxDuration = config.maxDuration || 30;
     const stepsPerTick = config.animationSpeed || 50;
 
+    const fragmentationEnabled = config.fragmentationEnabled !== undefined ? config.fragmentationEnabled : true;
+    const fractureEnergy = config.fractureEnergy !== undefined ? config.fractureEnergy : 25000;
+    const fractureDissipation = config.fractureDissipation !== undefined ? config.fractureDissipation : 0.4;
+
     // Create rocks
-    const rocks = rockConfigs.map(rc => new WorkerRock(
-        rc.x, rc.y, rc.diameter, rc.density, rc.velocity, rc.angle, rc.shapeType, rc.aspectRatio
-    ));
+    let workerNextRockId = 1;
+    const rocks = rockConfigs.map(rc => {
+        const r = new WorkerRock(
+            rc.x, rc.y, rc.diameter, rc.density, rc.velocity, rc.angle, rc.shapeType, rc.aspectRatio
+        );
+        r.id = rc.id !== undefined ? rc.id : workerNextRockId++;
+        r.generation = rc.generation !== undefined ? rc.generation : 0;
+        r.parentId = rc.parentId !== undefined ? rc.parentId : null;
+        r.isFragmented = rc.isFragmented !== undefined ? rc.isFragmented : false;
+        if (rc.id !== undefined && typeof rc.id === 'number' && rc.id >= workerNextRockId) {
+            workerNextRockId = rc.id + 1;
+        }
+        return r;
+    });
 
     const totalRocks = rocks.length;
     let simulatedCount = 0;
@@ -278,15 +329,20 @@ function runWorkerSimulation(msg) {
     while (!allDone) {
         let activeCount = 0;
 
-        for (const rock of rocks) {
+        for (let i = 0; i < rocks.length; i++) {
+            const rock = rocks[i];
             if (rock.isResting) continue;
 
             activeCount++;
+            let rockChildren = null;
 
             for (let s = 0; s < stepsPerTick; s++) {
+                // Reset collision tracking at each sub-step
+                rock._lastCollision = null;
+
                 const subSteps = 3;
                 const subDt = dt / subSteps;
-                for (let i = 0; i < subSteps; i++) {
+                for (let j = 0; j < subSteps; j++) {
                     rock.update(subDt, gravity);
                     rock.handleCollision(terrain, cn, ct);
                     if (!rock.isResting && barriers && barriers.length > 0) {
@@ -298,6 +354,19 @@ function runWorkerSimulation(msg) {
                 rock.stepsTaken++;
                 rock.elapsedTime += dt;
 
+                // Check for fragmentation after collision
+                if (fragmentationEnabled && rock._lastCollision) {
+                    const { normal, vn } = rock._lastCollision;
+                    const impactEnergy = 0.5 * rock.mass * vn * vn;
+                    if (impactEnergy > fractureEnergy && rock.generation < 2 && rock.diameter > 0.15) {
+                        rock.isFragmented = true;
+                        rock.isResting = true;
+                        rockChildren = workerFragmentRock(rock, normal, fractureDissipation, workerNextRockId);
+                        workerNextRockId += rockChildren.length;
+                        break;
+                    }
+                }
+
                 if (rock.isResting) break;
                 if (rock.stepsTaken >= maxSteps) { rock.isResting = true; break; }
                 if (rock.elapsedTime >= maxDuration) { rock.isResting = true; break; }
@@ -308,13 +377,27 @@ function runWorkerSimulation(msg) {
                 rock.finalX = rock.x;
                 rock.finalY = rock.y;
                 simulatedCount++;
+
+                if (rockChildren && rockChildren.length > 0) {
+                    for (const child of rockChildren) {
+                        rocks.push(child);
+                    }
+                }
             }
         }
 
         // Send frame snapshot
         frameCounter++;
         if (frameCounter % 3 === 0) {
-            const frame = rocks.map(r => ({ x: r.x, y: r.y, rotation: r.rotation, isResting: r.isResting }));
+            const frame = rocks.map(r => ({
+                id: r.id,
+                x: r.x,
+                y: r.y,
+                rotation: r.rotation,
+                isResting: r.isResting,
+                parentId: r.parentId,
+                isFragmented: r.isFragmented
+            }));
             self.postMessage({ type: 'frame', frame });
         }
 
@@ -324,11 +407,16 @@ function runWorkerSimulation(msg) {
             data: { simulatedCount, totalRocks, progress: simulatedCount / totalRocks }
         });
 
-        allDone = activeCount === 0 || simulatedCount >= totalRocks;
+        // Loop dynamically adapts to the updated rocks array length!
+        allDone = activeCount === 0;
     }
 
     // Serialize rock results
     const results = rocks.map(r => ({
+        id: r.id,
+        generation: r.generation,
+        parentId: r.parentId,
+        isFragmented: r.isFragmented,
         x: r.x, y: r.y,
         vx: r.vx, vy: r.vy,
         diameter: r.diameter,
@@ -352,4 +440,82 @@ function runWorkerSimulation(msg) {
     }));
 
     self.postMessage({ type: 'complete', rocks: results });
+}
+
+function workerFragmentRock(rock, normal, fractureDissipation, startId) {
+    const N = Math.random() < 0.5 ? 2 : 3;
+    const childMasses = [];
+    const parentMass = rock.mass;
+
+    if (N === 2) {
+        const f = 0.55 + Math.random() * 0.15;
+        const m1 = f * parentMass;
+        const m2 = parentMass - m1;
+        childMasses.push(m1, m2);
+    } else {
+        const f1 = 0.50 + Math.random() * 0.15;
+        const m1 = f1 * parentMass;
+        const remainder = parentMass - m1;
+        const f2 = 0.50 + Math.random() * 0.15;
+        const m2 = f2 * remainder;
+        const m3 = remainder - m2;
+        childMasses.push(m1, m2, m3);
+    }
+
+    const vxReflected = rock.vx;
+    const vyReflected = rock.vy;
+
+    const E_reflected = 0.5 * parentMass * (vxReflected * vxReflected + vyReflected * vyReflected);
+    const E_target = E_reflected * (1 - fractureDissipation);
+
+    const childVBase = [];
+    let sumKeBase = 0;
+
+    for (let i = 0; i < N; i++) {
+        const alpha = (Math.random() * 2 - 1) * 15 * Math.PI / 180;
+        const cosAlpha = Math.cos(alpha);
+        const sinAlpha = Math.sin(alpha);
+        const vbx = vxReflected * cosAlpha - vyReflected * sinAlpha;
+        const vby = vxReflected * sinAlpha + vyReflected * cosAlpha;
+        childVBase.push({ vx: vbx, vy: vby });
+
+        sumKeBase += 0.5 * childMasses[i] * (vbx * vbx + vby * vby);
+    }
+
+    let S = 1.0;
+    if (sumKeBase > 0 && E_target > 0) {
+        S = Math.sqrt(E_target / sumKeBase);
+    }
+
+    const tx = -normal.ny;
+    const ty = normal.nx;
+
+    const children = [];
+    for (let i = 0; i < N; i++) {
+        const childMass = childMasses[i];
+        const childArea = childMass / rock.density;
+        const childRadius = Math.sqrt(childArea / Math.PI);
+        const childDiameter = childRadius * 2;
+
+        const offsetFactor = (i - (N - 1) / 2) * childDiameter * 0.8;
+        const cx = rock.x + tx * offsetFactor;
+        const cy = rock.y + ty * offsetFactor;
+
+        const child = new WorkerRock(
+            cx, cy, childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
+        );
+
+        child.vx = childVBase[i].vx * S;
+        child.vy = childVBase[i].vy * S;
+        child.angularVelocity = rock.angularVelocity * (0.8 + Math.random() * 0.4);
+
+        child.mass = childMass;
+        child.id = startId + i;
+        child.parentId = rock.id;
+        child.generation = rock.generation + 1;
+
+        children.push(child);
+    }
+
+    return children;
 }

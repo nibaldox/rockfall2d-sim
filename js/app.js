@@ -67,6 +67,7 @@ class App {
         this.setupKeyboardShortcuts();
         this.setupBarrierControls();
         this.setupDashboardControls();
+        this.setupStlControls();
         this.setupResize();
         this.loadDefaultTerrain();
         this.renderer.resize();
@@ -76,8 +77,11 @@ class App {
     setupTabs() {
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
+                const tabName = tab.dataset.tab;
+                this.renderer.activeTab = tabName; // Sync active tab with renderer
+
                 // Special handling for results tab
-                if (tab.dataset.tab === 'results') {
+                if (tabName === 'results') {
                     this.showResultsTab();
                     return;
                 }
@@ -85,7 +89,10 @@ class App {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
-                document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+                document.getElementById(`tab-${tabName}`).classList.add('active');
+
+                // Render immediately to refresh canvas view
+                this.render();
             });
         });
     }
@@ -321,6 +328,25 @@ class App {
             this.render();
         });
 
+        // Listen for change and input events on #segment-roughness
+        const roughnessSlider = document.getElementById('segment-roughness');
+        const roughnessVal = document.getElementById('segment-roughness-val');
+        if (roughnessSlider && roughnessVal) {
+            const handleInput = () => {
+                const val = parseInt(roughnessSlider.value) || 0;
+                roughnessVal.textContent = `${val}°`;
+                if (this.selectedSegmentIndex >= 0 && this.terrain.segments[this.selectedSegmentIndex]) {
+                    this.terrain.segments[this.selectedSegmentIndex].roughness = val;
+                }
+            };
+            roughnessSlider.addEventListener('input', handleInput);
+            roughnessSlider.addEventListener('change', () => {
+                handleInput();
+                this.render();
+                this.updateSegmentsList();
+            });
+        }
+
         // Set initial range values
         this.segFrom.value = 0;
         this.segTo.value = 0;
@@ -347,11 +373,28 @@ class App {
                     <span class="segment-color" style="background:${seg.color}"></span>
                     <span class="segment-idx">${i}</span>
                     <span class="segment-type">${label}</span>
-                    <span class="segment-coeffs">Cn:${seg.cn.toFixed(2)} Ct:${seg.ct.toFixed(2)}</span>
+                    <span class="segment-coeffs">Cn:${seg.cn.toFixed(2)} Ct:${seg.ct.toFixed(2)} Rg:${seg.roughness || 0}°</span>
                 </div>
             `;
         }
         list.innerHTML = html;
+
+        // Show/hide/update roughness editing control based on selectedSegmentIndex
+        const roughnessGroup = document.getElementById('seg-roughness-group');
+        const roughnessSlider = document.getElementById('segment-roughness');
+        const roughnessVal = document.getElementById('segment-roughness-val');
+
+        if (this.selectedSegmentIndex < 0) {
+            if (roughnessGroup) roughnessGroup.style.display = 'none';
+        } else {
+            if (roughnessGroup) roughnessGroup.style.display = 'block';
+            const seg = this.terrain.segments[this.selectedSegmentIndex];
+            if (seg && roughnessSlider && roughnessVal) {
+                const rVal = seg.roughness !== undefined ? seg.roughness : 0;
+                roughnessSlider.value = rVal;
+                roughnessVal.textContent = `${rVal}°`;
+            }
+        }
 
         // Click to select segment
         list.querySelectorAll('.segment-row').forEach(row => {
@@ -448,6 +491,37 @@ class App {
         document.getElementById('correlated-params').addEventListener('change', (e) => {
             this.physics.correlatedParams = e.target.checked;
         });
+
+        // Fragmentation enabled checkbox and sliders
+        const fragEnabled = document.getElementById('fragmentation-enabled');
+        const fragSettingsGroup = document.getElementById('fragmentation-settings-group');
+        const updateFragVisibility = () => {
+            const show = fragEnabled.checked;
+            fragSettingsGroup.style.display = show ? 'block' : 'none';
+            this.physics.fragmentationEnabled = show;
+        };
+        fragEnabled.addEventListener('change', updateFragVisibility);
+        updateFragVisibility();
+
+        // Fracture energy slider
+        const fractureEnergyInput = document.getElementById('fracture-energy');
+        const fractureEnergyVal = document.getElementById('fracture-energy-val');
+        fractureEnergyInput.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value);
+            fractureEnergyVal.textContent = val.toLocaleString() + ' J';
+            this.physics.fractureEnergy = val;
+        });
+        this.physics.fractureEnergy = parseInt(fractureEnergyInput.value);
+
+        // Fracture dissipation slider
+        const fractureDissInput = document.getElementById('fracture-dissipation');
+        const fractureDissVal = document.getElementById('fracture-dissipation-val');
+        fractureDissInput.addEventListener('input', (e) => {
+            const val = parseInt(e.target.value);
+            fractureDissVal.textContent = val + '%';
+            this.physics.fractureDissipation = val / 100;
+        });
+        this.physics.fractureDissipation = parseInt(fractureDissInput.value) / 100;
 
         document.getElementById('anim-speed').addEventListener('input', (e) => {
             document.getElementById('anim-speed-value').textContent = e.target.value + 'x';
@@ -979,7 +1053,11 @@ class App {
     }
 
     setupCanvasInteraction() {
+        this.isDrawingSlice = false;
+
         this.canvas.addEventListener('click', (e) => {
+            if (this.renderer.activeTab === 'stl3d') return; // Guard!
+
             const rect = this.canvas.getBoundingClientRect();
             const cx = e.clientX - rect.left;
             const cy = e.clientY - rect.top;
@@ -993,7 +1071,6 @@ class App {
                 const terrainY = this.terrain.getHeightAt(world.wx);
                 this.releasePoint.x = world.wx;
                 if (this.releaseMode === 'detachment') {
-                    // Snap release point to terrain surface
                     this.releasePoint.y = terrainY;
                 } else {
                     this.releasePoint.y = Math.max(world.wy, terrainY + 2);
@@ -1005,6 +1082,10 @@ class App {
         });
 
         this.canvas.addEventListener('contextmenu', (e) => {
+            if (this.renderer.activeTab === 'stl3d') {
+                e.preventDefault();
+                return;
+            }
             e.preventDefault();
             const rect = this.canvas.getBoundingClientRect();
             const cx = e.clientX - rect.left;
@@ -1023,13 +1104,43 @@ class App {
             const rect = this.canvas.getBoundingClientRect();
             const cx = e.clientX - rect.left;
             const cy = e.clientY - rect.top;
-            const world = this.terrain.canvasToWorld(cx, cy);
-            document.getElementById('cursor-coords').textContent =
-                `X: ${world.wx.toFixed(1)} m | Y: ${world.wy.toFixed(1)} m`;
+
+            if (this.renderer.activeTab === 'stl3d') {
+                if (this.renderer.toStlWorld) {
+                    const stlWorld = this.renderer.toStlWorld(cx, cy);
+                    document.getElementById('cursor-coords').textContent =
+                        `X: ${stlWorld.x.toFixed(1)} m | Y: ${stlWorld.y.toFixed(1)} m`;
+
+                    if (this.isDrawingSlice) {
+                        this.renderer.sliceLine.x2 = stlWorld.x;
+                        this.renderer.sliceLine.y2 = stlWorld.y;
+                        
+                        document.getElementById('stl-slice-x2').value = Math.round(stlWorld.x);
+                        document.getElementById('stl-slice-y2').value = Math.round(stlWorld.y);
+                        this.render();
+                    }
+                }
+            } else {
+                const world = this.terrain.canvasToWorld(cx, cy);
+                document.getElementById('cursor-coords').textContent =
+                    `X: ${world.wx.toFixed(1)} m | Y: ${world.wy.toFixed(1)} m`;
+            }
+
+            // Pan logic
+            if (this.isPanning) {
+                const dx = e.clientX - this.panStart.x;
+                const dy = e.clientY - this.panStart.y;
+                this.terrain.offsetX += dx;
+                this.terrain.offsetY -= dy;
+                this.panStart = { x: e.clientX, y: e.clientY };
+                this.render();
+            }
         });
 
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
+            if (this.renderer.activeTab === 'stl3d') return; // Guard!
+
             const rect = this.canvas.getBoundingClientRect();
             const cx = e.clientX - rect.left;
             const cy = e.clientY - rect.top;
@@ -1046,36 +1157,66 @@ class App {
             this.render();
         });
 
-        // Pan con botón central o Shift+clic izquierdo
+        // Pan or Draw Slice Line
         this.canvas.addEventListener('mousedown', (e) => {
-            if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
-                e.preventDefault();
-                this.isPanning = true;
-                this.panStart = { x: e.clientX, y: e.clientY };
-                this.canvas.style.cursor = 'grabbing';
-            }
-        });
+            const rect = this.canvas.getBoundingClientRect();
+            const cx = e.clientX - rect.left;
+            const cy = e.clientY - rect.top;
 
-        this.canvas.addEventListener('mousemove', (e) => {
-            if (this.isPanning) {
-                const dx = e.clientX - this.panStart.x;
-                const dy = e.clientY - this.panStart.y;
-                this.terrain.offsetX += dx;
-                this.terrain.offsetY -= dy;
-                this.panStart = { x: e.clientX, y: e.clientY };
-                this.render();
+            if (this.renderer.activeTab === 'stl3d') {
+                if (e.button === 0 && !e.shiftKey && this.currentStl && this.renderer.toStlWorld) {
+                    e.preventDefault();
+                    this.isDrawingSlice = true;
+                    const stlWorld = this.renderer.toStlWorld(cx, cy);
+                    
+                    this.renderer.sliceLine.x1 = stlWorld.x;
+                    this.renderer.sliceLine.y1 = stlWorld.y;
+                    this.renderer.sliceLine.x2 = stlWorld.x;
+                    this.renderer.sliceLine.y2 = stlWorld.y;
+                    this.renderer.sliceLine.active = true;
+
+                    document.getElementById('stl-slice-x1').value = Math.round(stlWorld.x);
+                    document.getElementById('stl-slice-y1').value = Math.round(stlWorld.y);
+                    document.getElementById('stl-slice-x2').value = Math.round(stlWorld.x);
+                    document.getElementById('stl-slice-y2').value = Math.round(stlWorld.y);
+                    this.render();
+                }
+            } else {
+                if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+                    e.preventDefault();
+                    this.isPanning = true;
+                    this.panStart = { x: e.clientX, y: e.clientY };
+                    this.canvas.style.cursor = 'grabbing';
+                }
             }
         });
 
         this.canvas.addEventListener('mouseup', (e) => {
-            if (this.isPanning && (e.button === 1 || (e.button === 0))) {
-                this.isPanning = false;
-                this.canvas.style.cursor = 'crosshair';
+            if (this.renderer.activeTab === 'stl3d') {
+                if (this.isDrawingSlice && e.button === 0 && this.renderer.toStlWorld) {
+                    this.isDrawingSlice = false;
+                    const rect = this.canvas.getBoundingClientRect();
+                    const cx = e.clientX - rect.left;
+                    const cy = e.clientY - rect.top;
+                    const stlWorld = this.renderer.toStlWorld(cx, cy);
+                    
+                    this.renderer.sliceLine.x2 = stlWorld.x;
+                    this.renderer.sliceLine.y2 = stlWorld.y;
+                    document.getElementById('stl-slice-x2').value = Math.round(stlWorld.x);
+                    document.getElementById('stl-slice-y2').value = Math.round(stlWorld.y);
+                    this.render();
+                }
+            } else {
+                if (this.isPanning && (e.button === 1 || e.button === 0)) {
+                    this.isPanning = false;
+                    this.canvas.style.cursor = 'crosshair';
+                }
             }
         });
 
         this.canvas.addEventListener('mouseleave', () => {
             this.isPanning = false;
+            this.isDrawingSlice = false;
             this.canvas.style.cursor = 'crosshair';
         });
     }
@@ -1167,7 +1308,10 @@ class App {
             timeStep: clamp(document.getElementById('time-step').value, 0.001, 0.05, 0.005),
             animationSpeed: this.simulation.animationSpeed,
             maxDuration: clamp(document.getElementById('max-duration').value, 1, 600, 30),
-            ignoreResting: document.getElementById('ignore-resting').checked
+            ignoreResting: document.getElementById('ignore-resting').checked,
+            fragmentationEnabled: this.physics.fragmentationEnabled,
+            fractureEnergy: this.physics.fractureEnergy,
+            fractureDissipation: this.physics.fractureDissipation
         };
     }
 
@@ -1323,7 +1467,7 @@ class App {
 
         const terrainData = {
             points: this.terrain.points,
-            segmentMaterials: this.terrain.segmentMaterials || []
+            segmentMaterials: this.terrain.segments || []
         };
 
         const config = {
@@ -1333,7 +1477,10 @@ class App {
             ct: this.simulation.physics.ct,
             maxStepsPerRock: this.simulation.maxStepsPerRock,
             maxDuration: params.maxDuration || 30,
-            animationSpeed: this.simulation.animationSpeed
+            animationSpeed: this.simulation.animationSpeed,
+            fragmentationEnabled: this.physics.fragmentationEnabled,
+            fractureEnergy: this.physics.fractureEnergy,
+            fractureDissipation: this.physics.fractureDissipation
         };
 
         this._worker.onmessage = (e) => {
@@ -1346,18 +1493,19 @@ class App {
             }
 
             if (msg.type === 'frame') {
+                // Store in simulation frames for timeline playback!
+                this.simulation.frames.push(msg.frame);
+
                 // Reconstruct lightweight rock objects for rendering
-                if (!this._workerRocks || this._workerRocks.length !== msg.frame.length) {
-                    this._workerRocks = msg.frame.map(f => ({ isResting: f.isResting }));
-                }
-                for (let i = 0; i < msg.frame.length; i++) {
-                    const f = msg.frame[i];
-                    const r = this._workerRocks[i];
-                    r.x = f.x;
-                    r.y = f.y;
-                    r.rotation = f.rotation;
-                    r.isResting = f.isResting;
-                }
+                this._workerRocks = msg.frame.map(f => ({
+                    id: f.id,
+                    x: f.x,
+                    y: f.y,
+                    rotation: f.rotation,
+                    isResting: f.isResting,
+                    parentId: f.parentId,
+                    isFragmented: f.isFragmented
+                }));
                 this._renderWorkerFrame();
             }
 
@@ -1516,6 +1664,197 @@ class App {
         ctx.fillText('Sin datos', this.histogramCanvas.width / 2 - 20, this.histogramCanvas.height / 2);
 
         this.render();
+    }
+
+    setupStlControls() {
+        const importBtn = document.getElementById('btn-import-stl');
+        const fileInput = document.getElementById('stl-file-input');
+        const upAxisSelect = document.getElementById('stl-up-axis');
+        const sliceX1Input = document.getElementById('stl-slice-x1');
+        const sliceY1Input = document.getElementById('stl-slice-y1');
+        const sliceX2Input = document.getElementById('stl-slice-x2');
+        const sliceY2Input = document.getElementById('stl-slice-y2');
+        const resolutionInput = document.getElementById('stl-resolution-points');
+        const generateBtn = document.getElementById('btn-generate-slice');
+
+        this.stlParser = new SimRocas.StlParser();
+        this.currentStl = null;
+
+        // Label natively triggers the fileInput click, no JS programmatic click needed.
+
+        // File loading
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                try {
+                    const arrayBuffer = event.target.result;
+                    const stlData = this.stlParser.parse(arrayBuffer);
+                    
+                    if (!stlData.triangles || stlData.triangles.length === 0) {
+                        throw new Error('El archivo STL no contiene triángulos válidos o está vacío.');
+                    }
+                    
+                    this.currentStl = stlData;
+                    this.renderer.currentStl = stlData;
+                    
+                    // Show metadata panel
+                    document.getElementById('stl-filename').textContent = file.name;
+                    document.getElementById('stl-tri-count').textContent = (stlData.triangles.length / 9).toLocaleString();
+                    document.getElementById('stl-bounds-x').textContent = `[${stlData.bounds.minX.toFixed(1)}, ${stlData.bounds.maxX.toFixed(1)}] m`;
+                    document.getElementById('stl-bounds-y').textContent = `[${stlData.bounds.minY.toFixed(1)}, ${stlData.bounds.maxY.toFixed(1)}] m`;
+                    document.getElementById('stl-bounds-z').textContent = `[${stlData.bounds.minZ.toFixed(1)}, ${stlData.bounds.maxZ.toFixed(1)}] m`;
+                    
+                    document.getElementById('stl-info').style.display = 'block';
+                    document.querySelectorAll('.stl-controls').forEach(el => el.style.display = 'block');
+                    
+                    // Set default slice line covering the bounding box horizontally
+                    const upAxis = upAxisSelect.value;
+                    let minHX, maxHX, minHY, maxHY;
+                    if (upAxis === 'Y') {
+                        minHX = stlData.bounds.minX;
+                        maxHX = stlData.bounds.maxX;
+                        minHY = stlData.bounds.minZ;
+                        maxHY = stlData.bounds.maxZ;
+                    } else {
+                        minHX = stlData.bounds.minX;
+                        maxHX = stlData.bounds.maxX;
+                        minHY = stlData.bounds.minY;
+                        maxHY = stlData.bounds.maxY;
+                    }
+                    
+                    const sliceLine = {
+                        x1: minHX,
+                        y1: (minHY + maxHY) / 2,
+                        x2: maxHX,
+                        y2: (minHY + maxHY) / 2,
+                        active: true
+                    };
+                    
+                    this.renderer.sliceLine = sliceLine;
+                    this.renderer.stlUpAxis = upAxis;
+                    
+                    // Sync coordinate inputs
+                    sliceX1Input.value = Math.round(sliceLine.x1);
+                    sliceY1Input.value = Math.round(sliceLine.y1);
+                    sliceX2Input.value = Math.round(sliceLine.x2);
+                    sliceY2Input.value = Math.round(sliceLine.y2);
+                    
+                    this.render();
+                } catch (err) {
+                    alert('Error al parsear el archivo STL: ' + err.message);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        // Eje vertical change
+        upAxisSelect.addEventListener('change', () => {
+            if (!this.currentStl) return;
+            const upAxis = upAxisSelect.value;
+            this.renderer.stlUpAxis = upAxis;
+            
+            // Recalculate default slice line with new horizontal mapping
+            let minHX, maxHX, minHY, maxHY;
+            if (upAxis === 'Y') {
+                minHX = this.currentStl.bounds.minX;
+                maxHX = this.currentStl.bounds.maxX;
+                minHY = this.currentStl.bounds.minZ;
+                maxHY = this.currentStl.bounds.maxZ;
+            } else {
+                minHX = this.currentStl.bounds.minX;
+                maxHX = this.currentStl.bounds.maxX;
+                minHY = this.currentStl.bounds.minY;
+                maxHY = this.currentStl.bounds.maxY;
+            }
+            
+            const sliceLine = {
+                x1: minHX,
+                y1: (minHY + maxHY) / 2,
+                x2: maxHX,
+                y2: (minHY + maxHY) / 2,
+                active: true
+            };
+            
+            this.renderer.sliceLine = sliceLine;
+            sliceX1Input.value = Math.round(sliceLine.x1);
+            sliceY1Input.value = Math.round(sliceLine.y1);
+            sliceX2Input.value = Math.round(sliceLine.x2);
+            sliceY2Input.value = Math.round(sliceLine.y2);
+            
+            this.render();
+        });
+
+        // Sync inputs back to slice line
+        const syncInputsToSliceLine = () => {
+            if (!this.currentStl) return;
+            this.renderer.sliceLine.x1 = parseFloat(sliceX1Input.value) || 0;
+            this.renderer.sliceLine.y1 = parseFloat(sliceY1Input.value) || 0;
+            this.renderer.sliceLine.x2 = parseFloat(sliceX2Input.value) || 0;
+            this.renderer.sliceLine.y2 = parseFloat(sliceY2Input.value) || 0;
+            this.render();
+        };
+
+        [sliceX1Input, sliceY1Input, sliceX2Input, sliceY2Input].forEach(inp => {
+            inp.addEventListener('input', syncInputsToSliceLine);
+        });
+
+        // Generate profile
+        generateBtn.addEventListener('click', () => {
+            if (!this.currentStl) {
+                alert('Por favor, carga un archivo STL primero.');
+                return;
+            }
+            
+            const x1 = parseFloat(sliceX1Input.value);
+            const y1 = parseFloat(sliceY1Input.value);
+            const x2 = parseFloat(sliceX2Input.value);
+            const y2 = parseFloat(sliceY2Input.value);
+            const upAxis = upAxisSelect.value;
+            const resolution = parseInt(resolutionInput.value) || 50;
+            
+            if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
+                alert('Coordenadas de corte inválidas.');
+                return;
+            }
+            
+            // Generate sliced 2D profile points
+            const points2D = SimRocas.StlSlicer.slice(
+                this.currentStl.triangles,
+                x1, y1, x2, y2,
+                upAxis,
+                resolution
+            );
+            
+            if (points2D.length === 0) {
+                alert('No se encontraron intersecciones entre la línea de sección y la malla STL. Verifica que tu línea pase por dentro de la topografía.');
+                return;
+            }
+            
+            // Set the new points to active terrain!
+            this.terrain.setPoints(points2D);
+            
+            // Clear current simulation state/rocks
+            this.resetSimulation();
+            
+            // Redirect user back to the 2D Terrain tab
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector('[data-tab="terrain"]').classList.add('active');
+            document.getElementById('tab-terrain').classList.add('active');
+            
+            this.renderer.activeTab = 'terrain';
+            
+            // Scale and draw new profile
+            this.renderer.autoScale();
+            this.updateTerrainInfo();
+            this.updateSegmentsList();
+            this.render();
+            
+            alert(`Perfil 2D generado exitosamente con ${points2D.length} puntos. ¡Listo para configurar parámetros y ejecutar la simulación!`);
+        });
     }
 
     render() {

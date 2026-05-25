@@ -18,6 +18,10 @@
  *   - Moreau (1988) "Numerical analysis of the unilateral contact problem"
  */
 
+const _global = typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : self);
+_global.SimRocas = _global.SimRocas || {};
+_global.SimRocas.nextRockId = _global.SimRocas.nextRockId || 1;
+
 class Rock {
     /**
      * @param {number} x - Release X coordinate (m)
@@ -86,6 +90,13 @@ class Rock {
         this._colorActive = `rgba(${c.r | 0}, ${c.g | 0}, ${c.b | 0}, 0.9)`;
         this._colorResting = `rgba(${c.r | 0}, ${c.g | 0}, ${c.b | 0}, 0.5)`;
         this._colorStroke = `rgba(${Math.min(255, (c.r | 0) + 40)}, ${Math.min(255, (c.g | 0) + 40)}, ${Math.min(255, (c.b | 0) + 40)}, 0.54)`;
+
+        // Fragmentation properties
+        this.id = _global.SimRocas.nextRockId++;
+        this.generation = 0;
+        this.parentId = null;
+        this.isFragmented = false;
+        this._lastCollision = null;
     }
 
     /**
@@ -492,6 +503,9 @@ class Rock {
         this.bounces++;
         const keBefore = 0.5 * this.mass * (vn * vn);
         this.impactEnergies.push(keBefore / 1000);
+
+        // Save for fragmentation check
+        this._lastCollision = { normal: { nx: nx, ny: ny }, vn: vn };
     }
 
     /**
@@ -512,19 +526,40 @@ class Rock {
         this.bounces++;
 
         const normal = terrain.getSurfaceNormalAt(this.x);
-        const vn = this.vx * normal.nx + this.vy * normal.ny;
+
+        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
+        let rnx = normal.nx;
+        let rny = normal.ny;
+        const seg = terrain.getSegmentAt(this.x);
+        if (seg && seg.properties && seg.properties.roughness > 0) {
+            const roughness = seg.properties.roughness;
+            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
+            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
+            if (proposedRny > 0) {
+                rnx = proposedRnx;
+                rny = proposedRny;
+            }
+        }
+
+        const vn = this.vx * rnx + this.vy * rny;
 
         if (vn >= 0) return false;
+
+        // Save for fragmentation check
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
 
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
 
-        const vtX = this.vx - vn * normal.nx;
-        const vtY = this.vy - vn * normal.ny;
+        const vtX = this.vx - vn * rnx;
+        const vtY = this.vy - vn * rny;
 
-        this.vx = -kn * vn * normal.nx + kt * vtX;
-        this.vy = -kn * vn * normal.ny + kt * vtY;
+        this.vx = -kn * vn * rnx + kt * vtX;
+        this.vy = -kn * vn * rny + kt * vtY;
 
         this.y = Math.max(terrainY + 0.01, this.y);
         this._verticesDirty = true;
@@ -589,31 +624,51 @@ class Rock {
         const contactTerrainY = terrain.getHeightAt(contactVertex.x);
         const normal = terrain.getSurfaceNormalAt(contactVertex.x);
 
+        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
+        let rnx = normal.nx;
+        let rny = normal.ny;
+        const seg = terrain.getSegmentAt(contactVertex.x);
+        if (seg && seg.properties && seg.properties.roughness > 0) {
+            const roughness = seg.properties.roughness;
+            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
+            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
+            if (proposedRny > 0) {
+                rnx = proposedRnx;
+                rny = proposedRny;
+            }
+        }
+
         const rx = contactVertex.x - this.x;
         const ry = contactVertex.y - this.y;
 
         const vContactX = this.vx - this.angularVelocity * ry;
         const vContactY = this.vy + this.angularVelocity * rx;
 
-        const vDotN = vContactX * normal.nx + vContactY * normal.ny;
+        const vDotN = vContactX * rnx + vContactY * rny;
         if (vDotN >= 0) return false;
+
+        // Save for fragmentation check
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vDotN };
 
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
 
         // Poisson impact law — normal impulse
-        const rCrossN = rx * normal.ny - ry * normal.nx;
+        const rCrossN = rx * rny - ry * rnx;
         const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
         const jn = -(1 + cn) * vDotN / denom;
 
-        this.vx += jn * normal.nx / this.mass;
-        this.vy += jn * normal.ny / this.mass;
+        this.vx += jn * rnx / this.mass;
+        this.vy += jn * rny / this.mass;
         this.angularVelocity += rCrossN * jn / this.momentOfInertia;
 
         // Coulomb friction cone — tangential impulse
-        const tangentX = -normal.ny;
-        const tangentY = normal.nx;
+        const tangentX = -rny;
+        const tangentY = rnx;
         const newVContactX = this.vx - this.angularVelocity * ry;
         const newVContactY = this.vy + this.angularVelocity * rx;
         const vDotT = newVContactX * tangentX + newVContactY * tangentY;
@@ -685,26 +740,46 @@ class Rock {
         const contactTerrainY = terrain.getHeightAt(contactVertex.x);
         const normal = terrain.getSurfaceNormalAt(contactVertex.x);
 
+        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
+        let rnx = normal.nx;
+        let rny = normal.ny;
+        const seg = terrain.getSegmentAt(contactVertex.x);
+        if (seg && seg.properties && seg.properties.roughness > 0) {
+            const roughness = seg.properties.roughness;
+            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const cosPhi = Math.cos(phi);
+            const sinPhi = Math.sin(phi);
+            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
+            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
+            if (proposedRny > 0) {
+                rnx = proposedRnx;
+                rny = proposedRny;
+            }
+        }
+
         const rx = contactVertex.x - this.x;
         const ry = contactVertex.y - this.y;
 
         const vContactX = this.vx - this.angularVelocity * ry;
         const vContactY = this.vy + this.angularVelocity * rx;
 
-        const vDotN = vContactX * normal.nx + vContactY * normal.ny;
+        const vDotN = vContactX * rnx + vContactY * rny;
         if (vDotN >= 0) return false;
+
+        // Save for fragmentation check
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vDotN };
 
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
 
         if (energyModel === 'energy-ratio') {
-            const vn = this.vx * normal.nx + this.vy * normal.ny;
-            const vtX = this.vx - vn * normal.nx;
-            const vtY = this.vy - vn * normal.ny;
+            const vn = this.vx * rnx + this.vy * rny;
+            const vtX = this.vx - vn * rnx;
+            const vtY = this.vy - vn * rny;
 
-            this.vx = vtX + (-vn * Math.sqrt(energyRatio)) * normal.nx;
-            this.vy = vtY + (-vn * Math.sqrt(energyRatio)) * normal.ny;
+            this.vx = vtX + (-vn * Math.sqrt(energyRatio)) * rnx;
+            this.vy = vtY + (-vn * Math.sqrt(energyRatio)) * rny;
 
             const speedFactor = Math.sqrt(energyRatio);
             this.vx = this.vx * speedFactor;
@@ -712,16 +787,16 @@ class Rock {
             this.angularVelocity *= speedFactor;
         }
         else {
-            const rCrossN = rx * normal.ny - ry * normal.nx;
+            const rCrossN = rx * rny - ry * rnx;
             const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
             const j = -(1 + cn) * vDotN / denom;
 
-            this.vx += j * normal.nx / this.mass;
-            this.vy += j * normal.ny / this.mass;
+            this.vx += j * rnx / this.mass;
+            this.vy += j * rny / this.mass;
             this.angularVelocity += rCrossN * j / this.momentOfInertia;
 
-            const tangentX = -normal.ny;
-            const tangentY = normal.nx;
+            const tangentX = -rny;
+            const tangentY = rnx;
             const newVContactX = this.vx - this.angularVelocity * ry;
             const newVContactY = this.vy + this.angularVelocity * rx;
             const vDotT = newVContactX * tangentX + newVContactY * tangentY;
@@ -852,6 +927,11 @@ class PhysicsEngine {
         this.deformationCoef = 0.01;
         // Parameter correlation
         this.correlatedParams = false;
+
+        // Fragmentation properties
+        this.fragmentationEnabled = true;
+        this.fractureEnergy = 25000;
+        this.fractureDissipation = 0.4;
     }
 
     /**
@@ -893,6 +973,7 @@ class PhysicsEngine {
     simulateStep(rock, terrain, dt, barriers) {
         const subSteps = 3;
         const subDt = dt / subSteps;
+        let spawnedChildren = null;
 
         const cn = this.randomVariation(this.cn, this.cnVariability, 'cn');
         const ct = this.randomVariation(this.ct, this.ctVariability, 'ct');
@@ -900,12 +981,31 @@ class PhysicsEngine {
         const kt = this.randomVariation(this.kt, this.ctVariability, 'ct');
 
         for (let i = 0; i < subSteps; i++) {
+            // Reset collision tracking at each sub-step
+            rock._lastCollision = null;
+
             rock.update(subDt, this.gravity);
             rock.handleCollision(terrain, cn, ct, this.energyModel, this.energyRatio, this.calcMethod, kn, kt);
 
             // Barrier collision (independent of terrain)
             if (!rock.isResting && barriers && barriers.length > 0) {
                 rock.handleBarrierCollisions(barriers);
+            }
+
+            // Check for fragmentation after collision
+            if (this.fragmentationEnabled && rock._lastCollision) {
+                const { normal, vn } = rock._lastCollision;
+                const impactEnergy = 0.5 * rock.mass * vn * vn;
+                if (impactEnergy > this.fractureEnergy && rock.generation < 2 && rock.diameter > 0.15) {
+                    rock.isFragmented = true;
+                    rock.isResting = true;
+                    const children = this.fragmentRock(rock, normal);
+                    if (children && children.length > 0) {
+                        spawnedChildren = spawnedChildren || [];
+                        spawnedChildren.push(...children);
+                    }
+                    break; // stop simulation for this step since it has fragmented
+                }
             }
 
             rock.applyRollingFriction(terrain, this.rollingFriction, subDt, this.rollingModel, this.deformationCoef, this.calcMethod);
@@ -917,6 +1017,87 @@ class PhysicsEngine {
                 break;
             }
         }
+
+        return spawnedChildren;
+    }
+
+    fragmentRock(rock, normal) {
+        const N = Math.random() < 0.5 ? 2 : 3;
+        const childMasses = [];
+        const parentMass = rock.mass;
+
+        if (N === 2) {
+            const f = 0.55 + Math.random() * 0.15;
+            const m1 = f * parentMass;
+            const m2 = parentMass - m1;
+            childMasses.push(m1, m2);
+        } else {
+            const f1 = 0.50 + Math.random() * 0.15;
+            const m1 = f1 * parentMass;
+            const remainder = parentMass - m1;
+            const f2 = 0.50 + Math.random() * 0.15;
+            const m2 = f2 * remainder;
+            const m3 = remainder - m2;
+            childMasses.push(m1, m2, m3);
+        }
+
+        const vxReflected = rock.vx;
+        const vyReflected = rock.vy;
+
+        const E_reflected = 0.5 * parentMass * (vxReflected * vxReflected + vyReflected * vyReflected);
+        const E_target = E_reflected * (1 - this.fractureDissipation);
+
+        const childVBase = [];
+        let sumKeBase = 0;
+
+        for (let i = 0; i < N; i++) {
+            const alpha = (Math.random() * 2 - 1) * 15 * Math.PI / 180;
+            const cosAlpha = Math.cos(alpha);
+            const sinAlpha = Math.sin(alpha);
+            const vbx = vxReflected * cosAlpha - vyReflected * sinAlpha;
+            const vby = vxReflected * sinAlpha + vyReflected * cosAlpha;
+            childVBase.push({ vx: vbx, vy: vby });
+
+            sumKeBase += 0.5 * childMasses[i] * (vbx * vbx + vby * vby);
+        }
+
+        let S = 1.0;
+        if (sumKeBase > 0 && E_target > 0) {
+            S = Math.sqrt(E_target / sumKeBase);
+        }
+
+        const tx = -normal.ny;
+        const ty = normal.nx;
+
+        const children = [];
+        for (let i = 0; i < N; i++) {
+            const childMass = childMasses[i];
+            const childArea = childMass / rock.density;
+            const childRadius = Math.sqrt(childArea / Math.PI);
+            const childDiameter = childRadius * 2;
+
+            const offsetFactor = (i - (N - 1) / 2) * childDiameter * 0.8;
+            const cx = rock.x + tx * offsetFactor;
+            const cy = rock.y + ty * offsetFactor;
+
+            const child = this.createRock(
+                cx, cy, childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
+            );
+
+            child.vx = childVBase[i].vx * S;
+            child.vy = childVBase[i].vy * S;
+            child.angularVelocity = rock.angularVelocity * (0.8 + Math.random() * 0.4);
+
+            child.mass = childMass;
+            child.momentOfInertia = child.computeMomentOfInertia();
+
+            child.parentId = rock.id;
+            child.generation = rock.generation + 1;
+
+            children.push(child);
+        }
+
+        return children;
     }
 
     /**

@@ -40,6 +40,7 @@
                     <button class="tab active" data-tab="terrain">Perfil Terreno</button>
                     <button class="tab" data-tab="barriers">Barreras</button>
                     <button class="tab" data-tab="parameters">Parámetros</button>
+                    <button class="tab" data-tab="stl3d">Topografía 3D</button>
                     <button class="tab" data-tab="results">Resultados</button>
                 </nav>
 
@@ -116,6 +117,13 @@
                         <div class="control-group">
                             <label data-tooltip="Lista de segmentos con su tipo de material y coeficientes. Haz clic para seleccionar un segmento.">Segmentos:</label>
                             <div id="segments-list" class="segments-list"></div>
+                        </div>
+                        <div class="control-group" id="seg-roughness-group" style="display:none; margin-top:8px; border-top: 1px solid var(--border-subtle); padding-top:8px;">
+                            <label data-tooltip="Define la rugosidad geológica estocástica del segmento seleccionado (tipo CRSP). 0° = perfectamente liso, valores de hasta 30° desvían estocásticamente el rebote.">Rugosidad del segmento seleccionado:</label>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <input type="range" id="segment-roughness" min="0" max="30" step="1" value="0" style="flex:1;">
+                                <span id="segment-roughness-val" style="font-family:monospace; min-width:30px; text-align:right;">0°</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -298,6 +306,27 @@
                     </div>
 
                     <div class="section">
+                        <h3>Fragmentación de Bloques</h3>
+                        <div class="control-group">
+                            <label class="checkbox-label" data-tooltip="Permite que los bloques grandes de roca se rompan en fragmentos más pequeños al impactar con alta energía.">
+                                <input type="checkbox" id="fragmentation-enabled" checked> Habilitar Fragmentación
+                            </label>
+                        </div>
+                        <div class="control-group" id="fragmentation-settings-group">
+                            <div style="margin-bottom: 10px;">
+                                <label data-tooltip="Energía cinética normal de impacto mínima requerida para romper el bloque.">Umbral de Energía Crítica (J):</label>
+                                <input type="range" id="fracture-energy" min="1000" max="100000" step="1000" value="25000">
+                                <span id="fracture-energy-val" class="value-display">25,000 J</span>
+                            </div>
+                            <div>
+                                <label data-tooltip="Porcentaje de la energía cinética del bloque que se disipa durante el proceso de rotura.">Disipación por Rotura (%):</label>
+                                <input type="range" id="fracture-dissipation" min="0" max="90" step="5" value="40">
+                                <span id="fracture-dissipation-val" class="value-display">40%</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section">
                         <h3>Configuración Simulación</h3>
                         <div class="control-group">
                             <label data-tooltip="Cantidad total de rocas a simular. Más rocas = estadísticas más confiables pero mayor tiempo de cálculo.">Número de rocas:</label>
@@ -343,6 +372,57 @@
                             <button id="btn-run" class="btn btn-primary" data-tooltip="Inicia la simulación con los parámetros configurados.">▶ Ejecutar</button>
                             <button id="btn-stop" class="btn btn-warning" disabled data-tooltip="Detiene la simulación en curso.">⏸ Detener</button>
                             <button id="btn-reset" class="btn" data-tooltip="Reinicia la simulación y limpia todos los resultados.">↺ Reset</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-stl3d">
+                    <div class="section">
+                        <h3>Cargar Topografía 3D (STL)</h3>
+                        <p class="help-text">Carga una topografía en 3D en formato STL (ASCII o binario) para extraer una sección de corte geológica.</p>
+                        <div class="control-group">
+                            <label id="btn-import-stl" for="stl-file-input" class="btn btn-primary" style="display: block; text-align: center; cursor: pointer; width: 100%;" data-tooltip="Carga un archivo de topografía 3D en formato .stl">📂 Cargar STL 3D</label>
+                            <input type="file" id="stl-file-input" accept=".stl" style="display:none">
+                        </div>
+                        <div id="stl-info" class="stl-info-panel" style="display:none;">
+                            <div><strong>Archivo:</strong> <span id="stl-filename">-</span></div>
+                            <div><strong>Triángulos:</strong> <span id="stl-tri-count">0</span></div>
+                            <div><strong>Límites X:</strong> <span id="stl-bounds-x">-</span></div>
+                            <div><strong>Límites Y:</strong> <span id="stl-bounds-y">-</span></div>
+                            <div><strong>Límites Z:</strong> <span id="stl-bounds-z">-</span></div>
+                        </div>
+                        <div class="control-group stl-controls" style="display:none; margin-top:12px;">
+                            <label data-tooltip="Define qué eje representa la altura vertical en tu archivo STL. Z es estándar en CAD, Y es común en otros programas.">Eje vertical:</label>
+                            <select id="stl-up-axis">
+                                <option value="Z">Eje Z (Estándar CAD)</option>
+                                <option value="Y">Eje Y (Estándar OpenGL/Blender)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="section stl-controls" style="display:none;">
+                        <h3>Sección de Corte 2.5D</h3>
+                        <p class="help-text">Define los extremos A y B del plano de corte en la proyección horizontal (planta) pulsando y arrastrando directamente en el canvas.</p>
+                        <div class="control-group">
+                            <label>Punto A (m):</label>
+                            <div class="coord-inputs">
+                                <input type="number" id="stl-slice-x1" placeholder="X1 (m)" step="1">
+                                <input type="number" id="stl-slice-y1" placeholder="Y1 (m)" step="1">
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Punto B (m):</label>
+                            <div class="coord-inputs">
+                                <input type="number" id="stl-slice-x2" placeholder="X2 (m)" step="1">
+                                <input type="number" id="stl-slice-y2" placeholder="Y2 (m)" step="1">
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Número de puntos de muestreo a lo largo del perfil 2D generado. 50 es ideal para rendimiento.">Puntos de resolución (2D):</label>
+                            <input type="number" id="stl-resolution-points" value="50" min="10" max="200" step="5">
+                        </div>
+                        <div class="button-row">
+                            <button id="btn-generate-slice" class="btn btn-success" style="width: 100%;" data-tooltip="Interseca la línea de sección con los triángulos de la malla y genera un perfil 2D continuo.">✂️ Generar Perfil 2D</button>
                         </div>
                     </div>
                 </div>
@@ -502,6 +582,7 @@
     </div>
 
     <script src="js/terrain.js"></script>
+    <script src="js/stl.js"></script>
     <script src="js/physics.js"></script>
     <script src="js/simulation.js"></script>
     <script src="js/renderer.js"></script>

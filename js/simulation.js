@@ -37,6 +37,11 @@ class Simulation {
         this.maxDuration = params.maxDuration || 30;
         this.maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
         this.ignoreResting = !!params.ignoreResting;
+
+        // Sync fragmentation properties
+        this.physics.fragmentationEnabled = params.fragmentationEnabled !== undefined ? params.fragmentationEnabled : true;
+        this.physics.fractureEnergy = params.fractureEnergy !== undefined ? params.fractureEnergy : 25000;
+        this.physics.fractureDissipation = params.fractureDissipation !== undefined ? params.fractureDissipation : 0.4;
     }
 
     start(releaseX, releaseY, diameter, density, initialVelocity, angle, maxDuration, ignoreResting, shapeType, aspectRatio, releaseMode, multiReleasePoints) {
@@ -111,12 +116,18 @@ class Simulation {
         const stepsPerRock = this.animationSpeed;
 
         let writeIdx = 0;
+        const allNewChildren = [];
 
         for (let i = 0; i < this.activeRocks.length; i++) {
             const rock = this.activeRocks[i];
+            let rockChildren = null;
 
             for (let s = 0; s < stepsPerRock; s++) {
-                this.physics.simulateStep(rock, this.terrain, this.physics.dt, this.barriers);
+                const spawned = this.physics.simulateStep(rock, this.terrain, this.physics.dt, this.barriers);
+                if (spawned) {
+                    rockChildren = rockChildren || [];
+                    rockChildren.push(...spawned);
+                }
                 rock.stepsTaken++;
                 rock.elapsedTime += this.physics.dt;
 
@@ -134,12 +145,23 @@ class Simulation {
             if (rock.isResting) {
                 this.finishedRocks.push(rock);
                 this.simulatedCount++;
+                if (rockChildren && rockChildren.length > 0) {
+                    allNewChildren.push(...rockChildren);
+                }
             } else {
                 this.activeRocks[writeIdx++] = rock;
             }
         }
 
         this.activeRocks.length = writeIdx;
+
+        // Push new child rocks to activeRocks and total list
+        if (allNewChildren.length > 0) {
+            for (const child of allNewChildren) {
+                this.activeRocks.push(child);
+                this.rocks.push(child);
+            }
+        }
 
         this.recordFrame();
 
@@ -151,7 +173,7 @@ class Simulation {
             });
         }
 
-        if (this.simulatedCount >= this.totalRocks || this.activeRocks.length === 0) {
+        if (this.activeRocks.length === 0) {
             this.isRunning = false;
             if (this.onComplete) {
                 this.onComplete(this.rocks);
@@ -173,7 +195,13 @@ class Simulation {
         const snapshot = new Array(this.rocks.length);
         for (let i = 0; i < this.rocks.length; i++) {
             const r = this.rocks[i];
-            snapshot[i] = { x: r.x, y: r.y, rotation: r.rotation, isResting: r.isResting };
+            snapshot[i] = {
+                x: r.x,
+                y: r.y,
+                rotation: r.rotation,
+                isResting: r.isResting,
+                isFragmented: r.isFragmented
+            };
         }
         this.frames.push(snapshot);
     }

@@ -933,3 +933,30 @@ body, header, .sidebar, .canvas-area, .tab, .btn, .stat-card,
     background: var(--border-default);
     border-radius: 3px;
 }
+
+/* --- STL 3D Tab Styles --- */
+.stl-info-panel {
+    margin-top: 8px;
+    padding: 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-primary);
+}
+
+.stl-info-panel div {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.stl-info-panel div:last-child {
+    margin-bottom: 0;
+}
+
+.stl-info-panel strong {
+    color: var(--text-secondary);
+}
+
