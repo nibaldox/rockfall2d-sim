@@ -26,7 +26,8 @@ Abrir: `http://localhost:8080`
 - Zoom con scroll del mouse
 - Pan con botón central o Shift+clic
 - Botón "Reset Vista" para ajustar automáticamente
-- Editor de segmentos: asignar material (roca, suelo, vegetación, relleno, concreto, asfalto) por tramo
+- Editor de segmentos: asignar material (roca, suelo, vegetación, relleno, concreto, asfalto) por tramo y calibrar su rugosidad geológica
+- **Topografía 3D (STL)**: Importar archivos STL (ASCII y Binario) con proyección interactiva en planta 2D. Permite trazar planos de sección transversal y generar perfiles 2D optimizados de exactamente N puntos (envolvente de altura máxima y suavizado por interpolación lineal).
 
 ### Motor de física
 
@@ -50,6 +51,8 @@ Características del motor:
 - Dos modelos de disipación de energía: impulso clásico y energy ratio
 - Variabilidad Monte Carlo en coeficientes de restitución
 - 3 sub-steps por timestep para estabilidad numérica
+- **Rugosidad Geológica Estocástica (tipo CRSP)**: Permite asignar a cada tramo del talud un ángulo de rugosidad en grados ($\theta_r$, de $0^\circ$ a $30^\circ$). Al colisionar, el vector normal de contacto se rota estocásticamente de forma acotada por $\pm\theta_r$. La normal real se mantiene pura en cálculos estáticos para evitar vibraciones artificiales de rocas en reposo.
+- **Fragmentación de Bloques Fractal (tipo CRSP)**: Al ocurrir impactos de alta energía normal ($E_{k,n} > E_{crit}$), el bloque se fragmenta dinámicamente en $2$ o $3$ partículas hijas. La masa del padre se divide de forma fractal asimétrica (hijo principal toma $50\%-70\%$, satélites el residuo) conservando estrictamente la masa global. Las velocidades de salida se dispersan en un cono de $\pm 15^\circ$ y se escalan de forma rigurosa para cumplir con la disipación configurada. Posee protección activa contra explosión de memoria (límite de 2 generaciones y diámetro mínimo de $0.15\text{ m}$).
 
 ### Modos de liberación
 - **Caída libre**: la roca se suelta desde una altura definida por el usuario
@@ -126,13 +129,14 @@ rockfall2d-sim/
 ├── css/
 │   └── style.css           # Tema oscuro con CSS variables
 ├── js/
-│   ├── terrain.js          # Perfil topográfico (polilínea 2D, materiales por segmento)
-│   ├── physics.js          # Motor de física (Rock + PhysicsEngine, 3 métodos)
-│   ├── simulation.js       # Controlador de simulación (bucle, lifecycle, frames)
-│   ├── renderer.js         # Renderizado Canvas 2D (terreno, rocas, barreras, mapa prob.)
+│   ├── terrain.js          # Perfil topográfico (polilínea 2D, materiales por segmento, rugosidad)
+│   ├── stl.js              # Parser de mallas STL 3D (ASCII/Binario) y algoritmo de corte 2.5D
+│   ├── physics.js          # Motor de física (Rock + PhysicsEngine, 3 métodos, fragmentación, rugosidad)
+│   ├── simulation.js       # Controlador de simulación (bucle dinámico, lifecycle, frames variable)
+│   ├── renderer.js         # Render Canvas 2D (terreno, rocas, barreras, mapa prob., árboles de trayectoria)
 │   ├── stats.js            # Estadísticas, percentiles, exportación CSV/texto
-│   ├── worker.js           # Web Worker para simulación en hilo separado
-│   └── app.js              # Aplicación principal (UI, eventos, wiring)
+│   ├── worker.js           # Web Worker para simulación Monte Carlo paralela sincronizada
+│   └── app.js              # Aplicación principal (UI, eventos, wiring, timeline variable)
 └── .github/
     └── workflows/
         └── deploy.yml      # GitHub Pages auto-deploy
@@ -147,6 +151,16 @@ Impulso normal:        j = -(1+cn)(v·n) / (1/m + (r×n)²/I)
 Impulso fricción:      j_t = (1-ct)(v·t) / (1/m + (r×t)²/I)
 Δv = j × n / m
 Δω = (r × j) / I
+
+Perturbación de normales (Rugosidad):
+  φ = random(-1, 1) × θ_r × (π / 180)
+  rn_x = n_x cos φ - n_y sin φ
+  rn_y = n_x sin φ + n_y cos φ  (se valida que rn_y > 0)
+
+Conservación de energía en fragmentación:
+  E_target = E_reflected × (1 - β_dissipation)
+  S_scale = sqrt( E_target / Σ( 0.5 × m_hijo_i × v_hijo_base_i² ) )
+  v_hijo_i = S_scale × v_hijo_base_i
 ```
 
 ## Parámetros por defecto
