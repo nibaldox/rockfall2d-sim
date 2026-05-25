@@ -63,14 +63,15 @@ class App {
         this.setupTimelineControls();
         this.setupCanvasInteraction();
         this.setupToolbarControls();
+        this.setupToolbarRight();
         this.setupExportControls();
         this.setupKeyboardShortcuts();
         this.setupBarrierControls();
         this.setupDashboardControls();
         this.setupStlControls();
         this.setupResize();
+        this.renderer.resize();  // Must be before loadDefaultTerrain — sets terrain.canvas
         this.loadDefaultTerrain();
-        this.renderer.resize();
         this.render();
     }
 
@@ -771,6 +772,118 @@ class App {
         });
     }
 
+    /**
+     * Right toolbar (AutoCAD-style) — navigation + editing tools.
+     * Tracks activeTool: 'crosshair' (add) | 'delete' | 'pan'.
+     */
+    setupToolbarRight() {
+        this.activeTool = 'crosshair';
+
+        const setActive = (id) => {
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            if (id) document.getElementById(id).classList.add('active');
+            this.activeTool = id || 'crosshair';
+            // Update canvas cursor
+            const canvas = this.canvas;
+            if (this.activeTool === 'pan') {
+                canvas.style.cursor = 'grab';
+            } else if (this.activeTool === 'delete') {
+                canvas.style.cursor = 'not-allowed';
+            } else {
+                canvas.style.cursor = 'crosshair';
+            }
+        };
+
+        // Zoom +
+        document.getElementById('tool-zoom-in').addEventListener('click', () => {
+            const cx = this.canvas.width / 2;
+            const cy = this.canvas.height / 2;
+            const wx = (cx - this.terrain.offsetX) / this.terrain.scale;
+            const wy = (cy - this.terrain.offsetY) / this.terrain.scale;
+            this.terrain.scale = Math.min(50, this.terrain.scale * 1.3);
+            this.terrain.offsetX = cx - wx * this.terrain.scale;
+            this.terrain.offsetY = cy - wy * this.terrain.scale;
+            this.updateZoomInfo();
+            this.render();
+        });
+
+        // Zoom -
+        document.getElementById('tool-zoom-out').addEventListener('click', () => {
+            const cx = this.canvas.width / 2;
+            const cy = this.canvas.height / 2;
+            const wx = (cx - this.terrain.offsetX) / this.terrain.scale;
+            const wy = (cy - this.terrain.offsetY) / this.terrain.scale;
+            this.terrain.scale = Math.max(0.2, this.terrain.scale / 1.3);
+            this.terrain.offsetX = cx - wx * this.terrain.scale;
+            this.terrain.offsetY = cy - wy * this.terrain.scale;
+            this.updateZoomInfo();
+            this.render();
+        });
+
+        // Pan
+        document.getElementById('tool-pan').addEventListener('click', () => {
+            setActive(this.activeTool === 'pan' ? null : 'tool-pan');
+        });
+
+        // Fit / Reset View
+        document.getElementById('tool-fit').addEventListener('click', () => {
+            this.renderer.autoScale();
+            this.updateZoomInfo();
+            this.render();
+        });
+
+        // Add point mode
+        document.getElementById('tool-add').addEventListener('click', () => {
+            setActive(this.activeTool === 'tool-add' ? null : 'tool-add');
+        });
+
+        // Delete point mode
+        document.getElementById('tool-delete').addEventListener('click', () => {
+            setActive(this.activeTool === 'tool-delete' ? null : 'tool-delete');
+        });
+
+        // Undo
+        document.getElementById('tool-undo').addEventListener('click', () => {
+            if (this.simulation.isRunning) return;
+            if (this.terrain.points.length > 0) {
+                this.terrain.removePoint(this.terrain.points.length - 1);
+                this.updateTerrainInfo();
+                this.updateSegmentsList();
+                this.render();
+            }
+        });
+
+        // Random terrain
+        document.getElementById('tool-random').addEventListener('click', () => {
+            if (this.simulation.isRunning) return;
+            this.terrain.points = [];
+            this.terrain.segments = [];
+            const pts = this.generateRandomTerrain();
+            for (const p of pts) {
+                this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
+            }
+            this.updateTerrainInfo();
+            this.updateSegmentsList();
+            const terrainY = this.terrain.getHeightAt(this.releasePoint.x);
+            this.releasePoint.y = terrainY + 7;
+            document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
+            this.renderer.autoScale();
+            this.updateZoomInfo();
+            this.render();
+        });
+
+        // Play / Simulate
+        document.getElementById('tool-play').addEventListener('click', () => {
+            if (!this.simulation.isRunning) this.runSimulation();
+        });
+
+        // Stop / Reset simulation
+        document.getElementById('tool-stop').addEventListener('click', () => {
+            if (this.simulation.isRunning) this.stopSimulation();
+            else this.resetSimulation();
+        });
+    }
+
     updateZoomInfo() {
         const zoomPercent = Math.round(this.terrain.scale / 2 * 100);
         const el = document.getElementById('zoom-level');
@@ -858,6 +971,27 @@ class App {
                     this.simulation.togglePause();
                     document.getElementById('simulation-status').textContent =
                         this.simulation.isPaused ? 'Pausado' : 'Simulando...';
+                }
+                return;
+            }
+
+            // T — regenerar terreno aleatorio
+            if (e.key === 't' || e.key === 'T') {
+                if (!this.simulation.isRunning) {
+                    this.terrain.points = [];
+                    this.terrain.segments = [];
+                    const defaultPoints = this.generateRandomTerrain();
+                    for (const p of defaultPoints) {
+                        this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
+                    }
+                    this.updateTerrainInfo();
+                    this.updateSegmentsList();
+                    const terrainY = this.terrain.getHeightAt(this.releasePoint.x);
+                    this.releasePoint.y = terrainY + 7;
+                    document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
+                    this.renderer.autoScale();
+                    this.updateZoomInfo();
+                    this.render();
                 }
                 return;
             }
@@ -1064,9 +1198,19 @@ class App {
             const world = this.terrain.canvasToWorld(cx, cy);
 
             if (document.getElementById('tab-terrain').classList.contains('active')) {
-                this.terrain.addPoint(world.wx, world.wy, this.selectedPresetType);
-                this.updateTerrainInfo();
-                this.updateSegmentsList();
+                if (this.activeTool === 'tool-delete') {
+                    const idx = this.terrain.findNearestPoint(cx, cy);
+                    if (idx >= 0) {
+                        this.terrain.removePoint(idx);
+                        this.updateTerrainInfo();
+                        this.updateSegmentsList();
+                    }
+                } else {
+                    // crosshair (add) or pan — add point when not panning
+                    this.terrain.addPoint(world.wx, world.wy, this.selectedPresetType);
+                    this.updateTerrainInfo();
+                    this.updateSegmentsList();
+                }
             } else {
                 const terrainY = this.terrain.getHeightAt(world.wx);
                 this.releasePoint.x = world.wx;
@@ -1182,7 +1326,7 @@ class App {
                     this.render();
                 }
             } else {
-                if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+                if (e.button === 1 || (e.button === 0 && e.shiftKey) || (e.button === 0 && this.activeTool === 'tool-pan')) {
                     e.preventDefault();
                     this.isPanning = true;
                     this.panStart = { x: e.clientX, y: e.clientY };
@@ -1229,33 +1373,68 @@ class App {
         setTimeout(() => this.renderer.resize(), 100);
     }
 
+    /**
+     * Generates a random but geologically coherent terrain profile.
+     * Coherent means: generally descending left-to-right (rockfall slope),
+     * with some irregular steps, backscarps, and flat sections.
+     */
+    generateRandomTerrain() {
+        const points = [];
+        const numSegments = 6 + Math.floor(Math.random() * 5); // 6–10 segments
+        const totalLength = 180 + Math.random() * 60; // 180–240m horizontal
+
+        // Start elevation (left side — higher)
+        let x = 0;
+        let y = 35 + Math.random() * 25; // 35–60m
+
+        points.push({ x, y });
+
+        for (let i = 0; i < numSegments; i++) {
+            const progress = (i + 1) / numSegments;
+            // Target elevation descends as we move right
+            const targetY = 35 + Math.random() * 25 - progress * (30 + Math.random() * 15);
+
+            // Segment type: mostly smooth descent, sometimes a cliff/step
+            const isCliff = Math.random() < 0.25 && i > 0 && i < numSegments - 1;
+            const segLen = (totalLength / numSegments) * (0.5 + Math.random() * 1.0);
+
+            if (isCliff) {
+                // Vertical-ish drop (cliff), then flatter slope
+                x += segLen * 0.15;
+                points.push({ x, y });
+
+                const drop = 4 + Math.random() * 10;
+                y = Math.max(2, y - drop);
+                x += segLen * 0.1;
+                points.push({ x, y });
+
+                y = y + (targetY - y) * 0.6;
+                x += segLen * 0.75;
+            } else {
+                // Smooth or piecewise descent
+                const steps = 1 + Math.floor(Math.random() * 3);
+                for (let s = 0; s < steps; s++) {
+                    x += segLen / steps;
+                    y = y + (targetY - y) * (0.4 + Math.random() * 0.5);
+                    y = Math.max(1, y);
+                    points.push({ x, y });
+                }
+            }
+        }
+
+        // Ensure flat runout at the end
+        x = totalLength;
+        y = 0.5 + Math.random() * 2;
+        points.push({ x, y });
+
+        x = totalLength + 20;
+        points.push({ x, y });
+
+        return points;
+    }
+
     loadDefaultTerrain() {
-        const defaultPoints = [
-            { x: 0, y: 50 },
-            { x: 5, y: 50 },
-            { x: 10, y: 48 },
-            { x: 15, y: 42 },
-            { x: 20, y: 35 },
-            { x: 25, y: 28 },
-            { x: 30, y: 22 },
-            { x: 35, y: 18 },
-            { x: 40, y: 15 },
-            { x: 45, y: 14 },
-            { x: 50, y: 12 },
-            { x: 55, y: 10 },
-            { x: 60, y: 8 },
-            { x: 65, y: 6 },
-            { x: 70, y: 5 },
-            { x: 75, y: 4 },
-            { x: 80, y: 3 },
-            { x: 85, y: 2.5 },
-            { x: 90, y: 2 },
-            { x: 100, y: 1.5 },
-            { x: 120, y: 1 },
-            { x: 150, y: 0.5 },
-            { x: 180, y: 0 },
-            { x: 200, y: 0 }
-        ];
+        const defaultPoints = this.generateRandomTerrain();
 
         for (const p of defaultPoints) {
             this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
@@ -1266,6 +1445,8 @@ class App {
         const terrainY = this.terrain.getHeightAt(this.releasePoint.x);
         this.releasePoint.y = terrainY + 7;
         document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
+        this.renderer.autoScale();
+        this.updateZoomInfo();
     }
 
     updateReleasePoint() {
@@ -1475,6 +1656,13 @@ class App {
             dt: this.simulation.physics.dt,
             cn: this.simulation.physics.cn,
             ct: this.simulation.physics.ct,
+            calcMethod: this.physics.calcMethod,
+            Kn: this.physics.kn,
+            Kt: this.physics.kt,
+            energyModel: this.physics.energyModel,
+            energyRatio: this.physics.energyRatio,
+            rollingResistanceMethod: this.physics.rollingModel,
+            deformationCoef: this.physics.deformationCoef,
             maxStepsPerRock: this.simulation.maxStepsPerRock,
             maxDuration: params.maxDuration || 30,
             animationSpeed: this.simulation.animationSpeed,
@@ -1677,7 +1865,9 @@ class App {
         const resolutionInput = document.getElementById('stl-resolution-points');
         const generateBtn = document.getElementById('btn-generate-slice');
 
-        this.stlParser = new SimRocas.StlParser();
+        this.stlParser = (typeof SimRocas !== 'undefined' && SimRocas.StlParser)
+            ? new SimRocas.StlParser()
+            : null;
         this.currentStl = null;
 
         // Label natively triggers the fileInput click, no JS programmatic click needed.

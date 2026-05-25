@@ -446,6 +446,7 @@ header {
     flex-direction: column;
     background: var(--bg-canvas);
     min-width: 0;
+    position: relative;
 }
 
 .canvas-toolbar {
@@ -483,6 +484,63 @@ header {
     flex: 1;
     cursor: crosshair;
     display: block;
+}
+
+/* --- Right Toolbar (AutoCAD-style) --- */
+.canvas-tools-right {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 4px;
+    z-index: 10;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.tool-btn {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color var(--transition), color var(--transition);
+    padding: 0;
+}
+
+.tool-btn:hover {
+    background: var(--bg-hover);
+    color: var(--accent);
+}
+
+.tool-btn.active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.tool-btn.tool-btn-primary {
+    color: var(--accent);
+}
+
+.tool-btn.tool-btn-primary:hover {
+    background: var(--accent-hover);
+    color: #fff;
+}
+
+.tool-divider {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: 3px 2px;
 }
 
 /* --- Timeline Bar --- */

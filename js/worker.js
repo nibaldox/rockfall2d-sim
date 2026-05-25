@@ -109,6 +109,9 @@ class WorkerRock {
         // Generate shape vertices
         this.shape = this._generateShape(shapeType, aspectRatio);
 
+        // Compute moment of inertia (shoelace formula)
+        this.momentOfInertia = this.computeMomentOfInertia();
+
         // Fragmentation properties
         this.id = null;
         this.generation = 0;
@@ -151,25 +154,70 @@ class WorkerRock {
         return Math.sqrt(this.vx * this.vx + this.vy * this.vy);
     }
 
-    handleCollision(terrain, cn, ct) {
-        if (this.isResting) return;
+    _polygonArea() {
+        const n = this.shape.length;
+        let area = 0;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            area += this.shape[i].x * this.shape[j].y;
+            area -= this.shape[j].x * this.shape[i].y;
+        }
+        return Math.abs(area) / 2;
+    }
 
-        const terrainY = terrain.getHeightAt(this.x);
-        const penetration = terrainY - this.y;
+    computeMomentOfInertia() {
+        const n = this.shape.length;
+        let sum = 0;
+        const rho = this.mass / this._polygonArea();
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            const p1 = this.shape[i];
+            const p2 = this.shape[j];
+            const cross = p1.x * p2.y - p2.x * p1.y;
+            const r1sq = p1.x * p1.x + p1.y * p1.y;
+            const r2sq = p2.x * p2.x + p2.y * p2.y;
+            const dot = p1.x * p2.x + p1.y * p2.y;
+            sum += cross * (r1sq + dot + r2sq);
+        }
+        return Math.abs(rho * sum / 24);
+    }
 
-        if (penetration <= 0) return;
+    _findDeepestPenetrationVertex(terrain) {
+        const cosR = Math.cos(this.rotation);
+        const sinR = Math.sin(this.rotation);
+        let deepestPenetration = 0;
+        let contactIndex = -1;
 
-        this.bounces++;
+        for (let i = 0; i < this.shape.length; i++) {
+            const localX = this.shape[i].x;
+            const localY = this.shape[i].y;
+            const worldX = this.x + localX * cosR - localY * sinR;
+            const worldY = this.y + localX * sinR + localY * cosR;
+            const terrainY = terrain.getHeightAt(worldX);
+            const penetration = terrainY - worldY;
 
-        const normal = terrain.getSurfaceNormalAt(this.x);
+            if (penetration > deepestPenetration) {
+                deepestPenetration = penetration;
+                contactIndex = i;
+            }
+        }
 
-        // Fetch segment properties including cn, ct and roughness!
-        const segProps = terrain.getSegmentPropertiesAt(this.x, cn, ct);
-        const segCn = segProps.cn;
-        const segCt = segProps.ct;
-        const roughness = segProps.roughness || 0;
+        if (contactIndex < 0) return null;
 
-        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
+        const localX = this.shape[contactIndex].x;
+        const localY = this.shape[contactIndex].y;
+        const contactX = this.x + localX * cosR - localY * sinR;
+        const contactY = this.y + localX * sinR + localY * cosR;
+
+        return {
+            contactIndex,
+            contactX,
+            contactY,
+            terrainY: terrain.getHeightAt(contactX)
+        };
+    }
+
+    _applyRoughnessPerturbation(normal, roughness) {
         let rnx = normal.nx;
         let rny = normal.ny;
         if (roughness > 0) {
@@ -183,37 +231,214 @@ class WorkerRock {
                 rny = proposedRny;
             }
         }
+        return { rnx, rny };
+    }
+
+    _workerLumpedMass(terrain, kn, kt) {
+        const terrainY = terrain.getHeightAt(this.x);
+        const penetration = terrainY - this.y;
+        if (penetration <= 0) return;
+
+        this.bounces++;
+
+        const normal = terrain.getSurfaceNormalAt(this.x);
+        const segProps = terrain.getSegmentPropertiesAt(this.x, 0.6, 0.4);
+        const roughness = segProps.roughness || 0;
+        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
 
         const vn = this.vx * rnx + this.vy * rny;
-
         if (vn >= 0) return;
 
         const keBefore = this.kineticEnergy;
-        const impactSpeed = Math.abs(vn);
-        if (impactSpeed > this.maxImpactVelocity) this.maxImpactVelocity = impactSpeed;
+        if (Math.abs(vn) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vn);
 
         const vtX = this.vx - vn * rnx;
         const vtY = this.vy - vn * rny;
 
-        this.vx = -segCn * vn * rnx + segCt * vtX;
-        this.vy = -segCn * vn * rny + segCt * vtY;
+        this.vx = -kn * vn * rnx + kt * vtX;
+        this.vy = -kn * vn * rny + kt * vtY;
 
-        this.y = terrainY + 0.01;
+        this.y = Math.max(terrainY + 0.01, this.y);
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
         if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
         this.impactEnergies.push(keBefore / 1000);
-
-        // Save for fragmentation check
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn };
 
         const bounceH = this.y - terrainY;
         if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
-
         this.bouncePoints.push({ x: this.x, y: this.y });
 
-        // Check resting
+        this._checkRest();
+    }
+
+    _workerRigidBody(terrain, cn, ct, energyModel, energyRatio) {
+        const deepest = this._findDeepestPenetrationVertex(terrain);
+        if (!deepest || deepest.terrainY - deepest.contactY <= 0) return;
+
+        this.bounces++;
+
+        const normal = terrain.getSurfaceNormalAt(deepest.contactX);
+        const segProps = terrain.getSegmentPropertiesAt(deepest.contactX, cn, ct);
+        const roughness = segProps.roughness || 0;
+        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
+
+        const rx = deepest.contactX - this.x;
+        const ry = deepest.contactY - this.y;
+        const vCx = this.vx - this.angularVelocity * ry;
+        const vCy = this.vy + this.angularVelocity * rx;
+        const vDotN = vCx * rnx + vCy * rny;
+        if (vDotN >= 0) return;
+
+        const keBefore = this.kineticEnergy;
+        if (Math.abs(vDotN) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vDotN);
+
+        if (energyModel === 'energy-ratio') {
+            const vn = this.vx * rnx + this.vy * rny;
+            const vtX = this.vx - vn * rnx;
+            const vtY = this.vy - vn * rny;
+            const sf = Math.sqrt(energyRatio);
+            this.vx = vtX * sf - vn * sf * rnx;
+            this.vy = vtY * sf - vn * sf * rny;
+            this.angularVelocity *= sf;
+        } else {
+            const rCrossN = rx * rny - ry * rnx;
+            const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
+            const j = -(1 + cn) * vDotN / denom;
+
+            this.vx += j * rnx / this.mass;
+            this.vy += j * rny / this.mass;
+            this.angularVelocity += rCrossN * j / this.momentOfInertia;
+
+            const tangentX = -rny;
+            const tangentY = rnx;
+            const newVCx = this.vx - this.angularVelocity * ry;
+            const newVCy = this.vy + this.angularVelocity * rx;
+            const vDotT = newVCx * tangentX + newVCy * tangentY;
+            const rCrossT = rx * tangentY - ry * tangentX;
+            const denomT = 1 / this.mass + (rCrossT * rCrossT) / this.momentOfInertia;
+            const jt = (1 - ct) * vDotT / denomT;
+
+            this.vx -= jt * tangentX / this.mass;
+            this.vy -= jt * tangentY / this.mass;
+            this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
+        }
+
+        this.y = deepest.terrainY + 0.01;
+
+        const keAfter = this.kineticEnergy;
+        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
+        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
+        this.impactEnergies.push(keBefore / 1000);
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vDotN };
+
+        const bounceH = this.y - deepest.terrainY;
+        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
+        this.bouncePoints.push({ x: this.x, y: this.y });
+
+        this._checkRest();
+    }
+
+    _workerNonsmooth(terrain, cn, mu) {
+        const deepest = this._findDeepestPenetrationVertex(terrain);
+        if (!deepest || deepest.terrainY - deepest.contactY <= 0) return;
+
+        this.bounces++;
+
+        const normal = terrain.getSurfaceNormalAt(deepest.contactX);
+        const segProps = terrain.getSegmentPropertiesAt(deepest.contactX, cn, mu);
+        const roughness = segProps.roughness || 0;
+        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
+
+        const rx = deepest.contactX - this.x;
+        const ry = deepest.contactY - this.y;
+        const vCx = this.vx - this.angularVelocity * ry;
+        const vCy = this.vy + this.angularVelocity * rx;
+        const vDotN = vCx * rnx + vCy * rny;
+        if (vDotN >= 0) return;
+
+        const keBefore = this.kineticEnergy;
+        if (Math.abs(vDotN) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vDotN);
+
+        const rCrossN = rx * rny - ry * rnx;
+        const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
+        const jn = -(1 + cn) * vDotN / denom;
+
+        this.vx += jn * rnx / this.mass;
+        this.vy += jn * rny / this.mass;
+        this.angularVelocity += rCrossN * jn / this.momentOfInertia;
+
+        const tangentX = -rny;
+        const tangentY = rnx;
+        const newVCx = this.vx - this.angularVelocity * ry;
+        const newVCy = this.vy + this.angularVelocity * rx;
+        const vDotT = newVCx * tangentX + newVCy * tangentY;
+        const rCrossT = rx * tangentY - ry * tangentX;
+        const denomT = 1 / this.mass + (rCrossT * rCrossT) / this.momentOfInertia;
+        const jtFree = -vDotT / denomT;
+        const jtMax = mu * Math.abs(jn);
+        const jt = Math.max(-jtMax, Math.min(jtMax, jtFree));
+
+        this.vx -= jt * tangentX / this.mass;
+        this.vy -= jt * tangentY / this.mass;
+        this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
+
+        this.y = deepest.terrainY + 0.01;
+
+        const keAfter = this.kineticEnergy;
+        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
+        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
+        this.impactEnergies.push(keBefore / 1000);
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vDotN };
+
+        const bounceH = this.y - deepest.terrainY;
+        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
+        this.bouncePoints.push({ x: this.x, y: this.y });
+
+        this._checkRest();
+    }
+
+    _workerEnergyRatio(terrain, cn, energyRatio) {
+        const deepest = this._findDeepestPenetrationVertex(terrain);
+        if (!deepest || deepest.terrainY - deepest.contactY <= 0) return;
+
+        this.bounces++;
+
+        const normal = terrain.getSurfaceNormalAt(deepest.contactX);
+        const segProps = terrain.getSegmentPropertiesAt(deepest.contactX, cn, 0.4);
+        const roughness = segProps.roughness || 0;
+        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
+
+        const vn = this.vx * rnx + this.vy * rny;
+        if (vn >= 0) return;
+
+        const keBefore = this.kineticEnergy;
+        if (Math.abs(vn) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vn);
+
+        const vtX = this.vx - vn * rnx;
+        const vtY = this.vy - vn * rny;
+        const sf = Math.sqrt(energyRatio);
+        this.vx = vtX * sf - vn * sf * rnx;
+        this.vy = vtY * sf - vn * sf * rny;
+        this.angularVelocity *= sf;
+
+        this.y = deepest.terrainY + 0.01;
+
+        const keAfter = this.kineticEnergy;
+        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
+        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
+        this.impactEnergies.push(keBefore / 1000);
+        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn };
+
+        const bounceH = this.y - deepest.terrainY;
+        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
+        this.bouncePoints.push({ x: this.x, y: this.y });
+
+        this._checkRest();
+    }
+
+    _checkRest() {
         if (this.speed < this.restThreshold && !this.ignoreResting) {
             this._restCheckCount++;
             if (this._restCheckCount > 3 || this.bounces > 2) {
@@ -223,6 +448,22 @@ class WorkerRock {
             }
         } else {
             this._restCheckCount = 0;
+        }
+    }
+
+    handleCollision(terrain, cn, ct) {
+        if (this.isResting) return;
+
+        if (!this.calcMethod || this.calcMethod === 'lumped-mass') {
+            this._workerLumpedMass(terrain, this.Kn, this.Kt);
+        } else if (this.calcMethod === 'rigid-body') {
+            this._workerRigidBody(terrain, cn, ct, this.energyModel, this.energyRatio);
+        } else if (this.calcMethod === 'nonsmooth') {
+            this._workerNonsmooth(terrain, cn, ct);
+        } else if (this.calcMethod === 'energy-ratio') {
+            this._workerEnergyRatio(terrain, cn, this.energyRatio);
+        } else {
+            this._workerLumpedMass(terrain, this.Kn, this.Kt);
         }
     }
 
@@ -303,6 +544,13 @@ function runWorkerSimulation(msg) {
     const fractureEnergy = config.fractureEnergy !== undefined ? config.fractureEnergy : 25000;
     const fractureDissipation = config.fractureDissipation !== undefined ? config.fractureDissipation : 0.4;
 
+    // Read physics calculation config
+    const calcMethod = config.calcMethod || 'lumped-mass';
+    const Kn = config.Kn !== undefined ? config.Kn : 0.35;
+    const Kt = config.Kt !== undefined ? config.Kt : 0.75;
+    const energyModel = config.energyModel || 'impulse';
+    const energyRatio = config.energyRatio !== undefined ? config.energyRatio : 0.5;
+
     // Create rocks
     let workerNextRockId = 1;
     const rocks = rockConfigs.map(rc => {
@@ -316,6 +564,12 @@ function runWorkerSimulation(msg) {
         if (rc.id !== undefined && typeof rc.id === 'number' && rc.id >= workerNextRockId) {
             workerNextRockId = rc.id + 1;
         }
+        // Wire physics calculation method and parameters
+        r.calcMethod = calcMethod;
+        r.Kn = Kn;
+        r.Kt = Kt;
+        r.energyModel = energyModel;
+        r.energyRatio = energyRatio;
         return r;
     });
 
