@@ -1,0 +1,39 @@
+# SDD Init — Testing Capabilities
+# SimRocas 2D — 49-rockfall2d-sim
+# Generated: 2026-05-25 (post-repo-reset re-detection)
+
+testing:
+  available: false
+  test_framework: none
+  test_runner: none
+  coverage_tool: none
+  linter: none
+  type_checker: none
+  formatter: none
+  test_layers:
+    unit: false
+    integration: false
+    e2e: false
+
+strict_tdd:
+  enabled: false
+  reason: No test framework present in project — vanilla JS with zero build tools
+  fallback_behavior: Manual browser-based testing required
+
+verification_strategy:
+  method: Manual refresh in browser
+  automation: none available
+  test_feedback_loop:
+    - Edit JS source file
+    - Hard refresh browser (Ctrl+Shift+R to bypass JS cache)
+    - Observe Canvas output / dev console
+  scratch_tests:
+    - scratch/verify_roughness.js   # CRSP roughness validation
+    - scratch/verify_fragmentation.js # Block fragmentation validation
+    note: These are scratchpad scripts, not automated test infrastructure
+
+quality_gates:
+  linter: unavailable
+  type_checker: unavailable
+  formatter: unavailable
+  note: All code style enforced manually via AGENTS.md conventions

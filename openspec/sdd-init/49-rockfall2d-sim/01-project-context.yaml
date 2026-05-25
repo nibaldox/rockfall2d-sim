@@ -1,0 +1,115 @@
+# SDD Init — Project Context
+# SimRocas 2D — 49-rockfall2d-sim
+# Stack: vanilla JS, HTML Canvas, zero dependencies, no build tools
+# Generated: 2026-05-25 (post-repo-reset re-detection)
+
+project:
+  name: 49-rockfall2d-sim
+  type: simulation / visualization
+  language: JavaScript (ES6)
+  stack:
+    runtime: browser (HTML Canvas)
+    dependencies: none
+    build_tools: none
+    bundler: none
+    linter: none
+    test_framework: none
+  ui_language: Spanish (labels, messages, reports)
+  code_identifiers: English
+
+architecture:
+  entry_point: index.html
+  js_load_order: strict order via <script> tags
+  namespace: SimRocas (global)
+  class_per_file: true
+  modules: none (no import/export)
+  worker: js/worker.js (Web Worker for simulation thread)
+  file_layout:
+    - index.html              # Entry point; ~45KB UI scaffolding
+    - css/style.css           # Dark theme, CSS variables
+    - js/terrain.js           # Terrain class, 2D polyline, CRSP roughness per segment
+    - js/physics.js           # Rock + PhysicsEngine, 4 methods, polygon collision, impulse, torque
+    - js/simulation.js         # Simulation controller, main loop, rock lifecycle
+    - js/renderer.js           # Renderer, Canvas 2D drawing, histogram
+    - js/stats.js             # Stats, CSV/text export
+    - js/worker.js             # Web Worker, simulation in separate thread
+    - js/app.js               # App, wiring, UI controls, DOM event handlers
+    - js/stl.js                # STL parser + Slicing (ASCII/Binary), 2.5D profile extraction
+    - js/structural-failure.js # Planar failure (Mohr-Coulomb) + block fragmentation
+
+code_conventions:
+  indentation: 4 spaces (no tabs)
+  classes: PascalCase, one primary class per file, no module exports
+  variables_methods: camelCase
+  constants: inline literals or const declarations
+  quotes: single quotes for strings, template literals for interpolation
+  semicolons: present
+  arrow_functions: event handlers and callbacks
+  dom_access: document.getElementById() directly, no framework
+  error_handling: try/catch with alert() for user-facing errors
+
+physics_conventions:
+  coordinate_system: Y grows UP (topographic convention)
+  physics_substeps: 3 per time step for stability
+  rock_shapes: convex random polygons (5-9 vertices), never concave
+  resting_condition:
+    velocity_threshold: 0.08 m/s
+    angular_velocity_threshold: 0.5 rad/s
+    min_bounces: 2
+  boundary_culling:
+    x_range: [-50, 500]
+    y_min: -100
+  max_steps_per_rock: 5000
+  restitution_methods:
+    - Rigid Body (Impulse / Energy Ratio)
+    - Lumped Mass (2DLM) — CRSP-style point mass with Kn/Kt
+    - Nonsmooth Dynamics (NSD)
+  rolling_resistance:
+    - Simple friction
+    - Davis & McInnes (soil deformation)
+  energy_models:
+    - Impulse with restitution (Cn/Ct)
+    - Energy Ratio (Hungr & Evans)
+  geological_roughness: CRSP-style stochastic normal rotation ±θ_r per segment (0°–30°)
+  block_fragmentation: energy-threshold splitting into 2-4 convex fragments, fractal mass distribution, 5-10% energy loss
+
+stl_2_5d_topography:
+  parser: StlParser (ASCII + Binary STL, Float32Array vertices)
+  slicer: StlSlicer (vertical cutting plane intersection, O(N+M) binning)
+  output: 2D profile array [{x, y}, ...] compatible with Terrain.points
+  features:
+    - isBinary() detection via size formula
+    - compileProfile() with horizontal binning sweep, geotechnical max-z safety
+    - targetPoints parameter for exact profile resolution control
+
+structural_failure:
+  planar_failure:
+    - Mohr-Coulomb safety factor: FS = (c·L + W·cos(α)·tan(φ)) / (W·sin(α))
+    - Joint plane geometry from terrain steepest segment
+    - Slide velocity: v₀ = √(2·g·(sin(α) − cos(α)·tan(φ))·L)
+    - createDetachedRock() factory with slide kinematics
+  block_fragmentation:
+    - Energy threshold: E_crit configurable per rock
+    - 2-4 fragments per fragmentation event
+    - Fractal mass distribution (primary 50-70%, satellites residual)
+    - Exit velocity cone ±15°
+    - Memory protection: max 2 generations, min diameter 0.15m
+
+css_variables:
+  - --bg-primary
+  - --bg-secondary
+  - --bg-tertiary
+  - --bg-card
+  - --text-primary
+  - --text-secondary
+  - --accent
+  - --accent-hover
+  - --success
+  - --warning
+  - --border
+  - --highlight
+
+known_issues:
+  - Profiles with >50 points cause slow simulation
+  - Release point near terrain may embed rocks
+  - >1,000 rocks saturates the canvas visually (trace limit needed)

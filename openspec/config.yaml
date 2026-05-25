@@ -1,0 +1,67 @@
+# OpenSpec Configuration
+# SimRocas 2D — 49-rockfall2d-sim
+# Generated: 2026-05-25 (post-repo-reset re-detection)
+
+schema: spec-driven
+
+context: |
+  Tech stack: vanilla JS, HTML Canvas, zero dependencies, no build/test tools
+  Architecture: global SimRocas namespace, class-per-file, Web Worker thread, 2.5D STL slicing
+  Testing: none available — manual browser testing only
+  Style: 4-space indent, PascalCase classes, camelCase methods, Spanish UI labels, English code
+  New features: CRSP geological roughness, block fragmentation, STL 2.5D topography slicing
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Keep proposals under 400 lines
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    - Follow existing code patterns per AGENTS.md
+    tdd: false
+    test_command: ""
+  verify:
+    test_command: ""
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+
+persistence:
+  mode: openspec
+  backend: ./openspec/
+  reason: Repo reset to origin/main — new commits (STL, CRSP, fragmentation) require re-detection
+
+strict_tdd:
+  enabled: false
+  reason: No test framework present in project
+
+testing:
+  available: false
+  test_runner: none
+  coverage_tool: none
+  linter: none
+  type_checker: none
+  formatter: none
+  scratch_tests:
+    - scratch/verify_roughness.js
+    - scratch/verify_fragmentation.js
+
+project:
+  name: 49-rockfall2d-sim
+  type: simulation / visualization
+  ui_language: Spanish
+  code_identifiers: English
+
+known_issues:
+  - Profiles with >50 points cause slow simulation
+  - Release point near terrain may embed rocks
+  - >1,000 rocks saturates the canvas visually (trace limit needed)

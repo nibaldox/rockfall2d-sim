@@ -1,0 +1,144 @@
+# SDD Init — Skill Registry
+# SimRocas 2D — 49-rockfall2d-sim
+
+skill_registry:
+  version: "1.0"
+  project: 49-rockfall2d-sim
+  generated: "2026-05-25"
+
+  skills:
+    - name: sdd-explore
+      trigger: explorar SDD, requirement clarification
+      path: file:///home/xodla/.config/opencode/skills/sdd-explore/SKILL.md
+      description: Explore SDD ideas before committing to a change
+      use_when:
+        - User wants to clarify requirements before writing a spec
+        - Ambiguous scope or approach decision needed
+
+    - name: sdd-propose
+      trigger: proponer cambio, SDD proposal
+      path: file:///home/xodla/.config/opencode/skills/sdd-propose/SKILL.md
+      description: Create an SDD change proposal with intent, scope, and approach
+      use_when:
+        - Change scope is defined but design is not yet worked out
+        - Need to document intent and approach before design
+
+    - name: sdd-spec
+      trigger: escribir spec, SDD spec, delta spec
+      path: file:///home/xodla/.config/opencode/skills/sdd-spec/SKILL.md
+      description: Write SDD delta specs with requirements and scenarios
+      use_when:
+        - Design is complete, need to write formal requirements
+        - Scenarios and acceptance criteria to define
+
+    - name: sdd-design
+      trigger: SDD design, architecture approach
+      path: file:///home/xodla/.config/opencode/skills/sdd-design/SKILL.md
+      description: Create the SDD technical design and architecture approach
+      use_when:
+        - Spec exists, need to design implementation
+        - Technical decisions and architecture to lock down
+
+    - name: sdd-tasks
+      trigger: break into tasks, SDD tasks, implementation planning
+      path: file:///home/xodla/.config/opencode/skills/sdd-tasks/SKILL.md
+      description: Break an SDD change into implementation tasks
+      use_when:
+        - Design is complete, need to plan implementation steps
+        - Task breakdown for code ownership and review focus
+
+    - name: sdd-apply
+      trigger: implement SDD, apply changes, orchestrator launches apply
+      path: file:///home/xodla/.config/opencode/skills/sdd-apply/SKILL.md
+      description: Implement SDD tasks from specs and design
+      use_when:
+        - Orchestrator delegates implementation of one or more tasks
+        - Code changes need to be applied per SDD design
+
+    - name: sdd-verify
+      trigger: verify SDD, verify change, run tests
+      path: file:///home/xodla/.config/opencode/skills/sdd-verify/SKILL.md
+      description: Execute tests and prove implementation matches specs
+      use_when:
+        - Implementation is complete
+        - Need to verify against specs, design, and tasks
+
+    - name: sdd-archive
+      trigger: archive SDD, finalize change
+      path: file:///home/xodla/.config/opencode/skills/sdd-archive/SKILL.md
+      description: Archive a completed SDD change by syncing delta specs
+      use_when:
+        - Change is verified and complete
+        - Need to sync delta specs to mark completion
+
+    - name: sdd-onboard
+      trigger: SDD onboarding, walk through SDD workflow
+      path: file:///home/xodla/.config/opencode/skills/sdd-onboard/SKILL.md
+      description: Walk users through the SDD workflow on the real codebase
+      use_when:
+        - New team member needs SDD introduction
+        - First time using SDD on this project
+
+    - name: judgment-day
+      trigger: judgment day, dual review, adversarial review
+      path: file:///home/xodla/.config/opencode/skills/judgment-day/SKILL.md
+      description: Run blind dual review, fix confirmed issues, then re-judge
+      use_when:
+        - PR review needs adversarial perspective
+        - Want second opinion on code quality
+
+    - name: work-unit-commits
+      trigger: commit planning, reviewable units, commit splitting
+      path: file:///home/xodla/.config/opencode/skills/work-unit-commits/SKILL.md
+      description: Plan commits as reviewable work units
+      use_when:
+        - Implementation complete, preparing commits
+        - Need to split oversized changes into reviewable PRs
+
+    - name: cognitive-doc-design
+      trigger: write docs, guides, READMEs, architecture docs
+      path: file:///home/xodla/.config/opencode/skills/cognitive-doc-design/SKILL.md
+      description: Design docs that reduce cognitive load
+      use_when:
+        - Writing documentation for the project
+        - Creating guides or onboarding materials
+
+    - name: comment-writer
+      trigger: PR feedback, collaboration comments, reviews
+      path: file:///home/xodla/.config/opencode/skills/comment-writer/SKILL.md
+      description: Write warm, direct collaboration comments
+      use_when:
+        - Writing PR feedback or review comments
+        - Need to communicate technical decisions clearly
+
+    - name: branch-pr
+      trigger: create PR, prepare PR for review
+      path: file:///home/xodla/.config/opencode/skills/branch-pr/SKILL.md
+      description: Create Gentle AI pull requests with issue-first checks
+      use_when:
+        - Ready to create a pull request
+        - Need to prepare PR for review
+
+    - name: chained-pr
+      trigger: oversized PR, stacked PRs, review slices
+      path: file:///home/xodla/.config/opencode/skills/chained-pr/SKILL.md
+      description: Split oversized changes into chained PRs
+      use_when:
+        - PR exceeds 400 lines
+        - Need to chain PRs to protect review focus
+
+    - name: skill-registry
+      trigger: update skills, skill registry, after skill changes
+      path: file:///home/xodla/.config/opencode/skills/skill-registry/SKILL.md
+      description: Index available skills by trigger and path
+      use_when:
+        - New skill installed or existing skill updated
+        - Need to rebuild skill index
+
+    - name: skill-improver
+      trigger: improve skills, audit skills, skill quality
+      path: file:///home/xodla/.config/opencode/skills/skill-improver/SKILL.md
+      description: Audit and upgrade existing skills
+      use_when:
+        - Skill needs improvement or refactoring
+        - Quality audit of existing skills
