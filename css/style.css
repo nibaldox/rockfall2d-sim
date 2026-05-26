@@ -37,6 +37,15 @@
     --radius-md: 6px;
     --radius-lg: 8px;
     --transition: 150ms ease;
+    /* --- Canvas rendering colors (used by renderer.js) --- */
+    --canvas-bg: #0a0a1a;
+    --canvas-grid: rgba(255, 255, 255, 0.05);
+    --canvas-axis: rgba(255, 255, 255, 0.3);
+    --canvas-text: rgba(255, 255, 255, 0.5);
+    --canvas-trajectory: rgba(78, 205, 196, 0.3);
+    --canvas-release-freefall: #ffa500;
+    --canvas-release-detachment: #4ecdc4;
+    --canvas-histogram-bg: #1e2a4a;
 }
 
 /* --- Light Theme --- */
@@ -61,6 +70,15 @@
     --success: #3a7a4a;
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.06);
     --shadow-md: 0 2px 8px rgba(0,0,0,0.08);
+    /* --- Canvas rendering colors (used by renderer.js) --- */
+    --canvas-bg: #f0f0f5;
+    --canvas-grid: rgba(0, 0, 0, 0.08);
+    --canvas-axis: rgba(0, 0, 0, 0.25);
+    --canvas-text: rgba(0, 0, 0, 0.4);
+    --canvas-trajectory: rgba(78, 205, 196, 0.4);
+    --canvas-release-freefall: #e07000;
+    --canvas-release-detachment: #2a9d8f;
+    --canvas-histogram-bg: #e8eef8;
 }
 
 /* --- Base --- */
@@ -1016,5 +1034,87 @@ body, header, .sidebar, .canvas-area, .tab, .btn, .stat-card,
 
 .stl-info-panel strong {
     color: var(--text-secondary);
+}
+
+.fab-run {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    font-size: 20px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    transition: transform 0.15s, background 0.2s, box-shadow 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.fab-run:hover {
+    background: var(--accent-hover);
+    transform: scale(1.08);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.fab-run:active {
+    transform: scale(0.95);
+}
+.fab-run.running {
+    background: var(--warning, #e94560);
+    animation: fab-pulse 1.2s infinite;
+}
+@keyframes fab-pulse {
+    0%, 100% { box-shadow: 0 4px 12px rgba(233, 69, 96, 0.4); }
+    50% { box-shadow: 0 4px 24px rgba(233, 69, 96, 0.8); }
+}
+
+.toolbar-info.warning-amber { color: #f0a500; font-weight: 600; }
+.toolbar-info.warning-red { color: #e94560; font-weight: 700; }
+
+/* Sub-tabs in Parameters tab */
+.sub-tab-bar {
+    display: flex;
+    gap: 2px;
+    border-bottom: 2px solid var(--border-default, #2a2a2a);
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+.sub-tab-btn {
+    padding: 6px 14px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary, #888);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: color 0.15s, border-color 0.15s;
+    margin-bottom: -2px;
+}
+.sub-tab-btn:hover { color: var(--text-primary, #e4e4e4); }
+.sub-tab-btn.active {
+    color: var(--accent, #d4d4d4);
+    border-bottom-color: var(--accent, #d4d4d4);
+}
+.sub-tab-content { display: none; }
+.sub-tab-content.active { display: block; }
+
+/* Sim action bar — always visible at bottom of Parameters tab */
+.sim-action-bar {
+    display: flex;
+    gap: 8px;
+    padding: 10px 0 4px;
+    border-top: 1px solid var(--border-subtle, #222);
+    margin-top: 8px;
+    align-items: center;
+}
+.sim-action-bar .btn {
+    flex: 1;
+    padding: 8px 12px;
+    font-size: 13px;
 }
 

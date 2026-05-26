@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimRocas 2D — Simulador de Caída de Rocas</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪨</text></svg>">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -157,222 +158,243 @@
                 </div>
 
                 <div class="tab-content" id="tab-parameters">
-                    <div class="section">
-                        <h3>Punto de Liberación</h3>
-                        <p class="help-text">Haz clic en el canvas para definir dónde se liberan las rocas.</p>
-                        <div class="control-group">
-                            <label data-tooltip="Caída libre: la roca se suelta desde una altura sobre el terreno. Desprendimiento: la roca se suelta sobre la superficie del terreno y cae por gravedad.">Modo de liberación:</label>
-                            <select id="release-mode">
-                                <option value="freefall">Caída libre (sobre terreno)</option>
-                                <option value="detachment">Desprendimiento (en terreno)</option>
-                            </select>
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Coordenada horizontal del punto donde se liberan las rocas. Define desde dónde caen.">Posición X (m):</label>
-                            <input type="number" id="release-x" value="10" step="0.1">
-                        </div>
-                        <div class="control-group" id="release-y-group">
-                            <label data-tooltip="Altura del punto de liberación respecto al nivel de referencia. Mayor valor = más altura.">Posición Y (m):</label>
-                            <input type="number" id="release-y" value="55" step="0.1">
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Velocidad con la que las rocas son lanzadas desde el punto de liberación. Cero = caída libre.">Velocidad inicial (m/s):</label>
-                            <input type="number" id="initial-velocity" value="0" step="0.1" min="0">
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Ángulo de lanzamiento respecto a la horizontal. 0° = horizontal, 90° = vertical hacia arriba, -90° = hacia abajo.">Ángulo de liberación (°):</label>
-                            <input type="number" id="release-angle" value="0" step="1" min="-90" max="90">
-                        </div>
-                        <div class="control-group">
-                            <label class="checkbox-label" data-tooltip="Activa múltiples puntos de origen. Las rocas se distribuyen entre todos los puntos definidos.">
-                                <input type="checkbox" id="multi-release"> Múltiples puntos de liberación
-                            </label>
-                            <div id="multi-release-list" class="segments-list" style="margin-top:4px;max-height:120px;overflow-y:auto;display:none;"></div>
-                            <div class="button-row" id="multi-release-btns" style="display:none;margin-top:4px;">
-                                <button id="btn-add-release" class="btn btn-small">+ Agregar punto</button>
-                                <button id="btn-clear-releases" class="btn btn-danger btn-small">Limpiar</button>
+                    <div class="sub-tab-bar">
+                        <button class="sub-tab-btn active" data-subtab="release">Liberación</button>
+                        <button class="sub-tab-btn" data-subtab="rock">Roca</button>
+                        <button class="sub-tab-btn" data-subtab="physics">Física</button>
+                        <button class="sub-tab-btn" data-subtab="fragmentation">Fragmentación</button>
+                        <button class="sub-tab-btn" data-subtab="config">Config</button>
+                    </div>
+
+                    <div class="sub-tab-content active" id="subtab-release">
+                        <div class="section">
+                            <h3>Punto de Liberación</h3>
+                            <p class="help-text">Haz clic en el canvas para definir dónde se liberan las rocas.</p>
+                            <div class="control-group">
+                                <label data-tooltip="Caída libre: la roca se suelta desde una altura sobre el terreno. Desprendimiento: la roca se suelta sobre la superficie del terreno y cae por gravedad.">Modo de liberación:</label>
+                                <select id="release-mode">
+                                    <option value="freefall">Caída libre (sobre terreno)</option>
+                                    <option value="detachment">Desprendimiento (en terreno)</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Coordenada horizontal del punto donde se liberan las rocas. Define desde dónde caen.">Posición X (m):</label>
+                                <input type="number" id="release-x" value="10" step="0.1">
+                            </div>
+                            <div class="control-group" id="release-y-group">
+                                <label data-tooltip="Altura del punto de liberación respecto al nivel de referencia. Mayor valor = más altura.">Posición Y (m):</label>
+                                <input type="number" id="release-y" value="55" step="0.1">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Velocidad con la que las rocas son lanzadas desde el punto de liberación. Cero = caída libre.">Velocidad inicial (m/s):</label>
+                                <input type="number" id="initial-velocity" value="0" step="0.1" min="0">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Ángulo de lanzamiento respecto a la horizontal. 0° = horizontal, 90° = vertical hacia arriba, -90° = hacia abajo.">Ángulo de liberación (°):</label>
+                                <input type="number" id="release-angle" value="0" step="1" min="-90" max="90">
+                            </div>
+                            <div class="control-group">
+                                <label class="checkbox-label" data-tooltip="Activa múltiples puntos de origen. Las rocas se distribuyen entre todos los puntos definidos.">
+                                    <input type="checkbox" id="multi-release"> Múltiples puntos de liberación
+                                </label>
+                                <div id="multi-release-list" class="segments-list" style="margin-top:4px;max-height:120px;overflow-y:auto;display:none;"></div>
+                                <div class="button-row" id="multi-release-btns" style="display:none;margin-top:4px;">
+                                    <button id="btn-add-release" class="btn btn-small">+ Agregar punto</button>
+                                    <button id="btn-clear-releases" class="btn btn-danger btn-small">Limpiar</button>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="section">
-                        <h3>Propiedades de la Roca</h3>
-                        <div class="control-group">
-                            <label data-tooltip="Forma geométrica de la roca. Polígono irregular es más realista. Esfera y elipse son simplificaciones.">Modelo de forma:</label>
-                            <select id="rock-shape">
-                                <option value="polygon">Polígono irregular (default)</option>
-                                <option value="sphere">Esfera</option>
-                                <option value="ellipse">Elipse</option>
-                                <option value="block">Bloque angular</option>
-                            </select>
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Tamaño de la roca. Para esferas es el diámetro; para polígonos, la dimensión mayor.">Diámetro / Longitud (m):</label>
-                            <input type="number" id="rock-diameter" value="0.5" step="0.1" min="0.1" max="20">
-                        </div>
-                        <div class="control-group" id="aspect-ratio-group" style="display:none;">
-                            <label data-tooltip="Razón entre el eje menor y el mayor. 1.0 = esfera/círculo, 0.5 = elipse muy alargada.">Relación de aspecto (menor/mayor):</label>
-                            <input type="number" id="rock-aspect-ratio" value="0.6" step="0.05" min="0.2" max="1">
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Densidad del material de la roca. Afecta la energía cinética y el impacto. Granito típico: 2700 kg/m³.">Densidad (kg/m³):</label>
-                            <input type="number" id="rock-density" value="2700" step="100" min="1000" max="5000">
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <h3>Coeficientes de Restitución</h3>
-                        <div class="control-group">
-                            <label data-tooltip="Modelo matemático para calcular los impactos. Cuerpo rígido es el más preciso para rocas con rotación.">Método de cálculo:</label>
-                            <select id="calc-method">
-                                <option value="rigid-body">Cuerpo Rígido (default)</option>
-                                <option value="lumped-mass">Lumped Mass (2DLM)</option>
-                                <option value="nonsmooth">Nonsmooth Dynamics (NSD)</option>
-                            </select>
-                        </div>
-                        <div id="rigid-body-controls">
-                            <p class="help-text">Cn: relación velocidad normal después/antes del impacto. Ct: relación velocidad tangencial.</p>
+                    <div class="sub-tab-content" id="subtab-rock">
+                        <div class="section">
+                            <h3>Propiedades de la Roca</h3>
                             <div class="control-group">
-                                <label data-tooltip="Coeficiente de restitución NORMAL. Define qué fracción de velocidad perpendicular se conserva tras el impacto. 0 = no rebote, 1 = rebote perfecto.">Cn (Normal):</label>
-                                <input type="range" id="cn-range" min="0" max="1" step="0.01" value="0.6">
-                                <span id="cn-value">0.60</span>
+                                <label data-tooltip="Forma geométrica de la roca. Polígono irregular es más realista. Esfera y elipse son simplificaciones.">Modelo de forma:</label>
+                                <select id="rock-shape">
+                                    <option value="polygon">Polígono irregular (default)</option>
+                                    <option value="sphere">Esfera</option>
+                                    <option value="ellipse">Elipse</option>
+                                    <option value="block">Bloque angular</option>
+                                </select>
                             </div>
                             <div class="control-group">
-                                <label data-tooltip="Coeficiente de restitución TANGENCIAL. Define qué fracción de velocidad paralela se conserva. Alto Ct = la roca desliza, bajo Ct = se adhiere.">Ct (Tangencial):</label>
-                                <input type="range" id="ct-range" min="0" max="1" step="0.01" value="0.4">
-                                <span id="ct-value">0.40</span>
+                                <label data-tooltip="Tamaño de la roca. Para esferas es el diámetro; para polígonos, la dimensión mayor.">Diámetro / Longitud (m):</label>
+                                <input type="number" id="rock-diameter" value="0.5" step="0.1" min="0.1" max="20">
                             </div>
-                        </div>
-                        <div id="lumped-mass-controls" style="display:none;">
-                            <p class="help-text">Kn: coef. restitución normal. Kt: coef. restitución tangencial. La roca se trata como un punto masivo sin rotación.</p>
-                            <div class="control-group">
-                                <label data-tooltip="Coeficiente de restitución normal en modelo Lumped Mass. Similar a Cn pero sin considerar rotación.">Kn (Normal):</label>
-                                <input type="range" id="kn-range" min="0" max="1" step="0.01" value="0.35">
-                                <span id="kn-value">0.35</span>
+                            <div class="control-group" id="aspect-ratio-group" style="display:none;">
+                                <label data-tooltip="Razón entre el eje menor y el mayor. 1.0 = esfera/círculo, 0.5 = elipse muy alargada.">Relación de aspecto (menor/mayor):</label>
+                                <input type="number" id="rock-aspect-ratio" value="0.6" step="0.05" min="0.2" max="1">
                             </div>
                             <div class="control-group">
-                                <label data-tooltip="Coeficiente de restitución tangencial en modelo Lumped Mass. Similar a Ct pero sin considerar rotación.">Kt (Tangencial):</label>
-                                <input type="range" id="kt-range" min="0" max="1" step="0.01" value="0.75">
-                                <span id="kt-value">0.75</span>
-                            </div>
-                        </div>
-                        <div id="nonsmooth-controls" style="display:none;">
-                            <p class="help-text">Cn: coef. restitución normal (Poisson). Ct: coef. fricción Coulomb (mu) para el cono de fricción.</p>
-                            <div class="control-group">
-                                <label data-tooltip="Coeficiente de restitución normal de Poisson para modelo Nonsmooth. Define la energía conservada en el impacto.">Cn (Restitución):</label>
-                                <input type="range" id="cn-range-ns" min="0" max="1" step="0.01" value="0.6">
-                                <span id="cn-value-ns">0.60</span>
-                            </div>
-                            <div class="control-group">
-                                <label data-tooltip="Coeficiente de fricción de Coulomb (mu). Define el cono de fricción en modelo Nonsmooth. Alto mu = más fricción, menos deslizamiento.">mu (Fricción Coulomb):</label>
-                                <input type="range" id="mu-range" min="0" max="1" step="0.01" value="0.5">
-                                <span id="mu-value">0.50</span>
-                            </div>
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Coeficiente de fricción por rodadura. Frena la rotación de la roca al rodar sobre el terreno. 0 = sin fricción, 1 = frena completamente.">Coef. fricción rodadura:</label>
-                            <input type="range" id="rolling-friction" min="0" max="1" step="0.01" value="0.15">
-                            <span id="rolling-value">0.15</span>
-                        </div>
-                        <div class="control-group" id="energy-model-group">
-                            <label data-tooltip="Método para calcular la pérdida de energía en cada impacto. Impulso usa coeficientes Cn/Ct. Energy Ratio usa un porcentaje directo.">Modelo disipación energía:</label>
-                            <select id="energy-model">
-                                <option value="impulse">Impulso con restitución (default)</option>
-                                <option value="energy-ratio">Energy Ratio (Hungr & Evans)</option>
-                            </select>
-                        </div>
-                        <div class="control-group" id="energy-ratio-group" style="display:none;">
-                            <label data-tooltip="Fracción de energía cinética conservada tras cada impacto. 1.0 = sin pérdida, 0.5 = pierde la mitad en cada rebote.">Coeef. energía (0-1):</label>
-                            <input type="range" id="energy-ratio-coef" min="0.1" max="1" step="0.01" value="0.7">
-                            <span id="energy-ratio-value">0.70</span>
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Modelo de fricción por rodadura. Simple = coeficiente constante. Davis & McInnes = considera deformación del suelo.">Modelo fricción rodadura:</label>
-                            <select id="rolling-model">
-                                <option value="simple">Fricción simple (default)</option>
-                                <option value="davis-mcinnnes">Davis &amp; McInnes (deformación suelo)</option>
-                            </select>
-                        </div>
-                        <div class="control-group" id="rolling-deformation-group" style="display:none;">
-                            <label data-tooltip="Coeficiente de deformación del suelo en modelo Davis & McInnes. Mayor valor = suelo más blando, más energía disipada.">Coef. deformación suelo:</label>
-                            <input type="range" id="deformation-coef" min="0.001" max="0.1" step="0.001" value="0.01">
-                            <span id="deformation-value">0.010</span>
-                        </div>
-                        <div class="control-group">
-                            <label class="checkbox-label" data-tooltip="Activa la correlación entre Cn y Ct: materiales duros tienen alto rebote y bajo deslizamiento, y viceversa.">
-                                <input type="checkbox" id="correlated-params"> Correlacionar Cn/Ct (roca dura = alto Cn, bajo Ct)
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="section">
-                        <h3>Fragmentación de Bloques</h3>
-                        <div class="control-group">
-                            <label class="checkbox-label" data-tooltip="Permite que los bloques grandes de roca se rompan en fragmentos más pequeños al impactar con alta energía.">
-                                <input type="checkbox" id="fragmentation-enabled" checked> Habilitar Fragmentación
-                            </label>
-                        </div>
-                        <div class="control-group" id="fragmentation-settings-group">
-                            <div style="margin-bottom: 10px;">
-                                <label data-tooltip="Energía cinética normal de impacto mínima requerida para romper el bloque.">Umbral de Energía Crítica (J):</label>
-                                <input type="range" id="fracture-energy" min="1000" max="100000" step="1000" value="25000">
-                                <span id="fracture-energy-val" class="value-display">25,000 J</span>
-                            </div>
-                            <div>
-                                <label data-tooltip="Porcentaje de la energía cinética del bloque que se disipa durante el proceso de rotura.">Disipación por Rotura (%):</label>
-                                <input type="range" id="fracture-dissipation" min="0" max="90" step="5" value="40">
-                                <span id="fracture-dissipation-val" class="value-display">40%</span>
+                                <label data-tooltip="Densidad del material de la roca. Afecta la energía cinética y el impacto. Granito típico: 2700 kg/m³.">Densidad (kg/m³):</label>
+                                <input type="number" id="rock-density" value="2700" step="100" min="1000" max="5000">
                             </div>
                         </div>
                     </div>
 
-                    <div class="section">
-                        <h3>Configuración Simulación</h3>
-                        <div class="control-group">
-                            <label data-tooltip="Cantidad total de rocas a simular. Más rocas = estadísticas más confiables pero mayor tiempo de cálculo.">Número de rocas:</label>
-                            <input type="number" id="num-rocks" value="100" min="1" max="10000" step="10">
+                    <div class="sub-tab-content" id="subtab-physics">
+                        <div class="section">
+                            <h3>Coeficientes de Restitución</h3>
+                            <div class="control-group">
+                                <label data-tooltip="Modelo matemático para calcular los impactos. Cuerpo rígido es el más preciso para rocas con rotación.">Método de cálculo:</label>
+                                <select id="calc-method">
+                                    <option value="rigid-body">Cuerpo Rígido (default)</option>
+                                    <option value="lumped-mass">Lumped Mass (2DLM)</option>
+                                    <option value="nonsmooth">Nonsmooth Dynamics (NSD)</option>
+                                </select>
+                            </div>
+                            <div id="rigid-body-controls">
+                                <p class="help-text">Cn: relación velocidad normal después/antes del impacto. Ct: relación velocidad tangencial.</p>
+                                <div class="control-group">
+                                    <label data-tooltip="Coeficiente de restitución NORMAL. Define qué fracción de velocidad perpendicular se conserva tras el impacto. 0 = no rebote, 1 = rebote perfecto.">Cn (Normal):</label>
+                                    <input type="range" id="cn-range" min="0" max="1" step="0.01" value="0.6">
+                                    <span id="cn-value">0.60</span>
+                                </div>
+                                <div class="control-group">
+                                    <label data-tooltip="Coeficiente de restitución TANGENCIAL. Define qué fracción de velocidad paralela se conserva. Alto Ct = la roca desliza, bajo Ct = se adhiere.">Ct (Tangencial):</label>
+                                    <input type="range" id="ct-range" min="0" max="1" step="0.01" value="0.4">
+                                    <span id="ct-value">0.40</span>
+                                </div>
+                            </div>
+                            <div id="lumped-mass-controls" style="display:none;">
+                                <p class="help-text">Kn: coef. restitución normal. Kt: coef. restitución tangencial. La roca se trata como un punto masivo sin rotación.</p>
+                                <div class="control-group">
+                                    <label data-tooltip="Coeficiente de restitución normal en modelo Lumped Mass. Similar a Cn pero sin considerar rotación.">Kn (Normal):</label>
+                                    <input type="range" id="kn-range" min="0" max="1" step="0.01" value="0.35">
+                                    <span id="kn-value">0.35</span>
+                                </div>
+                                <div class="control-group">
+                                    <label data-tooltip="Coeficiente de restitución tangencial en modelo Lumped Mass. Similar a Ct pero sin considerar rotación.">Kt (Tangencial):</label>
+                                    <input type="range" id="kt-range" min="0" max="1" step="0.01" value="0.75">
+                                    <span id="kt-value">0.75</span>
+                                </div>
+                            </div>
+                            <div id="nonsmooth-controls" style="display:none;">
+                                <p class="help-text">Cn: coef. restitución normal (Poisson). Ct: coef. fricción Coulomb (mu) para el cono de fricción.</p>
+                                <div class="control-group">
+                                    <label data-tooltip="Coeficiente de restitución normal de Poisson para modelo Nonsmooth. Define la energía conservada en el impacto.">Cn (Restitución):</label>
+                                    <input type="range" id="cn-range-ns" min="0" max="1" step="0.01" value="0.6">
+                                    <span id="cn-value-ns">0.60</span>
+                                </div>
+                                <div class="control-group">
+                                    <label data-tooltip="Coeficiente de fricción de Coulomb (mu). Define el cono de fricción en modelo Nonsmooth. Alto mu = más fricción, menos deslizamiento.">mu (Fricción Coulomb):</label>
+                                    <input type="range" id="mu-range" min="0" max="1" step="0.01" value="0.5">
+                                    <span id="mu-value">0.50</span>
+                                </div>
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Coeficiente de fricción por rodadura. Frena la rotación de la roca al rodar sobre el terreno. 0 = sin fricción, 1 = frena completamente.">Coef. fricción rodadura:</label>
+                                <input type="range" id="rolling-friction" min="0" max="1" step="0.01" value="0.15">
+                                <span id="rolling-value">0.15</span>
+                            </div>
+                            <div class="control-group" id="energy-model-group">
+                                <label data-tooltip="Método para calcular la pérdida de energía en cada impacto. Impulso usa coeficientes Cn/Ct. Energy Ratio usa un porcentaje directo.">Modelo disipación energía:</label>
+                                <select id="energy-model">
+                                    <option value="impulse">Impulso con restitución (default)</option>
+                                    <option value="energy-ratio">Energy Ratio (Hungr & Evans)</option>
+                                </select>
+                            </div>
+                            <div class="control-group" id="energy-ratio-group" style="display:none;">
+                                <label data-tooltip="Fracción de energía cinética conservada tras cada impacto. 1.0 = sin pérdida, 0.5 = pierde la mitad en cada rebote.">Coeef. energía (0-1):</label>
+                                <input type="range" id="energy-ratio-coef" min="0.1" max="1" step="0.01" value="0.7">
+                                <span id="energy-ratio-value">0.70</span>
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Modelo de fricción por rodadura. Simple = coeficiente constante. Davis & McInnes = considera deformación del suelo.">Modelo fricción rodadura:</label>
+                                <select id="rolling-model">
+                                    <option value="simple">Fricción simple (default)</option>
+                                    <option value="davis-mcinnnes">Davis &amp; McInnes (deformación suelo)</option>
+                                </select>
+                            </div>
+                            <div class="control-group" id="rolling-deformation-group" style="display:none;">
+                                <label data-tooltip="Coeficiente de deformación del suelo en modelo Davis & McInnes. Mayor valor = suelo más blando, más energía disipada.">Coef. deformación suelo:</label>
+                                <input type="range" id="deformation-coef" min="0.001" max="0.1" step="0.001" value="0.01">
+                                <span id="deformation-value">0.010</span>
+                            </div>
+                            <div class="control-group">
+                                <label class="checkbox-label" data-tooltip="Activa la correlación entre Cn y Ct: materiales duros tienen alto rebote y bajo deslizamiento, y viceversa.">
+                                    <input type="checkbox" id="correlated-params"> Correlacionar Cn/Ct (roca dura = alto Cn, bajo Ct)
+                                </label>
+                            </div>
                         </div>
-                        <div class="control-group">
-                            <label data-tooltip="Aceleración de la gravedad. 9.81 m/s² para la Tierra. Valores menores simulan otros planetas o condiciones.">Gravedad (m/s²):</label>
-                            <input type="number" id="gravity" value="9.81" step="0.01" min="1" max="20">
+                    </div>
+
+                    <div class="sub-tab-content" id="subtab-fragmentation">
+                        <div class="section">
+                            <h3>Fragmentación de Bloques</h3>
+                            <p class="help-text" style="margin-bottom: 8px;">Modelo de abrasión progresiva: la roca pierde fragmentos pequeños (spalls) en cada impacto, manteniendo un núcleo que sigue rebotando. Impactos de muy alta energía pueden partir el núcleo en dos.</p>
+                            <div class="control-group">
+                                <label class="checkbox-label" data-tooltip="Permite que los bloques grandes de roca se rompan en fragmentos más pequeños al impactar con alta energía.">
+                                    <input type="checkbox" id="fragmentation-enabled" checked> Habilitar Fragmentación
+                                </label>
+                            </div>
+                            <div class="control-group" id="fragmentation-settings-group">
+                                <div style="margin-bottom: 10px;">
+                                    <label data-tooltip="Energía cinética normal de impacto mínima requerida para desprender fragmentos.">Umbral de Energía Crítica (J):</label>
+                                    <input type="range" id="fracture-energy" min="1000" max="100000" step="1000" value="25000">
+                                    <span id="fracture-energy-val" class="value-display">25,000 J</span>
+                                </div>
+                                <div>
+                                    <label data-tooltip="Porcentaje de la energía cinética del bloque que se disipa durante el proceso de rotura.">Disipación por Rotura (%):</label>
+                                    <input type="range" id="fracture-dissipation" min="0" max="90" step="5" value="40">
+                                    <span id="fracture-dissipation-val" class="value-display">40%</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="control-group">
-                            <label data-tooltip="Porcentaje de variación aleatoria en Cn entre rocas. Simula la heterogeneidad natural del terreno.">Variabilidad Cn (%):</label>
-                            <input type="number" id="cn-variability" value="10" min="0" max="50" step="1">
+                    </div>
+
+                    <div class="sub-tab-content" id="subtab-config">
+                        <div class="section">
+                            <h3>Configuración Simulación</h3>
+                            <div class="control-group">
+                                <label data-tooltip="Cantidad total de rocas a simular. Más rocas = estadísticas más confiables pero mayor tiempo de cálculo.">Número de rocas:</label>
+                                <input type="number" id="num-rocks" value="100" min="1" max="10000" step="10">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Aceleración de la gravedad. 9.81 m/s² para la Tierra. Valores menores simulan otros planetas o condiciones.">Gravedad (m/s²):</label>
+                                <input type="number" id="gravity" value="9.81" step="0.01" min="1" max="20">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Porcentaje de variación aleatoria en Cn entre rocas. Simula la heterogeneidad natural del terreno.">Variabilidad Cn (%):</label>
+                                <input type="number" id="cn-variability" value="10" min="0" max="50" step="1">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Porcentaje de variación aleatoria en Ct entre rocas. Simula variaciones en la superficie de impacto.">Variabilidad Ct (%):</label>
+                                <input type="number" id="ct-variability" value="10" min="0" max="50" step="1">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Intervalo de tiempo entre cada cálculo de física. Menor = más preciso pero más lento. 0.005s es el equilibrio recomendado.">Paso de tiempo (s):</label>
+                                <input type="number" id="time-step" value="0.005" step="0.001" min="0.001" max="0.05">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Velocidad de reproducción de la animación. 1x = tiempo real, 10x = simulación acelerada.">Velocidad animación:</label>
+                                <input type="range" id="anim-speed" min="1" max="10" step="1" value="2">
+                                <span id="anim-speed-value">2x</span>
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Tiempo máximo de simulación por roca. Las rocas que no paran en este tiempo se detienen forzosamente.">Duración máxima por roca (s):</label>
+                                <input type="number" id="max-duration" value="30" min="1" max="600" step="1">
+                            </div>
+                            <div class="control-group">
+                                <label class="checkbox-label" data-tooltip="Cuando está activo, las rocas no se detienen por reposo temprano. Solo paran por tiempo máximo o al salir del terreno.">
+                                    <input type="checkbox" id="ignore-resting"> Simular hasta final del terreno
+                                </label>
+                                <p class="help-text">Ignora la condición de reposo; las rocas solo paran por tiempo o límites.</p>
+                            </div>
+                            <div class="control-group">
+                                <label class="checkbox-label" data-tooltip="Ejecuta la simulación en un hilo separado usando Web Workers. Evita que la interfaz se congele durante simulaciones largas (>500 rocas).">
+                                    <input type="checkbox" id="use-worker"> Usar Web Worker (hilo separado)
+                                </label>
+                            </div>
                         </div>
-                        <div class="control-group">
-                            <label data-tooltip="Porcentaje de variación aleatoria en Ct entre rocas. Simula variaciones en la superficie de impacto.">Variabilidad Ct (%):</label>
-                            <input type="number" id="ct-variability" value="10" min="0" max="50" step="1">
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Intervalo de tiempo entre cada cálculo de física. Menor = más preciso pero más lento. 0.005s es el equilibrio recomendado.">Paso de tiempo (s):</label>
-                            <input type="number" id="time-step" value="0.005" step="0.001" min="0.001" max="0.05">
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Velocidad de reproducción de la animación. 1x = tiempo real, 100x = simulación acelerada.">Velocidad animación:</label>
-                            <input type="range" id="anim-speed" min="1" max="200" step="1" value="10">
-                            <span id="anim-speed-value">20x</span>
-                        </div>
-                        <div class="control-group">
-                            <label data-tooltip="Tiempo máximo de simulación por roca. Las rocas que no paran en este tiempo se detienen forzosamente.">Duración máxima por roca (s):</label>
-                            <input type="number" id="max-duration" value="30" min="1" max="600" step="1">
-                        </div>
-                        <div class="control-group">
-                            <label class="checkbox-label" data-tooltip="Cuando está activo, las rocas no se detienen por reposo temprano. Solo paran por tiempo máximo o al salir del terreno.">
-                                <input type="checkbox" id="ignore-resting"> Simular hasta final del terreno
-                            </label>
-                            <p class="help-text">Ignora la condición de reposo; las rocas solo paran por tiempo o límites.</p>
-                        </div>
-                        <div class="control-group">
-                            <label class="checkbox-label" data-tooltip="Ejecuta la simulación en un hilo separado usando Web Workers. Evita que la interfaz se congele durante simulaciones largas (>500 rocas).">
-                                <input type="checkbox" id="use-worker"> Usar Web Worker (hilo separado)
-                            </label>
-                        </div>
-                        <div class="button-row">
-                            <button id="btn-run" class="btn btn-primary" data-tooltip="Inicia la simulación con los parámetros configurados.">▶ Ejecutar</button>
-                            <button id="btn-stop" class="btn btn-warning" disabled data-tooltip="Detiene la simulación en curso.">⏸ Detener</button>
-                            <button id="btn-reset" class="btn" data-tooltip="Reinicia la simulación y limpia todos los resultados.">↺ Reset</button>
-                        </div>
+                    </div>
+
+                    <div class="sim-action-bar">
+                        <button id="btn-run" class="btn btn-primary" data-tooltip="Inicia la simulación con los parámetros configurados.">▶ Ejecutar</button>
+                        <button id="btn-stop" class="btn btn-warning" disabled data-tooltip="Detiene la simulación en curso.">⏸ Detener</button>
+                        <button id="btn-reset" class="btn" data-tooltip="Reinicia la simulación y limpia todos los resultados.">↺ Reset</button>
+                        <button id="btn-new-section" class="btn" style="display:none; margin-left:8px;" data-tooltip="Vuelve a la vista de planta para dibujar una nueva línea de corte sobre la topografía 3D.">🗺️ Nueva Sección</button>
                     </div>
                 </div>
 
@@ -421,8 +443,9 @@
                             <label data-tooltip="Número de puntos de muestreo a lo largo del perfil 2D generado. 50 es ideal para rendimiento.">Puntos de resolución (2D):</label>
                             <input type="number" id="stl-resolution-points" value="50" min="10" max="200" step="5">
                         </div>
-                        <div class="button-row">
-                            <button id="btn-generate-slice" class="btn btn-success" style="width: 100%;" data-tooltip="Interseca la línea de sección con los triángulos de la malla y genera un perfil 2D continuo.">✂️ Generar Perfil 2D</button>
+                        <div class="button-row" style="gap: 8px; display: flex;">
+                            <button id="btn-generate-slice" class="btn btn-success" style="flex:1;" data-tooltip="Interseca la línea de sección con los triángulos de la malla y genera un perfil 2D continuo.">✂️ Generar Perfil 2D</button>
+                            <button id="btn-clear-slice" class="btn" style="flex:0 0 auto;" data-tooltip="Borra la línea de sección actual para dibujar una nueva.">🗑️</button>
                         </div>
                     </div>
                 </div>
@@ -442,16 +465,9 @@
                                 </label>
                             </div>
                             <div class="button-row">
-                                <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Resultados Completos</button>
+                                <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Dashboard Completo</button>
                             </div>
-                            <div class="section" style="margin-top:12px;">
-                                <h3>Exportar</h3>
-                                <div class="button-row">
-                                    <button id="btn-export-image" class="btn btn-small" data-tooltip="Guarda una captura del canvas como imagen PNG.">📷 Captura PNG</button>
-                                    <button id="btn-export-csv" class="btn btn-small" data-tooltip="Exporta los datos de la simulación (posición, energía, rebotes) como archivo CSV.">📊 Datos CSV</button>
-                                    <button id="btn-export-report" class="btn btn-small" data-tooltip="Genera un reporte de texto con todos los parámetros y estadísticas de la simulación.">📋 Reporte</button>
-                                </div>
-                            </div>
+                            <p class="help-text" style="margin-top:8px;font-size:10px;">Los datos de exportación están disponibles en el dashboard.</p>
                         </div>
                     </div>
                 </div>
@@ -462,6 +478,8 @@
                     <span class="toolbar-info" id="cursor-coords">X: 0.0 m | Y: 0.0 m</span>
                     <span class="toolbar-info" id="simulation-status">Listo</span>
                     <span class="toolbar-info" id="terrain-points-count">Puntos perfil: 0</span>
+                    <span class="toolbar-info" id="terrain-segments-count">Segmentos: 0</span>
+                    <span class="toolbar-info" id="rock-count-display">Rocas: 0</span>
                     <span class="toolbar-info" id="zoom-level">Zoom: 100%</span>
                     <button id="btn-toggle-trajectories" class="btn btn-small toolbar-toggle active" title="Mostrar/ocultar trayectorias">
                         <svg viewBox="0 0 20 20" width="14" height="14" style="vertical-align:middle;">
@@ -474,13 +492,13 @@
                 <canvas id="main-canvas"></canvas>
                 <div class="canvas-tools-right" id="canvas-tools-right">
                     <!-- Navegación -->
-                    <button id="tool-zoom-in" class="tool-btn" title="Zoom +">
+                    <button id="tool-zoom-in" class="tool-btn" title="Zoom + (scroll)">
                         <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="11" y1="8" x2="11" y2="14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="8" y1="11" x2="14" y2="11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                     </button>
-                    <button id="tool-zoom-out" class="tool-btn" title="Zoom -">
+                    <button id="tool-zoom-out" class="tool-btn" title="Zoom - (scroll)">
                         <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="8" y1="11" x2="14" y2="11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                     </button>
-                    <button id="tool-pan" class="tool-btn" title="Pan (mover vista)">
+                    <button id="tool-pan" class="tool-btn" title="Mover vista (shift+drag)">
                         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2a8 8 0 0 1-8-8V6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </button>
                     <button id="tool-fit" class="tool-btn" title="Ajustar vista">
@@ -488,10 +506,10 @@
                     </button>
                     <div class="tool-divider"></div>
                     <!-- Edición -->
-                    <button id="tool-add" class="tool-btn" title="Agregar punto">
+                    <button id="tool-add" class="tool-btn" title="Agregar punto (click izq)">
                         <svg viewBox="0 0 24 24" width="18" height="18"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                     </button>
-                    <button id="tool-delete" class="tool-btn" title="Eliminar punto">
+                    <button id="tool-delete" class="tool-btn" title="Eliminar punto (click der)">
                         <svg viewBox="0 0 24 24" width="18" height="18"><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
                     </button>
                     <button id="tool-undo" class="tool-btn" title="Deshacer (Ctrl+Z)">
@@ -525,6 +543,7 @@
                     <input type="range" id="tl-scrubber" min="0" max="0" value="0" step="1">
                     <span class="timeline-counter" id="tl-counter">0 / 0</span>
                 </div>
+                <button id="fab-run" class="fab-run" title="Ejecutar simulación (Ctrl+E)">▶</button>
             </main>
         </div>
 
@@ -618,12 +637,12 @@
         <canvas id="histogram-canvas" width="380" height="200"></canvas>
     </div>
 
-    <script src="js/terrain.js"></script>
-    <script src="js/stl.js"></script>
-    <script src="js/physics.js"></script>
-    <script src="js/simulation.js"></script>
-    <script src="js/renderer.js"></script>
-    <script src="js/stats.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/terrain.js?v=6"></script>
+    <script src="js/stl.js?v=6"></script>
+    <script src="js/physics.js?v=6"></script>
+    <script src="js/simulation.js?v=6"></script>
+    <script src="js/renderer.js?v=5"></script>
+    <script src="js/stats.js?v=5"></script>
+    <script src="js/app.js?v=7"></script>
 </body>
 </html>

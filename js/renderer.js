@@ -10,19 +10,35 @@ class Renderer {
         this.releaseMode = 'freefall';
         this.multiReleasePoints = null;
         this.barriers = [];
-        this.terrain.colors = {
-            fill: 'rgba(139, 90, 43, 0.6)',
-            stroke: '#8B5A2B',
-            points: '#e94560'
+        this._cssVars = {};
+        this._getCssVar = (name, defaultValue = '') => {
+            if (!(name in this._cssVars)) {
+                this._cssVars[name] = getComputedStyle(document.documentElement)
+                    .getPropertyValue(name).trim() || defaultValue;
+            }
+            return this._cssVars[name] || defaultValue;
         };
-        this.gridColor = 'rgba(255, 255, 255, 0.05)';
-        this.axisColor = 'rgba(255, 255, 255, 0.3)';
-        this.textColor = 'rgba(255, 255, 255, 0.5)';
-        this._hexCache = {};  // Cache hex→rgba conversions
+        this.terrain.colors = {
+            fill: this._getCssVar('--canvas-terrain-fill', 'rgba(139, 90, 43, 0.6)'),
+            stroke: this._getCssVar('--canvas-terrain-stroke', '#8B5A2B'),
+            points: this._getCssVar('--canvas-terrain-points', '#e94560')
+        };
+        this.gridColor = this._getCssVar('--canvas-grid', 'rgba(255, 255, 255, 0.05)');
+        this.axisColor = this._getCssVar('--canvas-axis', 'rgba(255, 255, 255, 0.3)');
+        this.textColor = this._getCssVar('--canvas-text', 'rgba(255, 255, 255, 0.5)');
+        this.trajectoryColor = this._getCssVar('--canvas-trajectory', 'rgba(78, 205, 196, 0.3)');
+        this.releaseFreefallColor = this._getCssVar('--canvas-release-freefall', '#ffa500');
+        this.releaseDetachmentColor = this._getCssVar('--canvas-release-detachment', '#4ecdc4');
+        this.histogramBg = this._getCssVar('--canvas-histogram-bg', '#1e2a4a');
+        this._hexCache = {};
         this.activeTab = 'terrain';
         this.currentStl = null;
         this.sliceLine = { x1: 0, y1: 0, x2: 0, y2: 0, active: false };
         this.stlUpAxis = 'Z';
+        this.stlHeightmap = null;
+        this.stlContours = [];
+        this.stlContourInterval = 10;
+        this.highlightSegmentIndex = -1;
     }
 
     resize() {
@@ -68,7 +84,7 @@ class Renderer {
     }
 
     clear() {
-        this.ctx.fillStyle = '#0a0a1a';
+        this.ctx.fillStyle = this._getCssVar('--canvas-bg', '#0a0a1a');
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
 
@@ -174,6 +190,44 @@ class Renderer {
             ctx.lineWidth = 1;
             ctx.stroke();
         }
+    }
+
+    drawSegmentHighlight() {
+        if (this.highlightSegmentIndex < 0) return;
+        const idx = this.highlightSegmentIndex;
+        const points = this.terrain.points;
+        if (idx < 0 || idx >= points.length - 1) return;
+
+        const scale = this.terrain.scale;
+        const offsetX = this.terrain.offsetX;
+        const offsetY = this.terrain.offsetY;
+        const canvasH = this.canvas.height;
+        const ctx = this.ctx;
+
+        const p1 = points[idx], p2 = points[idx + 1];
+        const cx1 = p1.x * scale + offsetX, cy1 = canvasH - (p1.y * scale + offsetY);
+        const cx2 = p2.x * scale + offsetX, cy2 = canvasH - (p2.y * scale + offsetY);
+
+        ctx.save();
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 4;
+        ctx.shadowColor = '#00ff88';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.moveTo(cx1, cy1);
+        ctx.lineTo(cx2, cy2);
+        ctx.stroke();
+
+        const midX = (cx1 + cx2) / 2;
+        const midY = (cy1 + cy2) / 2;
+        const seg = this.terrain.segments[idx];
+        const label = seg ? `S${idx + 1}: ${seg.angle != null ? seg.angle.toFixed(1) + '°' : ''}` : `S${idx + 1}`;
+        ctx.shadowBlur = 0;
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#00ff88';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, midX, midY - 10);
+        ctx.restore();
     }
 
     /**
@@ -292,7 +346,7 @@ class Renderer {
                 }
             }
 
-            ctx.strokeStyle = 'rgba(78, 205, 196, 0.3)';
+            ctx.strokeStyle = this.trajectoryColor;
             ctx.lineWidth = 0.5;
             ctx.stroke();
 
@@ -366,7 +420,7 @@ class Renderer {
         if (!isDetachment) {
             // Caída libre: línea vertical punteada desde release al suelo
             ctx.setLineDash([5, 5]);
-            ctx.strokeStyle = 'rgba(78, 205, 196, 0.5)';
+            ctx.strokeStyle = this.trajectoryColor;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(cx, cy);
@@ -388,8 +442,8 @@ class Renderer {
         }
 
         // Circle marker
-        const markerColor = isDetachment ? 'rgba(255, 165, 0, 0.3)' : 'rgba(78, 205, 196, 0.3)';
-        const strokeColor = isDetachment ? '#ffa500' : '#4ecdc4';
+        const markerColor = isDetachment ? this.releaseDetachmentColor : this.releaseFreefallColor;
+        const strokeColor = markerColor;
         const label = isDetachment ? 'Desprendimiento' : 'Release';
 
         ctx.beginPath();
@@ -616,6 +670,7 @@ class Renderer {
         this.drawGrid();
         this.drawAxes();
         this.drawTerrain();
+        this.drawSegmentHighlight();
 
         if (releaseX !== undefined && releaseY !== undefined) {
             this.drawReleasePoint(releaseX, releaseY);
@@ -667,160 +722,228 @@ class Renderer {
     }
 
     /**
-     * Draws a top-down horizontal projection of the STL mesh and the active cutting slice line.
-     * Uses optimized O(1) batched wireframe paths and inlined canvas transforms to achieve 60fps rendering.
+     * Draws a plan view (planta) of the STL mesh with contour lines and slice line.
+     * Uses a pre-computed heightmap for heatmap + marching-squares contour lines.
      */
     drawStlTopDown(stlData, sliceLine) {
+        const ctx = this.ctx;
+
         if (!stlData || !stlData.triangles) {
-            // Draw a placeholder message if no STL is loaded
-            const ctx = this.ctx;
             ctx.fillStyle = this.textColor;
             ctx.font = '14px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText('📂 Por favor, carga un archivo STL para iniciar la sección de corte.', this.canvas.width / 2, this.canvas.height / 2);
-            ctx.textAlign = 'left'; // Reset
+            ctx.fillText('📂 Carga un archivo STL para generar curvas de nivel.', this.canvas.width / 2, this.canvas.height / 2);
+            ctx.textAlign = 'left';
             return;
         }
-        
-        const ctx = this.ctx;
+
         const bounds = stlData.bounds;
         const upAxis = this.stlUpAxis || 'Z';
-        
-        // Map 3D bounds to horizontal bounds based on upAxis
-        let minHX, maxHX, minHY, maxHY;
+
+        // Map 3D bounds to horizontal/vertical based on upAxis
+        let minHX, maxHX, minHY, maxHY, minV, maxV;
         if (upAxis === 'Y') {
-            minHX = bounds.minX;
-            maxHX = bounds.maxX;
-            minHY = bounds.minZ;
-            maxHY = bounds.maxZ;
+            minHX = bounds.minX; maxHX = bounds.maxX;
+            minHY = bounds.minZ; maxHY = bounds.maxZ;
+            minV = bounds.minY;  maxV = bounds.maxY;
         } else {
-            minHX = bounds.minX;
-            maxHX = bounds.maxX;
-            minHY = bounds.minY;
-            maxHY = bounds.maxY;
+            minHX = bounds.minX; maxHX = bounds.maxX;
+            minHY = bounds.minY; maxHY = bounds.maxY;
+            minV = bounds.minZ;  maxV = bounds.maxZ;
         }
-        
+
         const hWidth = maxHX - minHX;
         const hHeight = maxHY - minHY;
-        
+        const vHeight = maxV - minV;
+
+        // Compute scale to fit mesh in canvas with padding
         const pad = 60;
         const canvasW = this.canvas.width - pad * 2;
         const canvasH = this.canvas.height - pad * 2;
-        
         const scaleX = canvasW / (hWidth || 1);
         const scaleY = canvasH / (hHeight || 1);
         const scale = Math.min(scaleX, scaleY);
-        
         const offsetX = pad + (canvasW - hWidth * scale) / 2 - minHX * scale;
         const offsetY = pad + (canvasH - hHeight * scale) / 2 - minHY * scale;
-        
-        // Store scale and offsets as class properties to support instance methods without closures
+
         this.stlScale = scale;
         this.stlOffsetX = offsetX;
         this.stlOffsetY = offsetY;
-        
-        // Inlined canvas coordinate transformers to avoid object allocations in hot drawing loops
-        const getCanvasX = (hx) => hx * scale + offsetX;
-        const getCanvasY = (hy) => this.canvas.height - (hy * scale + offsetY);
 
-        // Draw background grid in top-down view
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
-        ctx.lineWidth = 1;
-        const gridSize = 50;
-        for (let x = 0; x < this.canvas.width; x += gridSize) {
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, this.canvas.height);
-            ctx.stroke();
-        }
-        for (let y = 0; y < this.canvas.height; y += gridSize) {
-            ctx.beginPath();
-            ctx.moveTo(0, y);
-            ctx.lineTo(this.canvas.width, y);
-            ctx.stroke();
-        }
+        const getCx = (hx) => hx * scale + offsetX;
+        const getCy = (hy) => this.canvas.height - (hy * scale + offsetY);
 
-        // Draw triangles (wireframe) — BATCHED PATHS FOR 100x RENDERING SPEEDUP!
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        
-        const numTriangles = stlData.triangles.length / 9;
-        const maxDraw = 12000; // Limit triangle rendering to keep it super fast (60fps)
-        const step = Math.max(1, Math.floor(numTriangles / maxDraw));
-        
-        for (let i = 0; i < numTriangles; i += step) {
-            const idx = i * 9;
-            
-            const v1x = stlData.triangles[idx];
-            const v1y = stlData.triangles[idx + 1];
-            const v1z = stlData.triangles[idx + 2];
-            
-            const v2x = stlData.triangles[idx + 3];
-            const v2y = stlData.triangles[idx + 4];
-            const v2z = stlData.triangles[idx + 5];
-            
-            const v3x = stlData.triangles[idx + 6];
-            const v3y = stlData.triangles[idx + 7];
-            const v3z = stlData.triangles[idx + 8];
-            
-            let p1x, p1y, p2x, p2y, p3x, p3y;
-            if (upAxis === 'Y') {
-                p1x = getCanvasX(v1x); p1y = getCanvasY(v1z);
-                p2x = getCanvasX(v2x); p2y = getCanvasY(v2z);
-                p3x = getCanvasX(v3x); p3y = getCanvasY(v3z);
-            } else {
-                p1x = getCanvasX(v1x); p1y = getCanvasY(v1y);
-                p2x = getCanvasX(v2x); p2y = getCanvasY(v2y);
-                p3x = getCanvasX(v3x); p3y = getCanvasY(v3y);
+        // Draw heatmap from heightmap if available
+        const hm = this.stlHeightmap;
+        if (hm) {
+            const { heights, cols, rows, cellW, cellH, minHX: hmMinX, minHY: hmMinY } = hm;
+
+            // Find min/max for normalization
+            let hMin = Infinity, hMax = -Infinity;
+            for (let i = 0; i < heights.length; i++) {
+                if (heights[i] > -1e20) {
+                    if (heights[i] < hMin) hMin = heights[i];
+                    if (heights[i] > hMax) hMax = heights[i];
+                }
             }
-            
-            ctx.moveTo(p1x, p1y);
-            ctx.lineTo(p2x, p2y);
-            ctx.lineTo(p3x, p3y);
-            ctx.lineTo(p1x, p1y); // Close outline
+            const vRange = (hMax - hMin) || 1;
+
+            // Draw heatmap as filled rectangles (one per grid cell)
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const h = heights[r * cols + c];
+                    if (h < -1e20) continue; // No data
+
+                    const t = Math.max(0, Math.min(1, (h - hMin) / vRange));
+                    // Color ramp: deep blue → cyan → green → yellow → brown
+                    let cr, cg, cb;
+                    if (t < 0.25) {
+                        const s = t * 4;
+                        cr = Math.round(20 + 10 * s);
+                        cg = Math.round(50 + 130 * s);
+                        cb = Math.round(80 + 80 * s);
+                    } else if (t < 0.5) {
+                        const s = (t - 0.25) * 4;
+                        cr = Math.round(30 + 100 * s);
+                        cg = Math.round(180 + 40 * s);
+                        cb = Math.round(160 - 120 * s);
+                    } else if (t < 0.75) {
+                        const s = (t - 0.5) * 4;
+                        cr = Math.round(130 + 100 * s);
+                        cg = Math.round(220 - 40 * s);
+                        cb = Math.round(40 - 20 * s);
+                    } else {
+                        const s = (t - 0.75) * 4;
+                        cr = Math.round(230 - 50 * s);
+                        cg = Math.round(180 - 100 * s);
+                        cb = Math.round(20 + 40 * s);
+                    }
+
+                    const x1 = getCx(hmMinX + c * cellW);
+                    const y1 = getCy(hmMinY + (r + 1) * cellH);
+                    const x2 = getCx(hmMinX + (c + 1) * cellW);
+                    const y2 = getCy(hmMinY + r * cellH);
+
+                    ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+                    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+                }
+            }
+        } else {
+            // Fallback: faint wireframe if no heightmap yet
+            const numTriangles = stlData.triangles.length / 9;
+            const maxDraw = 8000;
+            const step = Math.max(1, Math.floor(numTriangles / maxDraw));
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 0.3;
+            ctx.beginPath();
+            for (let i = 0; i < numTriangles; i += step) {
+                const idx = i * 9;
+                let p1hx, p1hy, p2hx, p2hy, p3hx, p3hy;
+                if (upAxis === 'Y') {
+                    p1hx = stlData.triangles[idx]; p1hy = stlData.triangles[idx + 2];
+                    p2hx = stlData.triangles[idx + 3]; p2hy = stlData.triangles[idx + 5];
+                    p3hx = stlData.triangles[idx + 6]; p3hy = stlData.triangles[idx + 8];
+                } else {
+                    p1hx = stlData.triangles[idx]; p1hy = stlData.triangles[idx + 1];
+                    p2hx = stlData.triangles[idx + 3]; p2hy = stlData.triangles[idx + 4];
+                    p3hx = stlData.triangles[idx + 6]; p3hy = stlData.triangles[idx + 7];
+                }
+                ctx.moveTo(getCx(p1hx), getCy(p1hy));
+                ctx.lineTo(getCx(p2hx), getCy(p2hy));
+                ctx.lineTo(getCx(p3hx), getCy(p3hy));
+                ctx.closePath();
+            }
+            ctx.stroke();
         }
-        ctx.stroke(); // Stroked in a single batch!
 
-        // Draw mesh Bounding Box
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-        ctx.setLineDash([4, 4]);
+        // Draw contour lines
+        if (this.stlContours && this.stlContours.length > 0) {
+            const contours = this.stlContours;
+            for (let ci = 0; ci < contours.length; ci++) {
+                const { level, segments } = contours[ci];
+                // Color: darker brown for major contours, lighter for minor
+                const isMajor = Math.abs(level % (this.stlContourInterval * 5)) < 0.5;
+                ctx.strokeStyle = isMajor ? 'rgba(60, 40, 20, 0.7)' : 'rgba(80, 60, 30, 0.4)';
+                ctx.lineWidth = isMajor ? 1.5 : 0.6;
+                ctx.beginPath();
+                for (let si = 0; si < segments.length; si++) {
+                    const [sx1, sy1, sx2, sy2] = segments[si];
+                    ctx.moveTo(getCx(sx1), getCy(sy1));
+                    ctx.lineTo(getCx(sx2), getCy(sy2));
+                }
+                ctx.stroke();
+
+                // Label major contours
+                if (isMajor && segments.length > 2) {
+                    // Place label at the longest segment
+                    let maxLen = 0, bestIdx = 0;
+                    for (let si = 0; si < Math.min(segments.length, 200); si++) {
+                        const [sx1, sy1, sx2, sy2] = segments[si];
+                        const len = (sx2 - sx1) ** 2 + (sy2 - sy1) ** 2;
+                        if (len > maxLen) { maxLen = len; bestIdx = si; }
+                    }
+                    const [sx1, sy1, sx2, sy2] = segments[bestIdx];
+                    const mx = getCx((sx1 + sx2) / 2);
+                    const my = getCy((sy1 + sy2) / 2);
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                    ctx.font = '9px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(level.toFixed(0), mx, my - 3);
+                    ctx.textAlign = 'left';
+                }
+            }
+        }
+
+        // Draw bounding box outline
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
         ctx.lineWidth = 1;
-        const bMinX = getCanvasX(minHX);
-        const bMinY = getCanvasY(minHY);
-        const bMaxX = getCanvasX(maxHX);
-        const bMaxY = getCanvasY(maxHY);
+        ctx.setLineDash([4, 4]);
+        const bMinX = getCx(minHX);
+        const bMaxY = getCy(maxHY);
+        const bMaxX = getCx(maxHX);
+        const bMinY = getCy(minHY);
         ctx.strokeRect(bMinX, bMaxY, bMaxX - bMinX, bMinY - bMaxY);
-        ctx.setLineDash([]); // Reset
-        
-        // Label Bounding Box dimensions
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-        ctx.font = '10px sans-serif';
-        ctx.fillText(`Topografía 3D (${upAxis} vertical) | Ancho: ${hWidth.toFixed(1)}m, Largo: ${hHeight.toFixed(1)}m`, bMinX, bMaxY - 8);
+        ctx.setLineDash([]);
 
-        // Draw Slice Line (Cutting Plane)
+        // Info label
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.font = '11px sans-serif';
+        const triCount = (stlData.triangles.length / 9).toLocaleString();
+        ctx.fillText(`Planta | X:${hWidth.toFixed(0)}m  Y:${hHeight.toFixed(0)}m  ${upAxis}:${vHeight.toFixed(0)}m | ${triCount} triángulos | Equidistancia: ${this.stlContourInterval}m`, 15, this.canvas.height - 12);
+
+        // Axis indicator (bottom-left)
+        const axOx = 50, axOy = this.canvas.height - 45, axLen = 30;
+        ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(axOx, axOy); ctx.lineTo(axOx + axLen, axOy); ctx.stroke();
+        ctx.fillStyle = '#ff4444'; ctx.font = 'bold 10px sans-serif';
+        ctx.fillText('X', axOx + axLen + 3, axOy + 4);
+        ctx.strokeStyle = '#44ff44';
+        ctx.beginPath(); ctx.moveTo(axOx, axOy); ctx.lineTo(axOx, axOy - axLen); ctx.stroke();
+        ctx.fillStyle = '#44ff44';
+        ctx.fillText('Y', axOx - 3, axOy - axLen - 4);
+
+        // Draw Slice Line
         if (sliceLine && sliceLine.active) {
-            const pAx = getCanvasX(sliceLine.x1);
-            const pAy = getCanvasY(sliceLine.y1);
-            const pBx = getCanvasX(sliceLine.x2);
-            const pBy = getCanvasY(sliceLine.y2);
-            
-            // Draw Line
-            ctx.strokeStyle = '#4caf50'; // Bright Green
+            const pAx = getCx(sliceLine.x1);
+            const pAy = getCy(sliceLine.y1);
+            const pBx = getCx(sliceLine.x2);
+            const pBy = getCy(sliceLine.y2);
+
+            ctx.strokeStyle = '#4caf50';
             ctx.lineWidth = 2.5;
             ctx.beginPath();
             ctx.moveTo(pAx, pAy);
             ctx.lineTo(pBx, pBy);
             ctx.stroke();
-            
-            // Draw endpoints
+
+            // Endpoints
             ctx.fillStyle = '#4caf50';
             ctx.beginPath();
             ctx.arc(pAx, pAy, 6, 0, Math.PI * 2);
             ctx.arc(pBx, pBy, 6, 0, Math.PI * 2);
             ctx.fill();
-            
-            // Text Labels A & B
+
+            // Labels
             ctx.fillStyle = '#ffffff';
             ctx.font = 'bold 12px sans-serif';
             ctx.fillText('A', pAx - 14, pAy - 6);
@@ -844,6 +967,7 @@ class Renderer {
         this.drawGrid();
         this.drawAxes();
         this.drawTerrain();
+        this.drawSegmentHighlight();
 
         if (releaseX !== undefined && releaseY !== undefined) {
             this.drawReleasePoint(releaseX, releaseY);
@@ -1034,7 +1158,7 @@ class Renderer {
         const w = canvas.width;
         const h = canvas.height;
 
-        ctx.fillStyle = '#1e2a4a';
+        ctx.fillStyle = this.histogramBg;
         ctx.fillRect(0, 0, w, h);
 
         const energies = rocks.map(r => r.maxKineticEnergy / 1000).filter(e => e > 0);
@@ -1102,6 +1226,16 @@ class Renderer {
         ctx.rotate(-Math.PI / 2);
         ctx.fillText('Frecuencia', 0, 0);
         ctx.restore();
+
+        // Mini stats
+        const sortedE = [...energies].sort((a, b) => a - b);
+        const maxKE = sortedE[sortedE.length - 1];
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`N=${energies.length}`, w - padding.right - 2, padding.top + 10);
+        ctx.fillText(`Max=${maxKE.toFixed(1)}kJ`, w - padding.right - 2, padding.top + 21);
+        ctx.textAlign = 'left';
     }
 
     // =============================================
@@ -1297,6 +1431,80 @@ class Renderer {
         return ticks;
     }
 
+    _percentile(arr, pct) {
+        if (!arr || arr.length === 0) return 0;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = (pct / 100) * (sorted.length - 1);
+        const lo = Math.floor(idx);
+        const hi = Math.ceil(idx);
+        return sorted[lo] * (1 - (idx - lo)) + sorted[hi] * (idx - lo);
+    }
+
+    _drawStatsBox(ctx, x, y, lines) {
+        ctx.font = '10px monospace';
+        let maxW = 0;
+        for (const line of lines) {
+            const m = ctx.measureText(line);
+            if (m.width > maxW) maxW = m.width;
+        }
+        const pad = 6;
+        const lineH = 14;
+        const boxW = maxW + pad * 2;
+        const boxH = lines.length * lineH + pad * 2;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        ctx.beginPath();
+        ctx.roundRect(x, y, boxW, boxH, 4);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+        ctx.textAlign = 'left';
+        for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], x + pad, y + pad + (i + 1) * lineH - 3);
+        }
+    }
+
+    _drawTrendLine(ctx, points, padding, plotW, plotH, minX, rangeX, minY, rangeY, color) {
+        if (points.length < 3) return;
+        const sorted = [...points].sort((a, b) => a.x - b.x);
+        const windowSize = Math.max(3, Math.floor(sorted.length / 8));
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < sorted.length; i++) {
+            const lo = Math.max(0, i - windowSize);
+            const hi = Math.min(sorted.length - 1, i + windowSize);
+            let sumY = 0, count = 0;
+            for (let j = lo; j <= hi; j++) { sumY += sorted[j].y; count++; }
+            const avgY = sumY / count;
+            const px = padding.left + ((sorted[i].x - minX) / rangeX) * plotW;
+            const py = padding.top + plotH - ((avgY - minY) / rangeY) * plotH;
+            if (!started) { ctx.moveTo(px, py); started = true; }
+            else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    _drawVerticalLine(ctx, xVal, minVal, rangeVal, padding, plotW, plotH, color, label, labelY) {
+        const px = padding.left + ((xVal - minVal) / rangeVal) * plotW;
+        if (px < padding.left || px > padding.left + plotW) return;
+        ctx.setLineDash([5, 3]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(px, padding.top);
+        ctx.lineTo(px, padding.top + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        if (label) {
+            ctx.fillStyle = color;
+            ctx.font = 'bold 9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(label, px, labelY || padding.top - 4);
+        }
+    }
+
     /**
      * Chart 1: Energy Distribution Histogram (enhanced with terrain silhouette).
      */
@@ -1370,6 +1578,21 @@ class Renderer {
             ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.85)`;
             ctx.fillRect(x + 1, y, barWidth - 2, barH);
         }
+
+        // Statistics
+        const sortedE = [...energies].sort((a, b) => a - b);
+        const mean = energies.reduce((s, v) => s + v, 0) / energies.length;
+        const median = this._percentile(sortedE, 50);
+        const p95 = this._percentile(sortedE, 95);
+        const sd = Math.sqrt(energies.reduce((s, v) => s + (v - mean) ** 2, 0) / energies.length);
+        this._drawVerticalLine(ctx, median, 0, maxEnergy, padding, plotW, plotH, '#f0c040', `Med: ${median.toFixed(1)}kJ`, padding.top - 4);
+        this._drawStatsBox(ctx, w - padding.right - 165, padding.top + 4, [
+            `N = ${energies.length}`,
+            `Media = ${mean.toFixed(1)} kJ`,
+            `P50  = ${median.toFixed(1)} kJ`,
+            `P95  = ${p95.toFixed(1)} kJ`,
+            `SD   = ${sd.toFixed(1)} kJ`
+        ]);
     }
 
     /**
@@ -1436,6 +1659,26 @@ class Renderer {
             ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.7)`;
             ctx.fill();
         }
+
+        // Trend line (moving average)
+        const points = rocks.map(r => ({ x: r.finalX, y: r.maxKineticEnergy / 1000 }));
+        this._drawTrendLine(ctx, points, padding, plotW, plotH, minX, rangeX, 0, maxKE, 'rgba(78, 205, 196, 0.6)');
+
+        // Statistics box
+        const meanKE = rocks.reduce((s, r) => s + r.maxKineticEnergy / 1000, 0) / rocks.length;
+        const maxKEActual = rocks.reduce((m, r) => Math.max(m, r.maxKineticEnergy / 1000), 0);
+        const n = rocks.length;
+        const meanX = rocks.reduce((s, r) => s + r.finalX, 0) / n;
+        const cov = rocks.reduce((s, r) => s + (r.finalX - meanX) * (r.maxKineticEnergy / 1000 - meanKE), 0) / n;
+        const sdX = Math.sqrt(rocks.reduce((s, r) => s + (r.finalX - meanX) ** 2, 0) / n);
+        const sdKE = Math.sqrt(rocks.reduce((s, r) => s + (r.maxKineticEnergy / 1000 - meanKE) ** 2, 0) / n);
+        const r = (sdX > 0 && sdKE > 0) ? cov / (sdX * sdKE) : 0;
+        this._drawStatsBox(ctx, w - padding.right - 155, padding.top + 4, [
+            `N = ${n}`,
+            `Max = ${maxKEActual.toFixed(1)} kJ`,
+            `Media = ${meanKE.toFixed(1)} kJ`,
+            `r = ${r.toFixed(3)}`
+        ]);
     }
 
     /**
@@ -1505,6 +1748,25 @@ class Renderer {
             ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.85)`;
             ctx.fillRect(x, y, barWidth - 1, barH);
         }
+
+        // Statistics
+        let maxBinCount = 0, modalBin = histogram[0];
+        for (const b of histogram) {
+            if (b.count > maxBinCount) { maxBinCount = b.count; modalBin = b; }
+        }
+        const sortedPos = [...positions].sort((a, b) => a - b);
+        const median = this._percentile(sortedPos, 50);
+        const n = rocks.length;
+        const sortedAll = [...rocks].sort((a, b) => a.finalX - b.finalX);
+        const p50 = this._percentile(sortedAll.map(r => r.finalX), 50);
+        const mean = positions.reduce((s, v) => s + v, 0) / n;
+        this._drawVerticalLine(ctx, modalBin.bin + modalBin.width / 2, minBin, rangeX, padding, plotW, plotH, '#e94560', `Moda: ${modalBin.bin.toFixed(0)}-${(modalBin.bin + modalBin.width).toFixed(0)}m`, padding.top - 4);
+        this._drawStatsBox(ctx, w - padding.right - 155, padding.top + 4, [
+            `N = ${n}`,
+            `Moda = ${modalBin.bin.toFixed(0)}-${(modalBin.bin + modalBin.width).toFixed(0)}m`,
+            `P50  = ${p50.toFixed(1)}m`,
+            `Media = ${mean.toFixed(1)}m`
+        ]);
     }
 
     /**
@@ -1564,6 +1826,20 @@ class Renderer {
             ctx.fillStyle = 'rgba(78, 205, 196, 0.65)';
             ctx.fill();
         }
+
+        // Trend line
+        const bhPoints = rocks.map(r => ({ x: r.finalX, y: r.maxBounceHeight }));
+        this._drawTrendLine(ctx, bhPoints, padding, plotW, plotH, minX, rangeX, 0, maxBH, 'rgba(78, 205, 196, 0.6)');
+
+        // Statistics
+        const bhVals = rocks.map(r => r.maxBounceHeight);
+        const meanBH = bhVals.reduce((s, v) => s + v, 0) / bhVals.length;
+        const maxBHactual = bhVals.reduce((m, v) => Math.max(m, v), 0);
+        this._drawStatsBox(ctx, w - padding.right - 155, padding.top + 4, [
+            `N = ${rocks.length}`,
+            `Max = ${maxBHactual.toFixed(2)} m`,
+            `Media = ${meanBH.toFixed(2)} m`
+        ]);
     }
 
     /**
@@ -1623,6 +1899,20 @@ class Renderer {
             ctx.fillStyle = 'rgba(243, 156, 18, 0.7)';
             ctx.fill();
         }
+
+        // Trend line
+        const ivPoints = rocks.map(r => ({ x: r.finalX, y: r.maxImpactVelocity }));
+        this._drawTrendLine(ctx, ivPoints, padding, plotW, plotH, minX, rangeX, 0, maxV, 'rgba(243, 156, 18, 0.6)');
+
+        // Statistics
+        const ivVals = rocks.map(r => r.maxImpactVelocity);
+        const meanV = ivVals.reduce((s, v) => s + v, 0) / ivVals.length;
+        const maxVactual = ivVals.reduce((m, v) => Math.max(m, v), 0);
+        this._drawStatsBox(ctx, w - padding.right - 165, padding.top + 4, [
+            `N = ${rocks.length}`,
+            `Max = ${maxVactual.toFixed(1)} m/s`,
+            `Media = ${meanV.toFixed(1)} m/s`
+        ]);
     }
 
     /**
@@ -1674,15 +1964,12 @@ class Renderer {
             const py = padding.top + plotH - ((i + 1) / n * 100 / 100) * plotH;
             ctx.lineTo(px, py);
         }
-        ctx.strokeStyle = 'rgba(78, 205, 196, 0.9)';
-        ctx.lineWidth = 2;
+ctx.strokeStyle = this.trajectoryColor;
+        ctx.lineWidth = 1.5;
         ctx.stroke();
 
-        // Fill area under curve
-        ctx.lineTo(padding.left + plotW, padding.top + plotH);
-        ctx.lineTo(padding.left, padding.top + plotH);
-        ctx.closePath();
-        ctx.fillStyle = 'rgba(78, 205, 196, 0.1)';
+        // Fill under curve
+        ctx.fillStyle = this.trajectoryColor;
         ctx.fill();
 
         // Draw percentile lines: compute percentiles from sorted runouts
@@ -1727,6 +2014,16 @@ class Renderer {
             ctx.textAlign = 'right';
             ctx.fillText(labelText, padding.left + plotW - 4, py - 5);
         }
+
+        // Statistics box
+        const runoutStats = rocks.map(r => Math.abs(r.finalX - releasePoint.x)).sort((a, b) => a - b);
+        const mean = runoutStats.reduce((s, v) => s + v, 0) / runoutStats.length;
+        const sd = Math.sqrt(runoutStats.reduce((s, v) => s + (v - mean) ** 2, 0) / runoutStats.length);
+        this._drawStatsBox(ctx, w - padding.right - 145, h - padding.bottom - 4 - 54, [
+            `N = ${runoutStats.length}`,
+            `Media = ${mean.toFixed(1)} m`,
+            `SD   = ${sd.toFixed(1)} m`
+        ]);
     }
 }
 

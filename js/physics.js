@@ -97,6 +97,9 @@ class Rock {
         this.parentId = null;
         this.isFragmented = false;
         this._lastCollision = null;
+        this.isCore = false;          // true if this rock is a surviving core
+        this.massLossRatio = 0;       // cumulative fraction of mass lost to spalling (0-1)
+        this.originalDiameter = diameter; // track original size for erosion display
     }
 
     /**
@@ -564,6 +567,20 @@ class Rock {
         this.y = Math.max(terrainY + 0.01, this.y);
         this._verticesDirty = true;
 
+        // Angular velocity update for lumped-mass:
+        // Transfer some tangential velocity to rotation (rolling coupling).
+        // The tangential velocity at the contact point drives spin.
+        // Tangent direction (perpendicular to normal, in the surface direction)
+        const tx = -rny;
+        const ty = rnx;
+        const vtAfter = this.vx * tx + this.vy * ty;
+        // Rolling without slipping: v_tangential = omega * R
+        // Blend between current spin and rolling equilibrium
+        const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
+        // Transfer ratio: higher for rounded rocks, lower for blocky ones
+        const transferRatio = 0.4;
+        this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
         this.impactEnergies.push(keBefore / 1000);
@@ -878,10 +895,8 @@ class Rock {
             const normalForce = this.mass * 9.81;
             const rollingMoment = deformationCoef * normalForce * this.radius;
 
-            if (!isLumped) {
-                const angularDecel = rollingMoment / this.momentOfInertia;
-                this.angularVelocity *= Math.max(0, 1 - angularDecel * dt);
-            }
+            const angularDecel = rollingMoment / this.momentOfInertia;
+            this.angularVelocity *= Math.max(0, 1 - angularDecel * dt);
 
             const translationalDecel = deformationCoef * 9.81;
             const spd = this.speed;
@@ -898,8 +913,20 @@ class Rock {
                 this.vx *= factor;
                 this.vy *= factor;
             }
-            if (!isLumped) {
-                this.angularVelocity *= (1 - rollingFriction * dt * 2);
+            // Rolling friction decelerates angular velocity for all methods
+            this.angularVelocity *= (1 - rollingFriction * dt * 2);
+
+            // For lumped-mass: couple tangential velocity to rolling angular velocity
+            // This creates natural rolling behavior: rock spins at v_tangential / R
+            if (isLumped) {
+                const terrainNormal = terrain.getSurfaceNormalAt(this.x);
+                const tx = -terrainNormal.ny;
+                const ty = terrainNormal.nx;
+                const vt = this.vx * tx + this.vy * ty;
+                const rollingOmega = vt / Math.max(this.radius, 0.1);
+                // Gentle coupling — blend toward rolling equilibrium
+                const coupling = 0.1;
+                this.angularVelocity = this.angularVelocity * (1 - coupling) + rollingOmega * coupling;
             }
         }
     }
@@ -996,15 +1023,29 @@ class PhysicsEngine {
             if (this.fragmentationEnabled && rock._lastCollision) {
                 const { normal, vn } = rock._lastCollision;
                 const impactEnergy = 0.5 * rock.mass * vn * vn;
-                if (impactEnergy > this.fractureEnergy && rock.generation < 2 && rock.diameter > 0.15) {
-                    rock.isFragmented = true;
-                    rock.isResting = true;
-                    const children = this.fragmentRock(rock, normal);
-                    if (children && children.length > 0) {
+                const minDiameter = 0.10;
+
+                if (impactEnergy > this.fractureEnergy && rock.generation < 3 && rock.diameter > minDiameter) {
+                    // Determine fragmentation mode based on energy ratio
+                    const energyRatio = impactEnergy / this.fractureEnergy;
+                    const result = this._fragmentRockProgressive(rock, normal, energyRatio);
+
+                    if (result && result.children && result.children.length > 0) {
                         spawnedChildren = spawnedChildren || [];
-                        spawnedChildren.push(...children);
+                        spawnedChildren.push(...result.children);
+
+                        if (result.core) {
+                            // Core survives — replace rock properties in-place
+                            spawnedChildren.push(result.core);
+                            rock.isFragmented = true;
+                            rock.isResting = true;
+                        } else {
+                            // Full breakup — rock is destroyed
+                            rock.isFragmented = true;
+                            rock.isResting = true;
+                        }
+                        break;
                     }
-                    break; // stop simulation for this step since it has fragmented
                 }
             }
 
@@ -1021,83 +1062,249 @@ class PhysicsEngine {
         return spawnedChildren;
     }
 
-    fragmentRock(rock, normal) {
-        const N = Math.random() < 0.5 ? 2 : 3;
-        const childMasses = [];
-        const parentMass = rock.mass;
-
-        if (N === 2) {
-            const f = 0.55 + Math.random() * 0.15;
-            const m1 = f * parentMass;
-            const m2 = parentMass - m1;
-            childMasses.push(m1, m2);
-        } else {
-            const f1 = 0.50 + Math.random() * 0.15;
-            const m1 = f1 * parentMass;
-            const remainder = parentMass - m1;
-            const f2 = 0.50 + Math.random() * 0.15;
-            const m2 = f2 * remainder;
-            const m3 = remainder - m2;
-            childMasses.push(m1, m2, m3);
-        }
-
-        const vxReflected = rock.vx;
-        const vyReflected = rock.vy;
-
-        const E_reflected = 0.5 * parentMass * (vxReflected * vxReflected + vyReflected * vyReflected);
-        const E_target = E_reflected * (1 - this.fractureDissipation);
-
-        const childVBase = [];
-        let sumKeBase = 0;
-
-        for (let i = 0; i < N; i++) {
-            const alpha = (Math.random() * 2 - 1) * 15 * Math.PI / 180;
-            const cosAlpha = Math.cos(alpha);
-            const sinAlpha = Math.sin(alpha);
-            const vbx = vxReflected * cosAlpha - vyReflected * sinAlpha;
-            const vby = vxReflected * sinAlpha + vyReflected * cosAlpha;
-            childVBase.push({ vx: vbx, vy: vby });
-
-            sumKeBase += 0.5 * childMasses[i] * (vbx * vbx + vby * vby);
-        }
-
-        let S = 1.0;
-        if (sumKeBase > 0 && E_target > 0) {
-            S = Math.sqrt(E_target / sumKeBase);
-        }
-
+    /**
+     * Progressive abrasion fragmentation model:
+     *
+     * Low energy ratio (1-3x threshold): 1-2 small spalls detach from
+     * the contact zone. The CORE survives, barely reduced, and continues
+     * bouncing — realistic rockfall abrasion behavior.
+     *
+     * High energy ratio (>3x threshold): core splits in 2 + spalls.
+     * The rock is destroyed; two main fragments continue.
+     *
+     * @param {Rock} rock - The parent rock
+     * @param {{ nx: number, ny: number }} normal - Surface normal at impact
+     * @param {number} energyRatio - impactEnergy / fractureEnergy (>= 1)
+     * @returns {{ children: Rock[], core: Rock|null }}
+     */
+    _fragmentRockProgressive(rock, normal, energyRatio) {
         const tx = -normal.ny;
         const ty = normal.nx;
+        const parentMass = rock.mass;
+        const vxParent = rock.vx;
+        const vyParent = rock.vy;
+        const E_parent = 0.5 * parentMass * (vxParent * vxParent + vyParent * vyParent);
 
         const children = [];
-        for (let i = 0; i < N; i++) {
-            const childMass = childMasses[i];
-            const childArea = childMass / rock.density;
-            const childRadius = Math.sqrt(childArea / Math.PI);
-            const childDiameter = childRadius * 2;
+        let core = null;
 
-            const offsetFactor = (i - (N - 1) / 2) * childDiameter * 0.8;
-            const cx = rock.x + tx * offsetFactor;
-            const cy = rock.y + ty * offsetFactor;
+        if (energyRatio < 3.0) {
+            // ========================================
+            // ABRASION MODE: spalls fly off, core survives
+            // ========================================
+            const numSpalls = energyRatio < 1.5 ? 1 : (Math.random() < 0.6 ? 2 : 3);
 
-            const child = this.createRock(
-                cx, cy, childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
+            // Each spall takes 5-15% of parent mass
+            let totalSpallMass = 0;
+            const spallMasses = [];
+            for (let i = 0; i < numSpalls; i++) {
+                const frac = 0.05 + Math.random() * 0.10;
+                const sm = frac * parentMass;
+                spallMasses.push(sm);
+                totalSpallMass += sm;
+            }
+
+            // Clamp: spalls can't exceed 40% total mass
+            if (totalSpallMass > 0.40 * parentMass) {
+                const scale = (0.40 * parentMass) / totalSpallMass;
+                for (let i = 0; i < spallMasses.length; i++) {
+                    spallMasses[i] *= scale;
+                }
+                totalSpallMass = 0.40 * parentMass;
+            }
+
+            const coreMass = parentMass - totalSpallMass;
+
+            // Energy budget: spalls get 15-30% of the impact energy
+            // (they fly off with moderate velocity)
+            const spallEnergyFraction = 0.15 + Math.random() * 0.15;
+            const E_spalls = E_parent * spallEnergyFraction * (1 - this.fractureDissipation);
+            const E_core = E_parent * (1 - spallEnergyFraction) * (1 - this.fractureDissipation * 0.5);
+
+            // Create spalls — ejected from the contact zone
+            for (let i = 0; i < numSpalls; i++) {
+                const sm = spallMasses[i];
+                const childArea = sm / rock.density;
+                const childRadius = Math.sqrt(childArea / Math.PI);
+                const childDiameter = childRadius * 2;
+
+                if (childDiameter < 0.05) continue; // skip dust-sized fragments
+
+                // Spalls fly off at ±20-45° from the impact normal
+                const ejectAngle = ((Math.random() * 2 - 1) * (20 + Math.random() * 25)) * Math.PI / 180;
+                const cosE = Math.cos(ejectAngle);
+                const sinE = Math.sin(ejectAngle);
+                // Rotate normal by ejectAngle
+                const ejNx = normal.nx * cosE - normal.ny * sinE;
+                const ejNy = normal.nx * sinE + normal.ny * cosE;
+
+                // Spall velocity: proportional to sqrt(E_spalls / totalSpallMass)
+                const spallSpeed = Math.sqrt(2 * E_spalls / totalSpallMass);
+                // Add tangential component from parent motion
+                const parentVt = vxParent * tx + vyParent * ty;
+
+                // Position: offset along surface tangent from impact point
+                const offsetFactor = (i - (numSpalls - 1) / 2) * childDiameter * 1.2;
+
+                const spall = this.createRock(
+                    rock.x + tx * offsetFactor + ejNx * childRadius,
+                    rock.y + ty * offsetFactor + ejNy * childRadius,
+                    childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
+                );
+
+                spall.vx = ejNx * spallSpeed * (0.7 + Math.random() * 0.6) + tx * parentVt * 0.3;
+                spall.vy = ejNy * spallSpeed * (0.7 + Math.random() * 0.6) + ty * parentVt * 0.3;
+                spall.angularVelocity = (Math.random() - 0.5) * 10; // fast spin for debris
+                spall.mass = sm;
+                spall.momentOfInertia = spall.computeMomentOfInertia();
+                spall.generation = rock.generation + 1;
+                spall.parentId = rock.id;
+
+                children.push(spall);
+            }
+
+            // Create surviving core — continues the trajectory
+            const coreArea = coreMass / rock.density;
+            const coreRadius = Math.sqrt(coreArea / Math.PI);
+            const coreDiameter = coreRadius * 2;
+
+            core = this.createRock(
+                rock.x, rock.y,
+                coreDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
             );
 
-            child.vx = childVBase[i].vx * S;
-            child.vy = childVBase[i].vy * S;
-            child.angularVelocity = rock.angularVelocity * (0.8 + Math.random() * 0.4);
+            // Core keeps most of the parent's velocity (slightly reduced)
+            const coreSpeedScale = coreMass > 0 ? Math.sqrt(2 * E_core / coreMass) /
+                Math.sqrt(vxParent * vxParent + vyParent * vyParent + 0.001) : 0;
+            core.vx = vxParent * Math.min(1.0, coreSpeedScale);
+            core.vy = vyParent * Math.min(1.0, coreSpeedScale);
+            core.angularVelocity = rock.angularVelocity * (0.9 + Math.random() * 0.2);
+            core.mass = coreMass;
+            core.momentOfInertia = core.computeMomentOfInertia();
+            core.generation = rock.generation; // same generation — it's a surviving core
+            core.parentId = rock.parentId;
+            core.isCore = true;
+            core.massLossRatio = rock.massLossRatio + totalSpallMass / rock.originalDiameter;
+            core.originalDiameter = rock.originalDiameter;
+            core.id = rock.id; // keep same ID for trajectory continuity
 
-            child.mass = childMass;
-            child.momentOfInertia = child.computeMomentOfInertia();
+        } else {
+            // ========================================
+            // CORE SPLIT MODE: high-energy catastrophic failure
+            // Core splits in 2 + small spalls
+            // ========================================
+            const numSpalls = Math.random() < 0.5 ? 1 : 2;
+            let totalSpallMass = 0;
+            const spallMasses = [];
+            for (let i = 0; i < numSpalls; i++) {
+                const sm = (0.03 + Math.random() * 0.07) * parentMass;
+                spallMasses.push(sm);
+                totalSpallMass += sm;
+            }
 
-            child.parentId = rock.id;
-            child.generation = rock.generation + 1;
+            const remainingMass = parentMass - totalSpallMass;
 
-            children.push(child);
+            // Split remaining mass into two main fragments
+            const splitFrac = 0.40 + Math.random() * 0.20;
+            const m1 = splitFrac * remainingMass;
+            const m2 = remainingMass - m1;
+
+            const E_target = E_parent * (1 - this.fractureDissipation);
+
+            // --- Create spalls ---
+            for (let i = 0; i < spallMasses.length; i++) {
+                const sm = spallMasses[i];
+                const childArea = sm / rock.density;
+                const childRadius = Math.sqrt(childArea / Math.PI);
+                const childDiameter = childRadius * 2;
+                if (childDiameter < 0.05) continue;
+
+                const ejectAngle = ((Math.random() * 2 - 1) * 30) * Math.PI / 180;
+                const cosE = Math.cos(ejectAngle);
+                const sinE = Math.sin(ejectAngle);
+                const ejNx = normal.nx * cosE - normal.ny * sinE;
+                const ejNy = normal.nx * sinE + normal.ny * cosE;
+
+                const spallSpeed = Math.sqrt(2 * E_target * 0.15 / (totalSpallMass + 0.001));
+
+                const spall = this.createRock(
+                    rock.x + ejNx * rock.radius * 0.5,
+                    rock.y + ejNy * rock.radius * 0.5,
+                    childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
+                );
+
+                spall.vx = ejNx * spallSpeed + vxParent * 0.2;
+                spall.vy = ejNy * spallSpeed + vyParent * 0.2;
+                spall.angularVelocity = (Math.random() - 0.5) * 12;
+                spall.mass = sm;
+                spall.momentOfInertia = spall.computeMomentOfInertia();
+                spall.generation = rock.generation + 1;
+                spall.parentId = rock.id;
+
+                children.push(spall);
+            }
+
+            // --- Create two main fragments ---
+            const mainMasses = [m1, m2];
+            const E_main = E_target * 0.85; // 85% goes to main fragments
+            let sumKeBase = 0;
+            const mainVBase = [];
+
+            for (let i = 0; i < 2; i++) {
+                // Diverge ±10-25° from parent velocity direction
+                const alpha = ((i === 0 ? -1 : 1) * (10 + Math.random() * 15)) * Math.PI / 180;
+                const cosA = Math.cos(alpha);
+                const sinA = Math.sin(alpha);
+                const vbx = vxParent * cosA - vyParent * sinA;
+                const vby = vxParent * sinA + vyParent * cosA;
+                mainVBase.push({ vx: vbx, vy: vby });
+                sumKeBase += 0.5 * mainMasses[i] * (vbx * vbx + vby * vby);
+            }
+
+            const S = (sumKeBase > 0 && E_main > 0) ? Math.sqrt(E_main / sumKeBase) : 1.0;
+
+            for (let i = 0; i < 2; i++) {
+                const cm = mainMasses[i];
+                const childArea = cm / rock.density;
+                const childRadius = Math.sqrt(childArea / Math.PI);
+                const childDiameter = childRadius * 2;
+
+                const offsetFactor = (i === 0 ? -1 : 1) * childDiameter * 0.5;
+
+                const child = this.createRock(
+                    rock.x + tx * offsetFactor,
+                    rock.y + ty * offsetFactor,
+                    childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
+                );
+
+                child.vx = mainVBase[i].vx * S;
+                child.vy = mainVBase[i].vy * S;
+                child.angularVelocity = rock.angularVelocity * (0.6 + Math.random() * 0.6);
+                child.mass = cm;
+                child.momentOfInertia = child.computeMomentOfInertia();
+                child.generation = rock.generation + 1;
+                child.parentId = rock.id;
+                child.isCore = true;
+                child.originalDiameter = rock.originalDiameter;
+                child.massLossRatio = rock.massLossRatio + totalSpallMass / parentMass;
+
+                children.push(child);
+            }
         }
 
-        return children;
+        return { children, core };
+    }
+
+    /**
+     * Legacy fragmentRock method — kept for compatibility with worker.js
+     * Delegates to the new progressive model.
+     */
+    fragmentRock(rock, normal) {
+        const result = this._fragmentRockProgressive(rock, normal, 2.0);
+        // Return flat array for backward compatibility
+        const all = result.children || [];
+        if (result.core) all.push(result.core);
+        return all;
     }
 
     /**

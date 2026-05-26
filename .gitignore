@@ -15,3 +15,21 @@ __pycache__/
 
 # Logs
 *.log
+
+# Large STL files
+*.stl
+
+# SDD artifacts
+.antigravitycli/
+.atl/
+openspec/
+
+# Scratch/test files
+scratch/
+
+# Screenshots
+*.png
+*.gif
+
+# Exploration notes
+exploration.md

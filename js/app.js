@@ -55,6 +55,7 @@ class App {
         this.loadTheme();
         this.setupThemeToggle();
         this.setupTabs();
+        this.setupSubTabs();
         this.setupSidebarResize();
         this.setupTerrainControls();
         this.setupSegmentEditor();
@@ -96,6 +97,22 @@ class App {
                 this.render();
             });
         });
+    }
+
+    setupSubTabs() {
+        document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const subName = btn.dataset.subtab;
+                document.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.sub-tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                const content = document.getElementById(`subtab-${subName}`);
+                if (content) content.classList.add('active');
+            });
+        });
+        // Show first sub-tab by default
+        const firstContent = document.querySelector('.sub-tab-content');
+        if (firstContent) firstContent.classList.add('active');
     }
 
     showResultsTab() {
@@ -618,6 +635,15 @@ class App {
         document.getElementById('btn-stop').addEventListener('click', () => this.stopSimulation());
         document.getElementById('btn-reset').addEventListener('click', () => this.resetSimulation());
 
+        const fabBtn = document.getElementById('fab-run');
+        if (fabBtn) fabBtn.addEventListener('click', () => {
+            if (!this.simulation.isRunning) {
+                this.runSimulation();
+            } else {
+                this.stopSimulation();
+            }
+        });
+
         document.getElementById('show-risk-zones').addEventListener('change', (e) => {
             this.renderer.showRiskZones = e.target.checked;
             this.render();
@@ -891,14 +917,16 @@ class App {
     }
 
     setupExportControls() {
-        document.getElementById('btn-export-image').addEventListener('click', () => {
+        const imgBtn = document.getElementById('btn-export-image');
+        if (imgBtn) imgBtn.addEventListener('click', () => {
             const link = document.createElement('a');
             link.download = 'simrocas-simulation.png';
             link.href = this.canvas.toDataURL('image/png');
             link.click();
         });
 
-        document.getElementById('btn-export-csv').addEventListener('click', () => {
+        const csvBtn = document.getElementById('btn-export-csv');
+        if (csvBtn) csvBtn.addEventListener('click', () => {
             const csv = this.stats.generateCSV();
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -909,7 +937,8 @@ class App {
             URL.revokeObjectURL(url);
         });
 
-        document.getElementById('btn-export-report').addEventListener('click', () => {
+        const reportBtn = document.getElementById('btn-export-report');
+        if (reportBtn) reportBtn.addEventListener('click', () => {
             const report = this.stats.generateReport();
             const blob = new Blob([report], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
@@ -1358,10 +1387,28 @@ class App {
             }
         });
 
+        // Window-level mouseup to catch releases outside the canvas
+        window.addEventListener('mouseup', (e) => {
+            if (!this.isDrawingSlice) return;
+            if (this.renderer.activeTab !== 'stl3d') return;
+            // Mouse is up — finalize the slice line even if released outside canvas
+            this.isDrawingSlice = false;
+            const rect = this.canvas.getBoundingClientRect();
+            // Clamp to canvas bounds for the world coordinate computation
+            const cx = Math.max(0, Math.min(this.canvas.width, e.clientX - rect.left));
+            const cy = Math.max(0, Math.min(this.canvas.height, e.clientY - rect.top));
+            const stlWorld = this.renderer.toStlWorld(cx, cy);
+            this.renderer.sliceLine.x2 = stlWorld.x;
+            this.renderer.sliceLine.y2 = stlWorld.y;
+            document.getElementById('stl-slice-x2').value = Math.round(stlWorld.x);
+            document.getElementById('stl-slice-y2').value = Math.round(stlWorld.y);
+            this.render();
+        });
+
         this.canvas.addEventListener('mouseleave', () => {
             this.isPanning = false;
-            this.isDrawingSlice = false;
             this.canvas.style.cursor = 'crosshair';
+            // Note: do NOT reset isDrawingSlice here — window mouseup handles it
         });
     }
 
@@ -1459,17 +1506,29 @@ class App {
             document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
         } else {
             this.releasePoint.y = clamp(document.getElementById('release-y').value, -100, 500, 55);
-            // Asegurar que la roca esté por encima del terreno
+            // Alert user if release point is at or below terrain (auto-fix silently but warn)
             if (this.releasePoint.y <= terrainY + 1) {
+                const oldY = this.releasePoint.y;
                 this.releasePoint.y = terrainY + 5;
                 document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
+                console.info(`Release point auto-ajustado: ${oldY.toFixed(1)}m → ${this.releasePoint.y.toFixed(1)}m (dentro del terreno)`);
             }
         }
     }
 
     updateTerrainInfo() {
-        document.getElementById('terrain-points-count').textContent =
-            `Puntos perfil: ${this.terrain.points.length}`;
+        const pts = this.terrain.points.length;
+        const segs = this.terrain.segments ? this.terrain.segments.length : Math.max(0, pts - 1);
+        const ptsEl = document.getElementById('terrain-points-count');
+        const segEl = document.getElementById('terrain-segments-count');
+        ptsEl.textContent = `Puntos perfil: ${pts}`;
+        segEl.textContent = `Segmentos: ${segs}`;
+
+        // Warning for high point count (>30 → amber, >40 → red)
+        ptsEl.classList.remove('warning-amber', 'warning-red');
+        if (pts >= 40) ptsEl.classList.add('warning-red');
+        else if (pts >= 30) ptsEl.classList.add('warning-amber');
+
         const scaleInfo = document.getElementById('scale-info');
         if (scaleInfo) {
             scaleInfo.textContent = `1 px = ${(1 / this.terrain.scale).toFixed(2)} m`;
@@ -1503,7 +1562,6 @@ class App {
         }
 
         this.hideTimeline();
-        this.updateReleasePoint();
 
         const diameter = clamp(document.getElementById('rock-diameter').value, 0.1, 20, 0.5);
         const density = clamp(document.getElementById('rock-density').value, 1000, 5000, 2700);
@@ -1522,6 +1580,16 @@ class App {
                 alert(`El punto de liberación está dentro del terreno. Se ajusta automáticamente a Y=${(terrainY + 5).toFixed(1)}m`);
                 this.releasePoint.y = terrainY + 5;
                 document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
+            } else {
+                const gap = this.releasePoint.y - terrainY;
+                if (gap < 5) {
+                    const suggestedY = terrainY + 5;
+                    if (!confirm(`El punto de liberación está a solo ${gap.toFixed(1)}m sobre el terreno — riesgo de embed. ¿Ajustar a Y=${suggestedY.toFixed(1)}m?`)) {
+                        return;
+                    }
+                    this.releasePoint.y = suggestedY;
+                    document.getElementById('release-y').value = this.releasePoint.y.toFixed(1);
+                }
             }
         }
 
@@ -1551,6 +1619,14 @@ class App {
             const progress = Math.round(data.progress * 100);
             document.getElementById('simulation-status').textContent =
                 `Simulando... ${progress}% (${this.simulation.simulatedCount}/${this.simulation.totalRocks})`;
+            const rockCountEl = document.getElementById('rock-count-display');
+            if (rockCountEl) {
+                const count = this.simulation.simulatedCount;
+                rockCountEl.textContent = `Rocas: ${count}`;
+                rockCountEl.classList.remove('warning-amber', 'warning-red');
+                if (count >= 800) rockCountEl.classList.add('warning-red');
+                else if (count >= 500) rockCountEl.classList.add('warning-amber');
+            }
         };
 
         this.simulation.onComplete = (rocks) => {
@@ -1582,6 +1658,13 @@ class App {
                 `Completado (${rocks.length} rocas)`;
             document.getElementById('btn-run').disabled = false;
             document.getElementById('btn-stop').disabled = true;
+            const fabDone = document.getElementById('fab-run');
+            if (fabDone) {
+                fabDone.classList.remove('running');
+                fabDone.textContent = '▶';
+            }
+            const rockCountEl = document.getElementById('rock-count-display');
+            if (rockCountEl) rockCountEl.textContent = `Rocas: ${rocks.length}`;
             this.activateTimeline();
         };
 
@@ -1603,6 +1686,11 @@ class App {
         document.getElementById('btn-run').disabled = true;
         document.getElementById('btn-stop').disabled = false;
         document.getElementById('simulation-status').textContent = 'Simulando...';
+        const fabStart = document.getElementById('fab-run');
+        if (fabStart) {
+            fabStart.classList.add('running');
+            fabStart.textContent = '⏹';
+        }
 
         // Check if Web Worker mode is enabled
         if (document.getElementById('use-worker').checked) {
@@ -1816,6 +1904,11 @@ class App {
         document.getElementById('btn-run').disabled = false;
         document.getElementById('btn-stop').disabled = true;
         document.getElementById('simulation-status').textContent = 'Detenido por usuario';
+        const fabStop = document.getElementById('fab-run');
+        if (fabStop) {
+            fabStop.classList.remove('running');
+            fabStop.textContent = '▶';
+        }
 
         this.stats.compute(this.simulation.rocks, this.releasePoint);
         this.stats.updateUI();
@@ -1854,6 +1947,59 @@ class App {
         this.render();
     }
 
+    /**
+     * Build heightmap and contour lines from the current STL data.
+     * Runs asynchronously with a progress indicator.
+     */
+    _buildContours(upAxis) {
+        if (!this.currentStl || !SimRocas.StlContour) {
+            this.renderer.stlHeightmap = null;
+            this.renderer.stlContours = [];
+            return;
+        }
+
+        const bounds = this.currentStl.bounds;
+        let hWidth, hHeight;
+        if (upAxis === 'Y') {
+            hWidth = bounds.maxX - bounds.minX;
+            hHeight = bounds.maxZ - bounds.minZ;
+        } else {
+            hWidth = bounds.maxX - bounds.minX;
+            hHeight = bounds.maxY - bounds.minY;
+        }
+
+        // Auto-detect contour interval based on terrain size
+        const maxDim = Math.max(hWidth, hHeight);
+        let interval;
+        if (maxDim < 200) interval = 2;
+        else if (maxDim < 1000) interval = 5;
+        else if (maxDim < 5000) interval = 10;
+        else if (maxDim < 20000) interval = 25;
+        else interval = 50;
+
+        // Grid resolution proportional to mesh density but capped
+        const numTriangles = this.currentStl.triangles.length / 9;
+        const gridRes = Math.min(512, Math.max(128, Math.round(Math.sqrt(numTriangles) * 0.3)));
+
+        // Build heightmap (this is the expensive part for large meshes)
+        const heightmap = SimRocas.StlContour.buildHeightmap(
+            this.currentStl.triangles,
+            bounds,
+            upAxis,
+            gridRes
+        );
+
+        // Generate contour lines
+        const contours = heightmap
+            ? SimRocas.StlContour.generateContours(heightmap, interval)
+            : [];
+
+        // Store on renderer
+        this.renderer.stlHeightmap = heightmap;
+        this.renderer.stlContours = contours;
+        this.renderer.stlContourInterval = interval;
+    }
+
     setupStlControls() {
         const importBtn = document.getElementById('btn-import-stl');
         const fileInput = document.getElementById('stl-file-input');
@@ -1865,10 +2011,14 @@ class App {
         const resolutionInput = document.getElementById('stl-resolution-points');
         const generateBtn = document.getElementById('btn-generate-slice');
 
-        this.stlParser = (typeof SimRocas !== 'undefined' && SimRocas.StlParser)
+        this.stlParser = (SimRocas.StlParser)
             ? new SimRocas.StlParser()
             : null;
         this.currentStl = null;
+
+        if (!this.stlParser) {
+            console.warn('StlParser no encontrado — funciones STL deshabilitadas.');
+        }
 
         // Label natively triggers the fileInput click, no JS programmatic click needed.
 
@@ -1877,19 +2027,26 @@ class App {
             const file = e.target.files[0];
             if (!file) return;
 
+            if (!this.stlParser) {
+                alert('Error: StlParser no disponible. Verifique que js/stl.js cargó correctamente.');
+                return;
+            }
             const reader = new FileReader();
+            reader.onerror = () => {
+                alert('Error al leer el archivo STL. Intente nuevamente.');
+            };
             reader.onload = (event) => {
                 try {
                     const arrayBuffer = event.target.result;
                     const stlData = this.stlParser.parse(arrayBuffer);
-                    
+
                     if (!stlData.triangles || stlData.triangles.length === 0) {
                         throw new Error('El archivo STL no contiene triángulos válidos o está vacío.');
                     }
-                    
+
                     this.currentStl = stlData;
                     this.renderer.currentStl = stlData;
-                    
+
                     // Show metadata panel
                     document.getElementById('stl-filename').textContent = file.name;
                     document.getElementById('stl-tri-count').textContent = (stlData.triangles.length / 9).toLocaleString();
@@ -1899,6 +2056,7 @@ class App {
                     
                     document.getElementById('stl-info').style.display = 'block';
                     document.querySelectorAll('.stl-controls').forEach(el => el.style.display = 'block');
+                    document.getElementById('btn-new-section').style.display = 'inline-block';
                     
                     // Set default slice line covering the bounding box horizontally
                     const upAxis = upAxisSelect.value;
@@ -1925,6 +2083,9 @@ class App {
                     
                     this.renderer.sliceLine = sliceLine;
                     this.renderer.stlUpAxis = upAxis;
+                    
+                    // Build heightmap + contour lines for plan view
+                    this._buildContours(upAxis);
                     
                     // Sync coordinate inputs
                     sliceX1Input.value = Math.round(sliceLine.x1);
@@ -1974,6 +2135,9 @@ class App {
             sliceX2Input.value = Math.round(sliceLine.x2);
             sliceY2Input.value = Math.round(sliceLine.y2);
             
+            // Rebuild contours with new axis
+            this._buildContours(upAxis);
+            
             this.render();
         });
 
@@ -2010,40 +2174,125 @@ class App {
                 return;
             }
             
-            // Generate sliced 2D profile points
-            const points2D = SimRocas.StlSlicer.slice(
-                this.currentStl.triangles,
-                x1, y1, x2, y2,
-                upAxis,
-                resolution
-            );
-            
-            if (points2D.length === 0) {
-                alert('No se encontraron intersecciones entre la línea de sección y la malla STL. Verifica que tu línea pase por dentro de la topografía.');
-                return;
+            // Show processing indicator
+            generateBtn.disabled = true;
+            const origText = generateBtn.textContent;
+            generateBtn.textContent = '⏳ Procesando...';
+
+            // Use setTimeout to let the UI update before heavy computation
+            setTimeout(() => {
+                try {
+                    const points2D = SimRocas.StlSlicer.slice(
+                        this.currentStl.triangles,
+                        x1, y1, x2, y2,
+                        upAxis,
+                        resolution
+                    );
+                    
+                    if (points2D.length === 0) {
+                        alert('No se encontraron intersecciones entre la línea de sección y la malla STL. Verifica que tu línea pase por dentro de la topografía.');
+                        return;
+                    }
+                    
+                    // Set the new points to active terrain!
+                    this.terrain.setPoints(points2D);
+                    
+                    // Clear current simulation state/rocks
+                    this.resetSimulation();
+                    
+                    // Redirect user back to the 2D Terrain tab
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                    document.querySelector('[data-tab="terrain"]').classList.add('active');
+                    document.getElementById('tab-terrain').classList.add('active');
+                    
+                    this.renderer.activeTab = 'terrain';
+                    
+                    // Scale and draw new profile
+                    this.renderer.autoScale();
+                    this.updateTerrainInfo();
+                    this.updateSegmentsList();
+                    this.render();
+                    
+                    alert(`Perfil 2D generado exitosamente con ${points2D.length} puntos. ¡Listo para configurar parámetros y ejecutar la simulación!`);
+                } catch (err) {
+                    alert('Error al generar perfil: ' + err.message);
+                    console.error('STL slice error:', err);
+                } finally {
+                    generateBtn.disabled = false;
+                    generateBtn.textContent = origText;
+                }
+            }, 50);
+        });
+
+        // "Nueva Sección" button — switch back to STL tab to draw a new slice line
+        const btnNewSection = document.getElementById('btn-new-section');
+        btnNewSection.addEventListener('click', () => {
+            if (!this.currentStl) return;
+
+            // Reset slice line to default (centered horizontal)
+            const upAxis = upAxisSelect.value;
+            const bounds = this.currentStl.bounds;
+            let minHX, maxHX, minHY, maxHY;
+            if (upAxis === 'Y') {
+                minHX = bounds.minX; maxHX = bounds.maxX;
+                minHY = bounds.minZ; maxHY = bounds.maxZ;
+            } else {
+                minHX = bounds.minX; maxHX = bounds.maxX;
+                minHY = bounds.minY; maxHY = bounds.maxY;
             }
-            
-            // Set the new points to active terrain!
-            this.terrain.setPoints(points2D);
-            
-            // Clear current simulation state/rocks
-            this.resetSimulation();
-            
-            // Redirect user back to the 2D Terrain tab
+            const newSlice = {
+                x1: minHX,
+                y1: (minHY + maxHY) / 2,
+                x2: maxHX,
+                y2: (minHY + maxHY) / 2,
+                active: false
+            };
+            this.renderer.sliceLine = newSlice;
+            sliceX1Input.value = Math.round(newSlice.x1);
+            sliceY1Input.value = Math.round(newSlice.y1);
+            sliceX2Input.value = Math.round(newSlice.x2);
+            sliceY2Input.value = Math.round(newSlice.y2);
+
+            // Switch to STL 3D tab
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector('[data-tab="terrain"]').classList.add('active');
-            document.getElementById('tab-terrain').classList.add('active');
-            
-            this.renderer.activeTab = 'terrain';
-            
-            // Scale and draw new profile
-            this.renderer.autoScale();
-            this.updateTerrainInfo();
-            this.updateSegmentsList();
+            document.querySelector('[data-tab="stl3d"]').classList.add('active');
+            document.getElementById('tab-stl3d').classList.add('active');
+            this.renderer.activeTab = 'stl3d';
+
             this.render();
-            
-            alert(`Perfil 2D generado exitosamente con ${points2D.length} puntos. ¡Listo para configurar parámetros y ejecutar la simulación!`);
+        });
+
+        // "Limpiar Línea" button — reset the slice line to default on current STL
+        const btnClearSlice = document.getElementById('btn-clear-slice');
+        btnClearSlice.addEventListener('click', () => {
+            if (!this.currentStl) return;
+
+            const upAxis = upAxisSelect.value;
+            const bounds = this.currentStl.bounds;
+            let minHX, maxHX, minHY, maxHY;
+            if (upAxis === 'Y') {
+                minHX = bounds.minX; maxHX = bounds.maxX;
+                minHY = bounds.minZ; maxHY = bounds.maxZ;
+            } else {
+                minHX = bounds.minX; maxHX = bounds.maxX;
+                minHY = bounds.minY; maxHY = bounds.maxY;
+            }
+            const cleared = {
+                x1: minHX,
+                y1: (minHY + maxHY) / 2,
+                x2: maxHX,
+                y2: (minHY + maxHY) / 2,
+                active: false
+            };
+            this.renderer.sliceLine = cleared;
+            sliceX1Input.value = Math.round(cleared.x1);
+            sliceY1Input.value = Math.round(cleared.y1);
+            sliceX2Input.value = Math.round(cleared.x2);
+            sliceY2Input.value = Math.round(cleared.y2);
+
+            this.render();
         });
     }
 

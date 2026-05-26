@@ -2,7 +2,7 @@
  * SimRocas 2D — Shared namespace.
  * All modules attach their classes to this object to avoid global scope pollution.
  */
-const SimRocas = window.SimRocas || {};
+window.SimRocas = window.SimRocas || {};
 
 /**
  * Preset terrain types with default coefficients.
@@ -107,6 +107,20 @@ class Terrain {
     clear() {
         this.points = [];
         this.segments = [];
+    }
+
+    /**
+     * Loads a complete array of {x, y} points as the terrain profile.
+     * Replaces all existing points and segments.
+     * @param {Array<{x: number, y: number}>} pointsArray
+     * @param {string} segmentType - Terrain segment type to use (default: first preset)
+     */
+    setPoints(pointsArray, segmentType = 'roca-suave') {
+        this.clear();
+        if (!pointsArray || pointsArray.length === 0) return;
+        for (const p of pointsArray) {
+            this.addPoint(p.x, p.y, segmentType);
+        }
     }
 
     /**
