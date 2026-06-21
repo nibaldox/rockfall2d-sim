@@ -1130,7 +1130,10 @@ class PhysicsEngine {
                 totalSpallMass = 0.40 * parentMass;
             }
 
-            const coreMass = parentMass - totalSpallMass;
+            // Minimum fragment size: 2cm diameter. Below that we consider the
+            // spall too small to be a meaningful rockfall projectile and merge
+            // its mass into the surviving core (preserves mass conservation).
+            const MIN_FRAGMENT_DIAMETER = 0.02;
 
             // Energy budget: spalls get 15-30% of the impact energy
             // (they fly off with moderate velocity)
@@ -1138,14 +1141,20 @@ class PhysicsEngine {
             const E_spalls = E_parent * spallEnergyFraction * (1 - this.fractureDissipation);
             const E_core = E_parent * (1 - spallEnergyFraction) * (1 - this.fractureDissipation * 0.5);
 
-            // Create spalls — ejected from the contact zone
+            // Create spalls — ejected from the contact zone.
+            // Track only the mass that actually gets a rock — anything below
+            // MIN_FRAGMENT_DIAMETER is silently merged into the core below.
+            let createdSpallMass = 0;
+
             for (let i = 0; i < numSpalls; i++) {
                 const sm = spallMasses[i];
                 const childArea = sm / rock.density;
                 const childRadius = Math.sqrt(childArea / Math.PI);
                 const childDiameter = childRadius * 2;
 
-                if (childDiameter < 0.05) continue; // skip dust-sized fragments
+                if (childDiameter < MIN_FRAGMENT_DIAMETER) continue; // too small — mass stays in core
+
+                createdSpallMass += sm;
 
                 // Spalls fly off at ±20-45° from the impact normal
                 const ejectAngle = ((Math.random() * 2 - 1) * (20 + Math.random() * 25)) * Math.PI / 180;
@@ -1180,7 +1189,10 @@ class PhysicsEngine {
                 children.push(spall);
             }
 
-            // Create surviving core — continues the trajectory
+            // Core gets the parent's mass minus only the spalls that were
+            // actually created. Mass of spalls filtered out as sub-threshold
+            // is absorbed by the core (mass conservation).
+            const coreMass = parentMass - createdSpallMass;
             const coreArea = coreMass / rock.density;
             const coreRadius = Math.sqrt(coreArea / Math.PI);
             const coreDiameter = coreRadius * 2;
@@ -1219,22 +1231,22 @@ class PhysicsEngine {
                 totalSpallMass += sm;
             }
 
-            const remainingMass = parentMass - totalSpallMass;
-
-            // Split remaining mass into two main fragments
-            const splitFrac = 0.40 + Math.random() * 0.20;
-            const m1 = splitFrac * remainingMass;
-            const m2 = remainingMass - m1;
-
+            // --- Create spalls ---
+            // Track only the mass that actually gets a rock — anything below
+            // the minimum diameter is merged into the main fragments below
+            // (mass conservation).
+            const MIN_FRAGMENT_DIAMETER = 0.02;
+            let createdSpallMass = 0;
             const E_target = E_parent * (1 - this.fractureDissipation);
 
-            // --- Create spalls ---
             for (let i = 0; i < spallMasses.length; i++) {
                 const sm = spallMasses[i];
                 const childArea = sm / rock.density;
                 const childRadius = Math.sqrt(childArea / Math.PI);
                 const childDiameter = childRadius * 2;
-                if (childDiameter < 0.05) continue;
+                if (childDiameter < MIN_FRAGMENT_DIAMETER) continue; // too small — mass goes to main fragments
+
+                createdSpallMass += sm;
 
                 const ejectAngle = ((Math.random() * 2 - 1) * 30) * Math.PI / 180;
                 const cosE = Math.cos(ejectAngle);
@@ -1260,6 +1272,17 @@ class PhysicsEngine {
 
                 children.push(spall);
             }
+
+            // Main fragments get the parent's mass minus only the spalls that
+            // were actually created. Mass of spalls filtered out as
+            // sub-threshold is added to the main fragment budget (mass
+            // conservation).
+            const remainingMass = parentMass - createdSpallMass;
+
+            // Split remaining mass into two main fragments
+            const splitFrac = 0.40 + Math.random() * 0.20;
+            const m1 = splitFrac * remainingMass;
+            const m2 = remainingMass - m1;
 
             // --- Create two main fragments ---
             const mainMasses = [m1, m2];
