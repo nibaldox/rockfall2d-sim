@@ -1035,8 +1035,25 @@ class PhysicsEngine {
                         spawnedChildren.push(...result.children);
 
                         if (result.core) {
-                            // Core survives — replace rock properties in-place
-                            spawnedChildren.push(result.core);
+                            // Core survives — copy core properties onto original rock in-place.
+                            // This keeps a single Rock object (same id, same trajectory history)
+                            // so we don't end up with two rocks sharing the same id in
+                            // finishedRocks + activeRocks. The core returned by
+                            // _fragmentRockProgressive is a template, not a new entity.
+                            const c = result.core;
+                            rock.mass = c.mass;
+                            rock.diameter = c.diameter;
+                            rock.shape = c.shape;
+                            rock._cachedVertices = null;
+                            rock._verticesDirty = true;
+                            rock.momentOfInertia = c.momentOfInertia;
+                            rock.vx = c.vx;
+                            rock.vy = c.vy;
+                            rock.angularVelocity = c.angularVelocity;
+                            rock.color = c.color;
+                            rock.isCore = c.isCore;
+                            rock.massLossRatio = c.massLossRatio;
+                            rock.originalDiameter = c.originalDiameter;
                             rock.isFragmented = true;
                             rock.isResting = true;
                         } else {
