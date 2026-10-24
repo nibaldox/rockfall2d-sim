@@ -73,6 +73,10 @@ Tres umbrales de rendimiento incumplidos en la última ejecución:
 
 Los tiempos dependen del equipo y de la carga; no se han diagnosticado ni corregido como parte de la transferencia.
 
+## Plan histórico
+
+Se conserva una copia del plan y su registro de ejecución en [implementation-plan-2026-10-17.md](implementation-plan-2026-10-17.md). Es una referencia histórica, no un informe de validación actual; para los fallos y el estado de la transferencia usar este documento.
+
 ## Próximos pasos
 
 1. Integrar de forma controlada `origin/main`, preservando los avances de esta rama y sus correcciones remotas.
