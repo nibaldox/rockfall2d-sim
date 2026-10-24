@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<!--
+  dev/bench3d.html — benchmark multihilo del pool 3D (T4.8, NO se publica).
+  DEM sintético 1000×1000 nodos a 1 m, 1000 rocas, maxDuration 30 s; corre el
+  pool con size ∈ {1, 2, 4, 8, hardwareConcurrency − 1} y muestra tiempo,
+  rocas/s y aceleración en la página y en window.__bench.
+  Servir el repo con `python3 -m http.server` (sin COOP/COEP → rama sin
+  SharedArrayBuffer) y abrir esta página.
+-->
+<head>
+    <meta charset="utf-8">
+    <title>SimRocas 3D — benchmark del pool de workers</title>
+    <style>
+        body { font-family: monospace; margin: 1rem; background: #111; color: #ddd; }
+        table { border-collapse: collapse; margin-top: 1rem; }
+        th, td { border: 1px solid #555; padding: 0.25rem 0.75rem; text-align: right; }
+        th { background: #333; }
+        td.name, th.name { text-align: left; }
+        #log { white-space: pre; margin-top: 1rem; }
+    </style>
+</head>
+<body>
+    <h1>SimRocas 3D — pool de workers (benchmark)</h1>
+    <p id="cfg"></p>
+    <table id="tabla"></table>
+    <div id="log"></div>
+    <script src="../js/dem.js"></script>
+    <script src="../js/math3d.js"></script>
+    <script src="../js/physics3d.js"></script>
+    <script src="../js/source-zones.js"></script>
+    <script src="../js/simulation3d.js"></script>
+    <script src="../js/sim3d-pool.js"></script>
+    <script>
+    (function () {
+        'use strict';
+
+        const SEED = 2027;
+        const TAN35 = Math.tan(35 * Math.PI / 180);
+        const DEM_COLS = 1000;
+        const DEM_ROWS = 1000;
+        const DEM_CELL = 1;
+        const SLOPE_END_Y = 200;   // ladera de 35° hacia +y hasta y=200, llano después
+        const TOTAL_ROCKS = 1000;
+        const MAX_DURATION = 30;
+        const WORKER_URL = '../js/workers/sim3d-worker.js?v=4';
+
+        window.__bench = { results: [], done: false, error: null, startedAt: null };
+
+        const logEl = document.getElementById('log');
+        function print(line) {
+            logEl.textContent += line + '\n';
+        }
+
+        // Ladera de 35° que desciende hacia +y (sur) hasta y = SLOPE_END_Y.
+        function makeDem() {
+            return SimRocas.Dem.fromFunction(DEM_COLS, DEM_ROWS, DEM_CELL, (x, y) => {
+                return Math.max(0, (SLOPE_END_Y - y) * TAN35);
+            });
+        }
+
+        async function main() {
+            window.__bench.startedAt = performance.now();
+            const cores = navigator.hardwareConcurrency || 1;
+            document.getElementById('cfg').textContent =
+                'DEM ' + DEM_COLS + '×' + DEM_ROWS + ' @ ' + DEM_CELL +
+                ' m · ' + TOTAL_ROCKS + ' rocas · maxDuration ' + MAX_DURATION +
+                ' s · hardwareConcurrency = ' + cores +
+                ' · crossOriginIsolated = ' + String(window.crossOriginIsolated);
+
+            print('Generando DEM y specs...');
+            const dem = makeDem();
+            const zone = {
+                id: 'zona-sintetica',
+                type: 'polygon',
+                vertices: [
+                    { x: 100, y: 5 }, { x: 900, y: 5 }, { x: 900, y: 80 }, { x: 100, y: 80 },
+                ],
+            };
+            const specs = SimRocas.Simulation3D.buildRockSpecs(dem, {
+                zones: [zone],
+                totalRocks: TOTAL_ROCKS,
+                diameter: 0.5,
+                density: 2700,
+                releaseMode: 'detachment',
+                heightAboveGround: 2,
+                diameterVariability: 10,
+            }, SimRocas.seededRandom(SEED));
+            print('Specs generadas: ' + specs.length + ' rocas. Corriendo el pool...');
+
+            const sizes = [1, 2, 4, 8, Math.max(1, cores - 1)];
+            const engineParams = { dt: 0.005 };   // resto: defectos del motor (variabilidad 10 %)
+            const simParams = { maxDuration: MAX_DURATION };
+
+            for (const size of sizes) {
+                const pool = new SimRocas.Sim3DPool({ size: size, workerUrl: WORKER_URL });
+                const t0 = performance.now();
+                const result = await pool.run({
+                    dem: dem,
+                    engineParams: engineParams,
+                    simParams: simParams,
+                    rockSpecs: specs,
+                    seed: SEED,
+                });
+                const ms = performance.now() - t0;
+                const rocksPerSec = specs.length / (ms / 1000);
+                const row = {
+                    size: size,
+                    ms: ms,
+                    rocksPerSec: rocksPerSec,
+                    total: result.stats.total,
+                    rest: result.stats.rest,
+                    culled: result.stats.culled,
+                    maxSteps: result.stats.maxSteps,
+                    meanRunout: result.stats.meanRunout,
+                };
+                window.__bench.results.push(row);
+                const first = window.__bench.results[0];
+                row.speedup = Math.abs(first.ms) > 0 ? first.ms / ms : 1;
+                print('size=' + size + '  ' + (ms / 1000).toFixed(2) + ' s  ' +
+                    rocksPerSec.toFixed(0) + ' rocas/s  (rest ' + result.stats.rest +
+                    ', culled ' + result.stats.culled + ', maxSteps ' + result.stats.maxSteps + ')');
+                render();
+            }
+
+            window.__bench.done = true;
+            print('Listo. Terminate.');
+            render();
+        }
+
+        function render() {
+            const table = document.getElementById('tabla');
+            let html = '<tr><th class="name">workers</th><th>tiempo (s)</th><th>rocas/s</th><th>aceleración</th></tr>';
+            for (const r of window.__bench.results) {
+                html += '<tr><td class="name">' + r.size + '</td><td>' + (r.ms / 1000).toFixed(2) +
+                    '</td><td>' + r.rocksPerSec.toFixed(0) + '</td><td>' + r.speedup.toFixed(2) + '×</td></tr>';
+            }
+            table.innerHTML = html;
+        }
+
+        main().catch((err) => {
+            window.__bench.error = String(err && err.message || err);
+            window.__bench.done = true;
+            print('ERROR: ' + window.__bench.error);
+        });
+    })();
+    </script>
+</body>
+</html>

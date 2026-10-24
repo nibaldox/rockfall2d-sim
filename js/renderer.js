@@ -39,6 +39,8 @@ class Renderer {
         this.stlContours = [];
         this.stlContourInterval = 10;
         this.highlightSegmentIndex = -1;
+        this.corridorOverlay = null;      // Resultado de SimRocas.ProfileCorridor.project (T4.7)
+        this.corridorColorBy = 'speed';
     }
 
     resize() {
@@ -231,7 +233,7 @@ class Renderer {
     }
 
     /**
-     * Converts hex color to rgba string (cached).
+     * Convierte hex color to rgba string (cached).
      */
     _hexToRgba(hex, alpha) {
         const key = hex + '|' + alpha;
@@ -671,6 +673,7 @@ class Renderer {
         this.drawAxes();
         this.drawTerrain();
         this.drawSegmentHighlight();
+        this.drawCorridorOverlay();
 
         if (releaseX !== undefined && releaseY !== undefined) {
             this.drawReleasePoint(releaseX, releaseY);
@@ -708,6 +711,93 @@ class Renderer {
                 this.drawRestingPositions(simulation.rocks);
             }
         }
+    }
+
+    // =============================================
+    // Corredor de trayectorias 3D sobre el perfil 2D (T4.7)
+    // =============================================
+
+    /**
+     * Guarda (o limpia) el overlay de trayectorias 3D proyectadas por
+     * SimRocas.ProfileCorridor.project sobre la sección del perfil 2D.
+     * @param {Object|null} result resultado de project() (o null para limpiar).
+     * @param {Object} [options] { colorBy = 'speed' }.
+     */
+    setCorridorOverlay(result, options) {
+        this.corridorOverlay = result || null;
+        this.corridorColorBy = (options && options.colorBy) || 'speed';
+    }
+
+    /** Color azul→rojo según t en [0, 1] para colorear por velocidad. */
+    _corridorSpeedColor(t) {
+        const s = Math.max(0, Math.min(1, t));
+        const r = Math.round(78 + 155 * s);
+        const g = Math.round(205 - 136 * s);
+        const b = Math.round(196 - 136 * s);
+        return `rgba(${r}, ${g}, ${b}, 0.65)`;
+    }
+
+    /**
+     * Dibuja el overlay del corredor en el render del 2D: cada track como
+     * polilínea semitransparente en coordenadas mundo (x = s, y = z),
+     * coloreada por velocidad, y las detenciones 'rest' como círculos.
+     * Usa terrain.worldToCanvas, por lo que respeta zoom/pan del perfil.
+     * Inocuo si no hay overlay.
+     */
+    drawCorridorOverlay() {
+        const overlay = this.corridorOverlay;
+        if (!overlay || !Array.isArray(overlay.tracks) || overlay.tracks.length === 0) return;
+
+        const ctx = this.ctx;
+
+        // Velocidad máxima del overlay para normalizar el color.
+        let maxSpeed = 0;
+        for (const track of overlay.tracks) {
+            const p = track.points;
+            for (let i = 2; i < p.length; i += 3) {
+                if (p[i] > maxSpeed) maxSpeed = p[i];
+            }
+        }
+        if (!(maxSpeed > 0)) maxSpeed = 1;
+
+        ctx.save();
+        for (const track of overlay.tracks) {
+            const p = track.points;
+            if (p.length < 6) continue;
+            for (let i = 0; i < p.length - 3; i += 3) {
+                const c1 = this.terrain.worldToCanvas(p[i], p[i + 1]);
+                const c2 = this.terrain.worldToCanvas(p[i + 3], p[i + 4]);
+                const speed = Math.max(p[i + 2], p[i + 5]);
+                ctx.beginPath();
+                ctx.moveTo(c1.cx, c1.cy);
+                ctx.lineTo(c2.cx, c2.cy);
+                ctx.strokeStyle = this._corridorSpeedColor(speed / maxSpeed);
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+
+        // Detenciones dentro del corredor.
+        if (Array.isArray(overlay.stops)) {
+            for (const stop of overlay.stops) {
+                const c = this.terrain.worldToCanvas(stop.s, stop.z);
+                ctx.beginPath();
+                ctx.arc(c.cx, c.cy, 4, 0, Math.PI * 2);
+                ctx.fillStyle = '#e94560';
+                ctx.fill();
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+        }
+
+        // Leyenda breve.
+        const halfW = (typeof overlay.halfWidth === 'number') ? overlay.halfWidth : 10;
+        const rockCount = (typeof overlay.count === 'number') ? overlay.count : overlay.tracks.length;
+        ctx.restore();
+        ctx.fillStyle = this.textColor;
+        ctx.font = '11px sans-serif';
+        ctx.fillText('Trayectorias 3D en corredor ±' + halfW + ' m (' + rockCount + ' rocas)', 15, 16);
     }
 
     /**

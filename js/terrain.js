@@ -2,7 +2,7 @@
  * SimRocas 2D — Shared namespace.
  * All modules attach their classes to this object to avoid global scope pollution.
  */
-window.SimRocas = window.SimRocas || {};
+globalThis.SimRocas = globalThis.SimRocas || {};
 
 /**
  * Preset terrain types with default coefficients.
@@ -28,6 +28,11 @@ class Terrain {
         // Cache for segment lookups — rocks move gradually so the last
         // found segment is a good hint for the next query.
         this._lastSegIdx = 0;
+        // Cache for getBounds() — invalidated by mutators and by any change
+        // of the points array reference or its length.
+        this._boundsCache = null;
+        this._boundsRef = null;
+        this._boundsLen = 0;
     }
 
     setScale(scale) {
@@ -45,6 +50,7 @@ class Terrain {
      * the new segments inherit properties from the original segment.
      */
     addPoint(x, y, segmentType = 'roca-suave') {
+        this._invalidateBounds();
         const newPoint = { x, y };
         const preset = TerrainPresets[segmentType] || TerrainPresets['roca-suave'];
         const newSeg = { type: segmentType, cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness };
@@ -83,6 +89,7 @@ class Terrain {
      * Removes a point and merges adjacent segments.
      */
     removePoint(index) {
+        this._invalidateBounds();
         if (index < 0 || index >= this.points.length) return;
 
         this.points.splice(index, 1);
@@ -105,8 +112,42 @@ class Terrain {
     }
 
     clear() {
+        this._invalidateBounds();
         this.points = [];
         this.segments = [];
+    }
+
+    /**
+     * Drops the cached terrain bounds.
+     */
+    _invalidateBounds() {
+        this._boundsCache = null;
+    }
+
+    /**
+     * Returns the bounding box of the terrain profile, or null with fewer
+     * than 2 points. Called in the physics loop, so the result is cached:
+     * the cache is invalidated by the mutators and whenever the points
+     * array reference or its length changes.
+     * @returns {{ minX: number, maxX: number, minY: number, maxY: number } | null}
+     */
+    getBounds() {
+        const points = this.points;
+        if (points.length < 2) return null;
+        if (this._boundsCache && this._boundsRef === points && this._boundsLen === points.length) {
+            return this._boundsCache;
+        }
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of points) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+        }
+        this._boundsRef = points;
+        this._boundsLen = points.length;
+        this._boundsCache = { minX, maxX, minY, maxY };
+        return this._boundsCache;
     }
 
     /**
@@ -348,6 +389,7 @@ class Terrain {
     }
 
     fromJSON(json) {
+        this._invalidateBounds();
         const data = JSON.parse(json);
         this.points = data.points || [];
         this.segments = data.segments || [];
@@ -371,9 +413,16 @@ class Terrain {
     }
 
     fromCSV(text) {
+        this._invalidateBounds();
         this.points = [];
         this.segments = [];
         const lines = text.trim().split('\n');
+        // Recolección por filas (T0.12): cada fila aporta su punto y, si trae
+        // columnas de material, el segmento del tramo que DESDE esa fila va
+        // hacia la siguiente. Antes los segmentos confluyeron al orden del
+        // archivo mientras los puntos se ordenaban por X al final: con un CSV
+        // en orden descendente quedaban desalineados de su tramo.
+        const rows = [];
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
             if (!line) continue;
@@ -385,28 +434,44 @@ class Terrain {
                 const x = parseFloat(parts[0]);
                 const y = parseFloat(parts[1]);
                 if (!isNaN(x) && !isNaN(y)) {
-                    this.points.push({ x, y });
-                }
-                // Optional: type, cn, ct, roughness
-                if (parts.length >= 5) {
-                    const type = parts[2] || 'roca-suave';
-                    const cn = parseFloat(parts[3]) || 0.6;
-                    const ct = parseFloat(parts[4]) || 0.4;
-                    const roughness = parts[5] !== undefined ? (parseFloat(parts[5]) || 0) : null;
-                    const preset = TerrainPresets[type] || TerrainPresets['roca-suave'];
-                    this.segments.push({
-                        type: type,
-                        cn: cn,
-                        ct: ct,
-                        color: preset.color,
-                        roughness: roughness !== null ? roughness : (preset.roughness || 0)
-                    });
+                    let segment = null;
+                    // Optional: type, cn, ct, roughness
+                    if (parts.length >= 5) {
+                        const type = parts[2] || 'roca-suave';
+                        const cn = parseFloat(parts[3]) || 0.6;
+                        const ct = parseFloat(parts[4]) || 0.4;
+                        const roughness = parts[5] !== undefined ? (parseFloat(parts[5]) || 0) : null;
+                        const preset = TerrainPresets[type] || TerrainPresets['roca-suave'];
+                        segment = {
+                            type: type,
+                            cn: cn,
+                            ct: ct,
+                            color: preset.color,
+                            roughness: roughness !== null ? roughness : (preset.roughness || 0)
+                        };
+                    }
+                    rows.push({ x, y, segment });
                 }
             }
         }
-        // Sort by X
-        this.points.sort((a, b) => a.x - b.x);
-        // If no segment data, create defaults
+        // Ordenar filas por X y recién ahí materializar: el segmento de la
+        // fila i describe el tramo points[i] → points[i+1]; la última fila
+        // no aporta segmento. Con todos los segmentos null (sin columnas de
+        // material) la convención anterior de crear defaults abajo se sigue
+        // aplicando — y en un CSV mixto, las filas intermedias sin material
+        // reciben un segmento por defecto para mantener la alineación fila↔tramo.
+        rows.sort((a, b) => a.x - b.x);
+        const defaultsNeeded = rows.length >= 2 && rows.some(r => r.segment);
+        for (let i = 0; i < rows.length; i++) {
+            this.points.push({ x: rows[i].x, y: rows[i].y });
+            if (rows[i].segment) {
+                if (i < rows.length - 1) this.segments.push(rows[i].segment);
+            } else if (defaultsNeeded && i < rows.length - 1) {
+                const preset = TerrainPresets['roca-suave'];
+                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
+            }
+        }
+        // If no segment data at all, create defaults (tramos sin material)
         if (this.segments.length === 0 && this.points.length >= 2) {
             for (let i = 0; i < this.points.length - 1; i++) {
                 const preset = TerrainPresets['roca-suave'];

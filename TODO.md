@@ -1,6 +1,6 @@
 # TODO — SimRocas 2D
 
-**Última actualización:** 25/Abr/2026
+**Última actualización:** 17/Oct/2026
 
 ---
 
@@ -28,6 +28,25 @@
 - [x] Reproducción timeline — grabación y playback de toda la simulación
 - [x] Optimización profunda — vertex cache, flat array trajectories, render throttle, zero-alloc step
 - [x] Modo Desprendimiento — release de roca sobre la superficie del terreno (simulación de caída por desprendimiento)
+- [x] Múltiples puntos de liberación — orígenes con velocidad y ángulo independientes, rocas distribuidas equitativamente
+- [x] Mapa de probabilidad — bandas P10/P50/P83/P95 dibujadas sobre el perfil
+- [x] Barreras de contención — segmentos con Cn/Ct propios y colisión física real
+- [x] Copiar/pegar coordenadas — desde Excel en formato tabular X(tab)Y
+- [x] Atajos de teclado — Ctrl+E/Ctrl+Enter, Escape, Espacio, Ctrl+Z, Ctrl+S, R
+- [x] Web Workers — simulación en hilo separado con streaming de frames en tiempo real
+- [x] GitHub Pages — despliegue automático con .github/workflows/deploy.yml
+- [x] Importación STL 2.5D — parser ASCII/Binario, vista en planta con líneas de corte y curvas de nivel
+- [x] Rugosidad geológica — ángulo de rugosidad por tramo con rotación estocástica de la normal de contacto
+- [x] Fragmentación progresiva por abrasión — esquirlas entre 1× y 3× el umbral con núcleo superviviente; ruptura total sobre 3×
+- [x] Generador de terreno aleatorio — perfiles aleatorios listos para simular
+- [x] Dashboard de resultados — panel de resumen con métricas de la simulación
+
+---
+
+## 🚧 EN CURSO
+
+- **F0 cerrando (base web)** — pruebas headless, unificación de la física del Worker, límites derivados del terreno, correcciones de reposo/fricción/penetración.
+- **F1 (escritorio Electron) y F2 (DEM e importadores) — iniciadas** en paralelo.
 
 ---
 
@@ -35,10 +54,9 @@
 
 ### Prioridad ALTA (funcionalidad profesional)
 
-- [ ] **Múltiples puntos de liberación** - Permitir definir varios puntos de origen
-- [ ] **Mapa de probabilidad** - Contorno de probabilidad de llegada (P10, P50, P83, P95) dibujado sobre el perfil
-- [ ] **Barreras y estructuras de contención** - Objetos en el perfil que detengan/absorban rocas
 - [ ] **Unidades configurables** - Cambiar entre metros y pies
+- [ ] **Decisión G7: criterio de reposo en pendientes (slopeFactor)** - La definición de "en reposo" depende de la pendiente (`slopeFactor` en `js/physics.js:_checkResting`); definir y documentar el estándar del proyecto.
+- [ ] **Revisar visualización de trayectorias al terminar la simulación** - Con el timeline activo en el cuadro 1 no se ven trayectorias; revisar qué se dibuja al finalizar.
 
 ### Prioridad MEDIA (mejoras de trabajo)
 
@@ -46,8 +64,6 @@
 - [ ] **Reporte PDF** - Generar reporte profesional con gráficos y perfil
 - [ ] **Barra de escala gráfica** - Escala visual tipo barra en el canvas
 - [ ] **Norte/orientación** - Indicador de dirección del perfil
-- [ ] **Copiar/pegar coordenadas** - Desde Excel directamente
-- [ ] **Atajos de teclado** - Ctrl+E ejecutar, Ctrl+Z deshacer punto, Espacio pausar
 
 ### Prioridad BAJA (nice to have)
 
@@ -58,13 +74,11 @@
 
 ### Performance
 
-- [ ] **Web Workers** - Mover simulación a hilo separado para no bloquear UI
 - [ ] **Spatial hashing** - Optimizar detección de colisiones con muchos puntos
 - [ ] **Canvas offscreen** - Renderizado en segundo plano
 
 ### Deploy
 
-- [ ] **GitHub Pages** - Publicar versión gratuita online
 - [ ] **Docker** - Contenedor para despliegue en servidor
 - [ ] **Traducción EN/ES** - Selector de idioma
 
@@ -72,9 +86,11 @@
 
 ## 🐛 BUGS CONOCIDOS
 
-_Todos los bugs conocidos han sido corregidos en la revisión del 25/Abr/2026._
+- ~~**Física del Worker divergente**~~ — **CORREGIDO en F0**: `js/worker.js` ya no tiene física propia; carga `terrain.js`/`physics.js`/`simulation.js` con `importScripts` y ejecuta la misma clase `Simulation` (paridad exacta en `tests/worker.parity.test.js`).
+- ~~**Rocas que no alcanzan el reposo (lumped-mass y rigid-body)**~~ — **CORREGIDO en F0**: el contador `_restCheckCount` ya no se reinicia en los impactos; el reposo ahora incluye |ω| y contacto sostenido (`js/physics.js:_checkResting`). Cubierto en `tests/physics.resting.test.js`.
+- **Código sin uso** — `js/structural-failure.js` no está cargado en `index.html`; decisión pendiente (cargar o eliminar).
 
-**Fixes aplicados:**
+**Fixes aplicados (histórico 25/Abr/2026):**
 - Caché de segmento anterior en lookups (O(1) hit rate) → perfiles >50 puntos fluidos
 - Validación post-jitter en Simulation.start() → rocas nunca embebidas
 - Límite de 200 rocas terminadas dibujadas, Math.max/min seguro → sin saturación visual

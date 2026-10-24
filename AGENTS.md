@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-2D simulation of falling rocks web app. 100% vanilla JavaScript + HTML Canvas. Zero dependencies, no build tools, no bundler, no linter, no test framework.
+2D simulation of falling rocks web app. 100% vanilla JavaScript + HTML Canvas. Zero dependencies, no build tools, no bundler, no linter.
 
 ## Running the App
 
@@ -14,23 +14,36 @@ python3 -m http.server 8080
 
 Always hard-refresh with Ctrl+Shift+R to bypass JS cache during development.
 
+### Tests
+
+```bash
+node --test tests/
+```
+
+Headless tests with `node:test` (requires Node >= 20, zero dependencies). The helper `tests/helpers/load.js` loads the plain scripts into a Node `vm` context so the physics runs without a browser.
+
 ## Architecture
 
 ```
 rockfall2d-sim/
 ├── index.html          # Entry point; loads JS files in strict order via <script> tags
 ├── css/style.css       # Dark theme, CSS variables for all colors
-└── js/
-    ├── terrain.js      # Terrain class — 2D polyline, coordinate transforms
-    ├── physics.js      # Rock + PhysicsEngine — polygonal collision, impulse, torque
-    ├── simulation.js   # Simulation controller — main loop, rock lifecycle
-    ├── renderer.js     # Renderer — Canvas 2D drawing, histogram
-    ├── stats.js        # Stats — statistics, CSV/text export
-    ├── worker.js       # Web Worker — simulation in separate thread
-    └── app.js          # App — wiring, UI controls, DOM event handlers
+├── js/
+│   ├── terrain.js      # Terrain class — 2D polyline, coordinate transforms, materials
+│   ├── stl.js          # STL parser (ASCII/binary) and 2.5D slicing — plan view, cross-sections, contours
+│   ├── physics.js      # Rock + PhysicsEngine — polygonal collision, impulse, torque, fragmentation
+│   ├── simulation.js   # Simulation controller — main loop, rock lifecycle
+│   ├── renderer.js     # Renderer — Canvas 2D drawing, histogram, probability map
+│   ├── stats.js        # Stats — statistics, CSV/text export
+│   ├── worker.js       # Web Worker — simulation in separate thread
+│   ├── structural-failure.js  # Structural failure analysis — NOT loaded in index.html (unused; decision pending)
+│   └── app.js          # App — wiring, UI controls, DOM event handlers
+└── tests/              # Headless tests (node:test)
+    ├── helpers/load.js # Script loader for the Node vm context
+    └── physics.roughness.test.js
 ```
 
-JS files are loaded in order by `<script>` tags in `index.html`. Each file defines one or more ES6 classes on the global `SimRocas` namespace. No `import`/`export`, no modules.
+JS files are loaded in order by `<script>` tags in `index.html`. Each file defines one or more ES6 classes on the global `SimRocas` namespace, assigned at `globalThis.SimRocas` (migration in progress — some files still assign via `window.SimRocas`). No `import`/`export`, no modules. `index.html` uses manual cache-busting (`?v=N` query string per script): bump the version of every script you edit, or the browser serves stale code.
 
 ## Code Style
 
@@ -66,10 +79,11 @@ All colors use CSS custom properties on `:root`:
 1. Edit `index.html` to add UI elements (Spanish labels)
 2. Add logic to the appropriate JS class file
 3. Wire DOM events in `app.js`
-4. Test by refreshing the browser
+4. Bump the `?v=N` cache-busting version of every edited script in `index.html`
+5. Test by refreshing the browser
 
 ## Known Issues
 
-- Profiles with >50 points cause slow simulation
-- Release point near terrain may embed rocks
-- >1,000 rocks saturates the canvas visually (trace limit needed)
+- Worker physics is a self-contained copy in `js/worker.js` that diverges from `js/physics.js` (fragmentation differs: worker generation < 2 and diameter > 0.15 m, fractal model; main thread generation < 3 and diameter > 0.10 m, progressive model)
+- Under investigation: rocks that never come to rest with lumped-mass and rigid-body
+- `js/structural-failure.js` is not loaded in `index.html` (unused code; decision pending)

@@ -46,6 +46,10 @@
     --canvas-release-freefall: #ffa500;
     --canvas-release-detachment: #4ecdc4;
     --canvas-histogram-bg: #1e2a4a;
+    /* --- Capas 3D (js/view3d.js): perfil trazado, sección, curvas de nivel --- */
+    --view3d-profile-line: #4ecdc4;
+    --view3d-section-line: #ffa500;
+    --view3d-contour: #9fd8ec;
 }
 
 /* --- Light Theme --- */
@@ -79,6 +83,10 @@
     --canvas-release-freefall: #e07000;
     --canvas-release-detachment: #2a9d8f;
     --canvas-histogram-bg: #e8eef8;
+    /* --- Capas 3D (js/view3d.js) --- */
+    --view3d-profile-line: #2a9d8f;
+    --view3d-section-line: #e07000;
+    --view3d-contour: #4a90b8;
 }
 
 /* --- Base --- */
@@ -1118,3 +1126,283 @@ body, header, .sidebar, .canvas-area, .tab, .btn, .stat-card,
     font-size: 13px;
 }
 
+/* ============================================
+   Modo 2D / 3D (T3.4) + panel DEM 3D (T3.6)
+   ============================================ */
+
+/* Conmutador en el header */
+.mode-switcher {
+    display: flex;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    overflow: hidden;
+    margin-right: 12px;
+}
+
+.mode-btn {
+    padding: 6px 14px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition);
+}
+
+.mode-btn + .mode-btn {
+    border-left: 1px solid var(--border-default);
+}
+
+.mode-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.mode-btn.active {
+    background: var(--accent);
+    color: var(--bg-surface);
+}
+
+/* Contenedor 3D ocupa el área del canvas principal */
+#view3d-container {
+    display: none;
+    position: absolute;
+    inset: 0;
+}
+
+body.mode-3d #view3d-container {
+    display: block;
+}
+
+/* En modo 3D se ocultan el canvas 2D y su toolbar (no se destruyen;
+   el estado 2D queda íntegro). */
+body.mode-3d .canvas-toolbar,
+body.mode-3d #main-canvas,
+body.mode-3d .canvas-tools-right,
+body.mode-3d .timeline-bar,
+body.mode-3d #fab-run {
+    display: none !important;
+}
+
+/* Progreso de importación de terreno 3D */
+.dem-progress {
+    margin-top: 8px;
+}
+
+.dem-progress-track {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-default);
+    overflow: hidden;
+}
+
+.dem-progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 120ms ease;
+}
+
+.dem-progress-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.dem-progress-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.dem-error {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--danger-hover);
+    font-size: 11px;
+    white-space: pre-wrap;
+}
+
+/* Panel de información del DEM */
+.dem-info-panel {
+    margin-top: 10px;
+    padding: 8px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    font-size: 11px;
+    display: grid;
+    gap: 3px;
+}
+
+.dem-info-panel strong {
+    color: var(--text-secondary);
+}
+
+.dem-warnings {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius-sm);
+    color: var(--warning, var(--danger-hover));
+    font-size: 11px;
+}
+
+.dem-warnings ul {
+    margin: 4px 0 0 16px;
+    list-style: disc;
+}
+
+/* Botones Cota/Pendiente y exageración del visor */
+.dem-view-controls {
+    margin-top: 10px;
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.dem-view-controls .btn.active {
+    background: var(--accent);
+    color: var(--bg-surface);
+}
+
+/* ---------------------------------------------------------------- 3D: trazado de perfil (T3.5) y vista en planta (T3.7) */
+.dem-profile-controls {
+    margin-top: 10px;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+}
+
+.dem-profile-controls .button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.dem-profile-controls .btn.active {
+    background: var(--accent);
+    color: var(--bg-surface);
+}
+
+.dem-profile-info {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.dem-profile-status {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.dem-profile-status-warn {
+    color: var(--danger-hover);
+}
+
+.dem-contour-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* Overlay del visor 3D (botones/casillas flotantes) */
+.view3d-overlay {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    opacity: 0.92;
+}
+
+.view3d-overlay .btn.active {
+    background: var(--accent);
+    color: var(--bg-surface);
+}
+
+.view3d-overlay-cb {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 3D: simulación de liberación (T4.6) */
+/* La pestaña 'Simulación 3D' sólo tiene sentido con terreno 3D cargado. */
+body:not(.mode-3d) .tab[data-tab="sim3d"] {
+    display: none;
+}
+
+.sim3d-zone-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 11px;
+}
+
+.sim3d-zone-row span {
+    color: var(--text-secondary);
+}
+
+.sim3d-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.sim3d-stats strong {
+    color: var(--text-primary);
+    font-family: monospace;
+}
+
+/* Leyendas (velocidad de trayectorias / campo del mapa sobre el terreno):
+   el gradiente concreto lo genera el JS con la rampa correspondiente. */
+.sim3d-legend {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+}
+
+.sim3d-legend-title {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.sim3d-legend-bar {
+    height: 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
+}
+
+.sim3d-legend-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    font-family: monospace;
+}

@@ -1,524 +1,48 @@
 /**
  * SimRocas 2D — Web Worker for simulation
  *
- * Runs rock physics in a separate thread to avoid blocking the main thread.
- * Receives serialized terrain + rock config, returns finished rock results.
+ * Runs the SAME simulation classes as the main thread (SimRocas.Terrain,
+ * SimRocas.PhysicsEngine, SimRocas.Simulation from js/terrain.js,
+ * js/physics.js and js/simulation.js) so there is no duplicated physics.
+ * The worker is created with `new Worker('js/worker.js')`, so importScripts
+ * paths are relative to js/.
  *
  * Messages IN:
- *   { type: 'start', terrain, rocks, config }
- *   { type: 'stop' }
+ *   { type: 'start', terrainJSON, simParams, physicsParams, barriers, startArgs }
+ *     - terrainJSON:    string — Terrain.toJSON() del hilo principal
+ *     - simParams:      objeto params de getSimulationParams (para sim.configure)
+ *     - physicsParams:  copia de las propiedades primitivas del PhysicsEngine
+ *                       del hilo principal (calcMethod, kn/kt, energyModel...)
+ *     - barriers:       array de barreras {x1,y1,x2,y2,...} o []
+ *     - startArgs:      argumentos exactos y en el mismo orden que la llamada
+ *                       a simulation.start del modo normal (js/app.js)
+ *   { type: 'stop' } — el worker se termina desde fuera (worker.terminate)
  *
  * Messages OUT:
  *   { type: 'progress', data: { simulatedCount, totalRocks, progress } }
- *   { type: 'frame', frame: [{ x, y, rotation, isResting }] }
+ *     cada iteración del bucle, como simulation.onUpdate del modo normal.
+ *   { type: 'frame', frame: [{ id, x, y, rotation, isResting, parentId, isFragmented }] }
+ *     cada 3 iteraciones; cada frame se alinea por índice con el array de
+ *     rocas informado en 'complete' (misma pareja que usa la timeline).
  *   { type: 'complete', rocks: [...] }
+ *     serialización de Simulation.rocks con todos los campos que consumen
+ *     js/stats.js y js/renderer.js (ver los puntos de consumo en cada campo).
  */
 
-// Inline minimal terrain class (no DOM dependency)
-class WorkerTerrain {
-    constructor(points, segmentMaterials) {
-        this.points = points || [];
-        this.segmentMaterials = segmentMaterials || [];
-    }
-
-    getHeightAt(x) {
-        const pts = this.points;
-        if (pts.length < 2) return 0;
-        for (let i = 0; i < pts.length - 1; i++) {
-            if (x >= pts[i].x && x <= pts[i + 1].x) {
-                const t = (x - pts[i].x) / (pts[i + 1].x - pts[i].x);
-                return pts[i].y + t * (pts[i + 1].y - pts[i].y);
-            }
-        }
-        if (x <= pts[0].x) return pts[0].y;
-        return pts[pts.length - 1].y;
-    }
-
-    getSurfaceNormalAt(x) {
-        const pts = this.points;
-        if (pts.length < 2) return { nx: 0, ny: 1 };
-        for (let i = 0; i < pts.length - 1; i++) {
-            if (x >= pts[i].x && x <= pts[i + 1].x) {
-                const dx = pts[i + 1].x - pts[i].x;
-                const dy = pts[i + 1].y - pts[i].y;
-                const len = Math.sqrt(dx * dx + dy * dy);
-                if (len < 0.0001) return { nx: 0, ny: 1 };
-                return { nx: -dy / len, ny: dx / len };
-            }
-        }
-        return { nx: 0, ny: 1 };
-    }
-
-    getSegmentPropertiesAt(x, defaultCn, defaultCt) {
-        for (let i = 0; i < this.points.length - 1; i++) {
-            if (x >= this.points[i].x && x <= this.points[i + 1].x) {
-                const mat = this.segmentMaterials[i];
-                if (mat) {
-                    return {
-                        cn: mat.cn !== undefined ? mat.cn : defaultCn,
-                        ct: mat.ct !== undefined ? mat.ct : defaultCt,
-                        roughness: mat.roughness !== undefined ? mat.roughness : 0
-                    };
-                }
-                break;
-            }
-        }
-        return { cn: defaultCn, ct: defaultCt, roughness: 0 };
-    }
-
-    _findSegmentIndex(x) {
-        for (let i = 0; i < this.points.length - 1; i++) {
-            if (x >= this.points[i].x && x <= this.points[i + 1].x) return i;
-        }
-        return -1;
-    }
-}
-
-// Inline minimal rock + physics
-class WorkerRock {
-    constructor(x, y, diameter, density, initialVelocity, angle, shapeType, aspectRatio) {
-        this.x = x;
-        this.y = y;
-        this.vx = initialVelocity * Math.cos(angle * Math.PI / 180);
-        this.vy = initialVelocity * Math.sin(angle * Math.PI / 180);
-        this.diameter = diameter;
-        this.radius = diameter / 2;
-        this.density = density;
-        this.shapeType = shapeType;
-        this.aspectRatio = aspectRatio;
-        this.rotation = Math.random() * Math.PI * 2;
-        this.angularVelocity = (Math.random() - 0.5) * 2;
-        this.bounces = 0;
-        this.maxBounceHeight = 0;
-        this.maxKineticEnergy = 0;
-        this.maxImpactVelocity = 0;
-        this.trajectory = [];
-        this.bouncePoints = [];
-        this.impactEnergies = [];
-        this.finalX = x;
-        this.finalY = y;
-        this.isResting = false;
-        this.restThreshold = 0.08;
-        this._restCheckCount = 0;
-        this.ignoreResting = false;
-        this.totalEnergyDissipated = 0;
-        this.stepsTaken = 0;
-        this.elapsedTime = 0;
-        this.mass = density * Math.PI * this.radius * this.radius * this.radius * 0.5;
-
-        // Generate shape vertices
-        this.shape = this._generateShape(shapeType, aspectRatio);
-
-        // Compute moment of inertia (shoelace formula)
-        this.momentOfInertia = this.computeMomentOfInertia();
-
-        // Fragmentation properties
-        this.id = null;
-        this.generation = 0;
-        this.parentId = null;
-        this.isFragmented = false;
-        this._lastCollision = null;
-    }
-
-    _generateShape(type, ar) {
-        if (type === 'sphere') {
-            const pts = [];
-            for (let i = 0; i < 16; i++) {
-                const a = (i / 16) * Math.PI * 2;
-                pts.push({ x: Math.cos(a) * this.radius, y: Math.sin(a) * this.radius });
-            }
-            return pts;
-        }
-        const n = 5 + Math.floor(Math.random() * 5);
-        const pts = [];
-        for (let i = 0; i < n; i++) {
-            const a = (i / n) * Math.PI * 2;
-            const r = this.radius * (0.7 + Math.random() * 0.3);
-            pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
-        }
-        return pts;
-    }
-
-    update(dt, gravity) {
-        this.vy -= gravity * dt;
-        this.x += this.vx * dt;
-        this.y += this.vy * dt;
-        this.rotation += this.angularVelocity * dt;
-    }
-
-    get kineticEnergy() {
-        return 0.5 * this.mass * (this.vx * this.vx + this.vy * this.vy);
-    }
-
-    get speed() {
-        return Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-    }
-
-    _polygonArea() {
-        const n = this.shape.length;
-        let area = 0;
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
-            area += this.shape[i].x * this.shape[j].y;
-            area -= this.shape[j].x * this.shape[i].y;
-        }
-        return Math.abs(area) / 2;
-    }
-
-    computeMomentOfInertia() {
-        const n = this.shape.length;
-        let sum = 0;
-        const rho = this.mass / this._polygonArea();
-        for (let i = 0; i < n; i++) {
-            const j = (i + 1) % n;
-            const p1 = this.shape[i];
-            const p2 = this.shape[j];
-            const cross = p1.x * p2.y - p2.x * p1.y;
-            const r1sq = p1.x * p1.x + p1.y * p1.y;
-            const r2sq = p2.x * p2.x + p2.y * p2.y;
-            const dot = p1.x * p2.x + p1.y * p2.y;
-            sum += cross * (r1sq + dot + r2sq);
-        }
-        return Math.abs(rho * sum / 24);
-    }
-
-    _findDeepestPenetrationVertex(terrain) {
-        const cosR = Math.cos(this.rotation);
-        const sinR = Math.sin(this.rotation);
-        let deepestPenetration = 0;
-        let contactIndex = -1;
-
-        for (let i = 0; i < this.shape.length; i++) {
-            const localX = this.shape[i].x;
-            const localY = this.shape[i].y;
-            const worldX = this.x + localX * cosR - localY * sinR;
-            const worldY = this.y + localX * sinR + localY * cosR;
-            const terrainY = terrain.getHeightAt(worldX);
-            const penetration = terrainY - worldY;
-
-            if (penetration > deepestPenetration) {
-                deepestPenetration = penetration;
-                contactIndex = i;
-            }
-        }
-
-        if (contactIndex < 0) return null;
-
-        const localX = this.shape[contactIndex].x;
-        const localY = this.shape[contactIndex].y;
-        const contactX = this.x + localX * cosR - localY * sinR;
-        const contactY = this.y + localX * sinR + localY * cosR;
-
-        return {
-            contactIndex,
-            contactX,
-            contactY,
-            terrainY: terrain.getHeightAt(contactX)
-        };
-    }
-
-    _applyRoughnessPerturbation(normal, roughness) {
-        let rnx = normal.nx;
-        let rny = normal.ny;
-        if (roughness > 0) {
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
-            const cosPhi = Math.cos(phi);
-            const sinPhi = Math.sin(phi);
-            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
-            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
-            if (proposedRny > 0) {
-                rnx = proposedRnx;
-                rny = proposedRny;
-            }
-        }
-        return { rnx, rny };
-    }
-
-    _workerLumpedMass(terrain, kn, kt) {
-        const terrainY = terrain.getHeightAt(this.x);
-        const penetration = terrainY - this.y;
-        if (penetration <= 0) return;
-
-        this.bounces++;
-
-        const normal = terrain.getSurfaceNormalAt(this.x);
-        const segProps = terrain.getSegmentPropertiesAt(this.x, 0.6, 0.4);
-        const roughness = segProps.roughness || 0;
-        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
-
-        const vn = this.vx * rnx + this.vy * rny;
-        if (vn >= 0) return;
-
-        const keBefore = this.kineticEnergy;
-        if (Math.abs(vn) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vn);
-
-        const vtX = this.vx - vn * rnx;
-        const vtY = this.vy - vn * rny;
-
-        this.vx = -kn * vn * rnx + kt * vtX;
-        this.vy = -kn * vn * rny + kt * vtY;
-
-        this.y = Math.max(terrainY + 0.01, this.y);
-
-        const keAfter = this.kineticEnergy;
-        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
-        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
-        this.impactEnergies.push(keBefore / 1000);
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn };
-
-        const bounceH = this.y - terrainY;
-        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
-        this.bouncePoints.push({ x: this.x, y: this.y });
-
-        this._checkRest();
-    }
-
-    _workerRigidBody(terrain, cn, ct, energyModel, energyRatio) {
-        const deepest = this._findDeepestPenetrationVertex(terrain);
-        if (!deepest || deepest.terrainY - deepest.contactY <= 0) return;
-
-        this.bounces++;
-
-        const normal = terrain.getSurfaceNormalAt(deepest.contactX);
-        const segProps = terrain.getSegmentPropertiesAt(deepest.contactX, cn, ct);
-        const roughness = segProps.roughness || 0;
-        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
-
-        const rx = deepest.contactX - this.x;
-        const ry = deepest.contactY - this.y;
-        const vCx = this.vx - this.angularVelocity * ry;
-        const vCy = this.vy + this.angularVelocity * rx;
-        const vDotN = vCx * rnx + vCy * rny;
-        if (vDotN >= 0) return;
-
-        const keBefore = this.kineticEnergy;
-        if (Math.abs(vDotN) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vDotN);
-
-        if (energyModel === 'energy-ratio') {
-            const vn = this.vx * rnx + this.vy * rny;
-            const vtX = this.vx - vn * rnx;
-            const vtY = this.vy - vn * rny;
-            const sf = Math.sqrt(energyRatio);
-            this.vx = vtX * sf - vn * sf * rnx;
-            this.vy = vtY * sf - vn * sf * rny;
-            this.angularVelocity *= sf;
-        } else {
-            const rCrossN = rx * rny - ry * rnx;
-            const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
-            const j = -(1 + cn) * vDotN / denom;
-
-            this.vx += j * rnx / this.mass;
-            this.vy += j * rny / this.mass;
-            this.angularVelocity += rCrossN * j / this.momentOfInertia;
-
-            const tangentX = -rny;
-            const tangentY = rnx;
-            const newVCx = this.vx - this.angularVelocity * ry;
-            const newVCy = this.vy + this.angularVelocity * rx;
-            const vDotT = newVCx * tangentX + newVCy * tangentY;
-            const rCrossT = rx * tangentY - ry * tangentX;
-            const denomT = 1 / this.mass + (rCrossT * rCrossT) / this.momentOfInertia;
-            const jt = (1 - ct) * vDotT / denomT;
-
-            this.vx -= jt * tangentX / this.mass;
-            this.vy -= jt * tangentY / this.mass;
-            this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
-        }
-
-        this.y = deepest.terrainY + 0.01;
-
-        const keAfter = this.kineticEnergy;
-        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
-        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
-        this.impactEnergies.push(keBefore / 1000);
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vDotN };
-
-        const bounceH = this.y - deepest.terrainY;
-        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
-        this.bouncePoints.push({ x: this.x, y: this.y });
-
-        this._checkRest();
-    }
-
-    _workerNonsmooth(terrain, cn, mu) {
-        const deepest = this._findDeepestPenetrationVertex(terrain);
-        if (!deepest || deepest.terrainY - deepest.contactY <= 0) return;
-
-        this.bounces++;
-
-        const normal = terrain.getSurfaceNormalAt(deepest.contactX);
-        const segProps = terrain.getSegmentPropertiesAt(deepest.contactX, cn, mu);
-        const roughness = segProps.roughness || 0;
-        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
-
-        const rx = deepest.contactX - this.x;
-        const ry = deepest.contactY - this.y;
-        const vCx = this.vx - this.angularVelocity * ry;
-        const vCy = this.vy + this.angularVelocity * rx;
-        const vDotN = vCx * rnx + vCy * rny;
-        if (vDotN >= 0) return;
-
-        const keBefore = this.kineticEnergy;
-        if (Math.abs(vDotN) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vDotN);
-
-        const rCrossN = rx * rny - ry * rnx;
-        const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
-        const jn = -(1 + cn) * vDotN / denom;
-
-        this.vx += jn * rnx / this.mass;
-        this.vy += jn * rny / this.mass;
-        this.angularVelocity += rCrossN * jn / this.momentOfInertia;
-
-        const tangentX = -rny;
-        const tangentY = rnx;
-        const newVCx = this.vx - this.angularVelocity * ry;
-        const newVCy = this.vy + this.angularVelocity * rx;
-        const vDotT = newVCx * tangentX + newVCy * tangentY;
-        const rCrossT = rx * tangentY - ry * tangentX;
-        const denomT = 1 / this.mass + (rCrossT * rCrossT) / this.momentOfInertia;
-        const jtFree = -vDotT / denomT;
-        const jtMax = mu * Math.abs(jn);
-        const jt = Math.max(-jtMax, Math.min(jtMax, jtFree));
-
-        this.vx -= jt * tangentX / this.mass;
-        this.vy -= jt * tangentY / this.mass;
-        this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
-
-        this.y = deepest.terrainY + 0.01;
-
-        const keAfter = this.kineticEnergy;
-        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
-        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
-        this.impactEnergies.push(keBefore / 1000);
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vDotN };
-
-        const bounceH = this.y - deepest.terrainY;
-        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
-        this.bouncePoints.push({ x: this.x, y: this.y });
-
-        this._checkRest();
-    }
-
-    _workerEnergyRatio(terrain, cn, energyRatio) {
-        const deepest = this._findDeepestPenetrationVertex(terrain);
-        if (!deepest || deepest.terrainY - deepest.contactY <= 0) return;
-
-        this.bounces++;
-
-        const normal = terrain.getSurfaceNormalAt(deepest.contactX);
-        const segProps = terrain.getSegmentPropertiesAt(deepest.contactX, cn, 0.4);
-        const roughness = segProps.roughness || 0;
-        const { rnx, rny } = this._applyRoughnessPerturbation(normal, roughness);
-
-        const vn = this.vx * rnx + this.vy * rny;
-        if (vn >= 0) return;
-
-        const keBefore = this.kineticEnergy;
-        if (Math.abs(vn) > this.maxImpactVelocity) this.maxImpactVelocity = Math.abs(vn);
-
-        const vtX = this.vx - vn * rnx;
-        const vtY = this.vy - vn * rny;
-        const sf = Math.sqrt(energyRatio);
-        this.vx = vtX * sf - vn * sf * rnx;
-        this.vy = vtY * sf - vn * sf * rny;
-        this.angularVelocity *= sf;
-
-        this.y = deepest.terrainY + 0.01;
-
-        const keAfter = this.kineticEnergy;
-        this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
-        if (keBefore > this.maxKineticEnergy) this.maxKineticEnergy = keBefore;
-        this.impactEnergies.push(keBefore / 1000);
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn };
-
-        const bounceH = this.y - deepest.terrainY;
-        if (bounceH > this.maxBounceHeight) this.maxBounceHeight = bounceH;
-        this.bouncePoints.push({ x: this.x, y: this.y });
-
-        this._checkRest();
-    }
-
-    _checkRest() {
-        if (this.speed < this.restThreshold && !this.ignoreResting) {
-            this._restCheckCount++;
-            if (this._restCheckCount > 3 || this.bounces > 2) {
-                this.isResting = true;
-                this.finalX = this.x;
-                this.finalY = this.y;
-            }
-        } else {
-            this._restCheckCount = 0;
-        }
-    }
-
-    handleCollision(terrain, cn, ct) {
-        if (this.isResting) return;
-
-        if (!this.calcMethod || this.calcMethod === 'lumped-mass') {
-            this._workerLumpedMass(terrain, this.Kn, this.Kt);
-        } else if (this.calcMethod === 'rigid-body') {
-            this._workerRigidBody(terrain, cn, ct, this.energyModel, this.energyRatio);
-        } else if (this.calcMethod === 'nonsmooth') {
-            this._workerNonsmooth(terrain, cn, ct);
-        } else if (this.calcMethod === 'energy-ratio') {
-            this._workerEnergyRatio(terrain, cn, this.energyRatio);
-        } else {
-            this._workerLumpedMass(terrain, this.Kn, this.Kt);
-        }
-    }
-
-    handleBarrierCollisions(barriers) {
-        for (const b of barriers) {
-            this._checkBarrier(b);
-            if (this.isResting) break;
-        }
-    }
-
-    _checkBarrier(barrier) {
-        const dx = barrier.x2 - barrier.x1;
-        const dy = barrier.y2 - barrier.y1;
-        const segLenSq = dx * dx + dy * dy;
-        if (segLenSq < 0.0001) return;
-
-        const t = ((this.x - barrier.x1) * dx + (this.y - barrier.y1) * dy) / segLenSq;
-        const tc = Math.max(0, Math.min(1, t));
-        const closestX = barrier.x1 + tc * dx;
-        const closestY = barrier.y1 + tc * dy;
-        const distX = this.x - closestX;
-        const distY = this.y - closestY;
-        const distSq = distX * distX + distY * distY;
-        const collisionDist = this.radius + (barrier.thickness || 0.15);
-
-        if (distSq >= collisionDist * collisionDist) return;
-
-        const dist = Math.sqrt(distSq);
-        if (dist < 0.001) return;
-
-        const nx = distX / dist;
-        const ny = distY / dist;
-        const vn = this.vx * nx + this.vy * ny;
-        if (vn >= 0) return;
-
-        const barrierCn = barrier.cn !== undefined ? barrier.cn : 0.3;
-        const barrierCt = barrier.ct !== undefined ? barrier.ct : 0.5;
-
-        const vtX = this.vx - vn * nx;
-        const vtY = this.vy - vn * ny;
-
-        this.vx = -barrierCn * vn * nx + barrierCt * vtX;
-        this.vy = -barrierCn * vn * ny + barrierCt * vtY;
-
-        const penetration = collisionDist - dist;
-        this.x += nx * (penetration + 0.01);
-        this.y += ny * (penetration + 0.01);
-        this.bounces++;
-
-        // Save for fragmentation check
-        this._lastCollision = { normal: { nx: nx, ny: ny }, vn: vn };
-    }
-}
-
-self.onmessage = function(e) {
+// Cache-busting: el host abre el worker con una consulta (?v=N); se repite
+// aquí para que terrain/physics/simulation se invaliden a la vez. Si el
+// entorno no expone self.location (tests headless), no se añade sufijo.
+const _v = (self.location && self.location.search) || '';
+importScripts('terrain.js' + _v, 'physics.js' + _v, 'simulation.js' + _v);
+
+// Publicar snapshot cada N iteraciones del bucle (igual que antes).
+const FRAME_EVERY = 3;
+
+// Red de seguridad: el stop duro de Simulation (maxStepsPerRock por roca)
+// ya acota el bucle, pero evita un hang entero si algo se vuelve NaN.
+const MAX_ITERATIONS_SIMULATED = 100000;
+
+self.onmessage = function (e) {
     const msg = e.data;
 
     if (msg.type === 'start') {
@@ -529,151 +53,89 @@ self.onmessage = function(e) {
 };
 
 function runWorkerSimulation(msg) {
-    const { terrainData, rockConfigs, config, barriers } = msg;
-    const terrain = new WorkerTerrain(terrainData.points, terrainData.segmentMaterials);
+    const terrain = new SimRocas.Terrain();
+    terrain.fromJSON(msg.terrainJSON);
 
-    const gravity = config.gravity || 9.81;
-    const dt = config.dt || 0.005;
-    const cn = config.cn || 0.6;
-    const ct = config.ct || 0.4;
-    const maxSteps = config.maxStepsPerRock || 5000;
-    const maxDuration = config.maxDuration || 30;
-    const stepsPerTick = config.animationSpeed || 50;
+    const physics = new SimRocas.PhysicsEngine();
+    const sim = new SimRocas.Simulation(terrain, physics);
+    sim.configure(msg.simParams);
+    Object.assign(physics, msg.physicsParams);
+    sim.barriers = msg.barriers || [];
 
-    const fragmentationEnabled = config.fragmentationEnabled !== undefined ? config.fragmentationEnabled : true;
-    const fractureEnergy = config.fractureEnergy !== undefined ? config.fractureEnergy : 25000;
-    const fractureDissipation = config.fractureDissipation !== undefined ? config.fractureDissipation : 0.4;
+    // Mismos argumentos y orden que simulation.start en el modo normal.
+    sim.start(...msg.startArgs);
 
-    // Read physics calculation config
-    const calcMethod = config.calcMethod || 'lumped-mass';
-    const Kn = config.Kn !== undefined ? config.Kn : 0.35;
-    const Kt = config.Kt !== undefined ? config.Kt : 0.75;
-    const energyModel = config.energyModel || 'impulse';
-    const energyRatio = config.energyRatio !== undefined ? config.energyRatio : 0.5;
+    const totalRocks = sim.totalRocks;
+    let iterations = 0;
 
-    // Create rocks
-    let workerNextRockId = 1;
-    const rocks = rockConfigs.map(rc => {
-        const r = new WorkerRock(
-            rc.x, rc.y, rc.diameter, rc.density, rc.velocity, rc.angle, rc.shapeType, rc.aspectRatio
-        );
-        r.id = rc.id !== undefined ? rc.id : workerNextRockId++;
-        r.generation = rc.generation !== undefined ? rc.generation : 0;
-        r.parentId = rc.parentId !== undefined ? rc.parentId : null;
-        r.isFragmented = rc.isFragmented !== undefined ? rc.isFragmented : false;
-        if (rc.id !== undefined && typeof rc.id === 'number' && rc.id >= workerNextRockId) {
-            workerNextRockId = rc.id + 1;
-        }
-        // Wire physics calculation method and parameters
-        r.calcMethod = calcMethod;
-        r.Kn = Kn;
-        r.Kt = Kt;
-        r.energyModel = energyModel;
-        r.energyRatio = energyRatio;
-        return r;
-    });
+    while (sim.isRunning) {
+        sim.step();
+        iterations++;
 
-    const totalRocks = rocks.length;
-    let simulatedCount = 0;
-    let frameCounter = 0;
-
-    // Simulate tick by tick, sending progress
-    let allDone = false;
-
-    while (!allDone) {
-        let activeCount = 0;
-
-        for (let i = 0; i < rocks.length; i++) {
-            const rock = rocks[i];
-            if (rock.isResting) continue;
-
-            activeCount++;
-            let rockChildren = null;
-
-            for (let s = 0; s < stepsPerTick; s++) {
-                // Reset collision tracking at each sub-step
-                rock._lastCollision = null;
-
-                const subSteps = 3;
-                const subDt = dt / subSteps;
-                for (let j = 0; j < subSteps; j++) {
-                    rock.update(subDt, gravity);
-                    rock.handleCollision(terrain, cn, ct);
-                    if (!rock.isResting && barriers && barriers.length > 0) {
-                        rock.handleBarrierCollisions(barriers);
-                    }
-                    if (rock.isResting) break;
-                }
-
-                rock.stepsTaken++;
-                rock.elapsedTime += dt;
-
-                // Check for fragmentation after collision
-                if (fragmentationEnabled && rock._lastCollision) {
-                    const { normal, vn } = rock._lastCollision;
-                    const impactEnergy = 0.5 * rock.mass * vn * vn;
-                    if (impactEnergy > fractureEnergy && rock.generation < 2 && rock.diameter > 0.15) {
-                        rock.isFragmented = true;
-                        rock.isResting = true;
-                        rockChildren = workerFragmentRock(rock, normal, fractureDissipation, workerNextRockId);
-                        workerNextRockId += rockChildren.length;
-                        break;
-                    }
-                }
-
-                if (rock.isResting) break;
-                if (rock.stepsTaken >= maxSteps) { rock.isResting = true; break; }
-                if (rock.elapsedTime >= maxDuration) { rock.isResting = true; break; }
-                if (rock.x < -50 || rock.x > 500 || rock.y < -100) { rock.isResting = true; break; }
-            }
-
-            if (rock.isResting) {
-                rock.finalX = rock.x;
-                rock.finalY = rock.y;
-                simulatedCount++;
-
-                if (rockChildren && rockChildren.length > 0) {
-                    for (const child of rockChildren) {
-                        rocks.push(child);
-                    }
-                }
-            }
+        if (iterations > MAX_ITERATIONS_SIMULATED) {
+            sim.stop();
         }
 
-        // Send frame snapshot
-        frameCounter++;
-        if (frameCounter % 3 === 0) {
-            const frame = rocks.map(r => ({
-                id: r.id,
-                x: r.x,
-                y: r.y,
-                rotation: r.rotation,
-                isResting: r.isResting,
-                parentId: r.parentId,
-                isFragmented: r.isFragmented
-            }));
-            self.postMessage({ type: 'frame', frame });
+        if (iterations % FRAME_EVERY === 0) {
+            self.postMessage({ type: 'frame', frame: snapshotFrame(sim.rocks) });
         }
 
-        // Send progress
         self.postMessage({
             type: 'progress',
-            data: { simulatedCount, totalRocks, progress: simulatedCount / totalRocks }
+            data: {
+                simulatedCount: sim.simulatedCount,
+                totalRocks,
+                progress: totalRocks > 0 ? sim.simulatedCount / totalRocks : 0
+            }
         });
-
-        // Loop dynamically adapts to the updated rocks array length!
-        allDone = activeCount === 0;
     }
 
-    // Serialize rock results
-    const results = rocks.map(r => ({
+    self.postMessage({ type: 'complete', rocks: serializeRocks(sim.rocks) });
+}
+
+// Snapshot indexado igual que Simulation.recordFrame: frame[i] <-> rocks[i].
+function snapshotFrame(rocks) {
+    return rocks.map(r => ({
+        id: r.id,
+        x: r.x,
+        y: r.y,
+        rotation: r.rotation,
+        isResting: r.isResting,
+        parentId: r.parentId,
+        isFragmented: r.isFragmented
+    }));
+}
+
+/**
+ * Serializa las rocas terminadas para el hilo principal. Campos conforme a
+ * sus consumidores:
+ *   - js/stats.js compute(): maxKineticEnergy, maxBounceHeight, finalX,
+ *     maxImpactVelocity, bounces, impactEnergies, isResting
+ *   - js/renderer.js drawTrajectories(): trajectory (tripletes planos x,y,v),
+ *     id, parentId
+ *   - js/renderer.js drawBouncePoints(): bouncePoints
+ *   - js/renderer.js drawRocks(): getShapeVertices() (recosturido en el hilo
+ *     principal), radius, _colorActive/_colorResting/_colorStroke
+ *   - js/renderer.js renderTimelineFrame(): shape, color ({r,g,b}), radius
+ *   - fragmentación: generation, parentId, isFragmented, isCore,
+ *     massLossRatio, originalDiameter
+ */
+function serializeRocks(rocks) {
+    return rocks.map(r => ({
         id: r.id,
         generation: r.generation,
         parentId: r.parentId,
         isFragmented: r.isFragmented,
-        x: r.x, y: r.y,
-        vx: r.vx, vy: r.vy,
+        isCore: r.isCore,
+        massLossRatio: r.massLossRatio,
+        originalDiameter: r.originalDiameter,
+        x: r.x,
+        y: r.y,
+        vx: r.vx,
+        vy: r.vy,
         diameter: r.diameter,
+        radius: r.radius,
+        density: r.density,
         rotation: r.rotation,
         angularVelocity: r.angularVelocity,
         bounces: r.bounces,
@@ -688,88 +150,13 @@ function runWorkerSimulation(msg) {
         isResting: r.isResting,
         totalEnergyDissipated: r.totalEnergyDissipated,
         stepsTaken: r.stepsTaken,
+        elapsedTime: r.elapsedTime,
         mass: r.mass,
         shape: r.shape,
-        shapeType: r.shapeType
+        shapeType: r.shapeType,
+        color: r.color,
+        _colorActive: r._colorActive,
+        _colorResting: r._colorResting,
+        _colorStroke: r._colorStroke
     }));
-
-    self.postMessage({ type: 'complete', rocks: results });
-}
-
-function workerFragmentRock(rock, normal, fractureDissipation, startId) {
-    const N = Math.random() < 0.5 ? 2 : 3;
-    const childMasses = [];
-    const parentMass = rock.mass;
-
-    if (N === 2) {
-        const f = 0.55 + Math.random() * 0.15;
-        const m1 = f * parentMass;
-        const m2 = parentMass - m1;
-        childMasses.push(m1, m2);
-    } else {
-        const f1 = 0.50 + Math.random() * 0.15;
-        const m1 = f1 * parentMass;
-        const remainder = parentMass - m1;
-        const f2 = 0.50 + Math.random() * 0.15;
-        const m2 = f2 * remainder;
-        const m3 = remainder - m2;
-        childMasses.push(m1, m2, m3);
-    }
-
-    const vxReflected = rock.vx;
-    const vyReflected = rock.vy;
-
-    const E_reflected = 0.5 * parentMass * (vxReflected * vxReflected + vyReflected * vyReflected);
-    const E_target = E_reflected * (1 - fractureDissipation);
-
-    const childVBase = [];
-    let sumKeBase = 0;
-
-    for (let i = 0; i < N; i++) {
-        const alpha = (Math.random() * 2 - 1) * 15 * Math.PI / 180;
-        const cosAlpha = Math.cos(alpha);
-        const sinAlpha = Math.sin(alpha);
-        const vbx = vxReflected * cosAlpha - vyReflected * sinAlpha;
-        const vby = vxReflected * sinAlpha + vyReflected * cosAlpha;
-        childVBase.push({ vx: vbx, vy: vby });
-
-        sumKeBase += 0.5 * childMasses[i] * (vbx * vbx + vby * vby);
-    }
-
-    let S = 1.0;
-    if (sumKeBase > 0 && E_target > 0) {
-        S = Math.sqrt(E_target / sumKeBase);
-    }
-
-    const tx = -normal.ny;
-    const ty = normal.nx;
-
-    const children = [];
-    for (let i = 0; i < N; i++) {
-        const childMass = childMasses[i];
-        const childArea = childMass / rock.density;
-        const childRadius = Math.sqrt(childArea / Math.PI);
-        const childDiameter = childRadius * 2;
-
-        const offsetFactor = (i - (N - 1) / 2) * childDiameter * 0.8;
-        const cx = rock.x + tx * offsetFactor;
-        const cy = rock.y + ty * offsetFactor;
-
-        const child = new WorkerRock(
-            cx, cy, childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
-        );
-
-        child.vx = childVBase[i].vx * S;
-        child.vy = childVBase[i].vy * S;
-        child.angularVelocity = rock.angularVelocity * (0.8 + Math.random() * 0.4);
-
-        child.mass = childMass;
-        child.id = startId + i;
-        child.parentId = rock.id;
-        child.generation = rock.generation + 1;
-
-        children.push(child);
-    }
-
-    return children;
 }

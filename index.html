@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimRocas 2D — Simulador de Caída de Rocas</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪨</text></svg>">
-    <link rel="stylesheet" href="css/style.css">
-</head>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kaEog0AsPo4/9apXRMvp5eF3zpfBg9ltlJNNm2KUPio='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; base-uri 'self'">
+    <script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js","three/addons/":"./vendor/three/addons/"}}</script>
+    <link rel="stylesheet" href="css/style.css?v=2">
+    <script type="module" src="js/three-bridge.js?v=1"></script>
+    </head>
 <body>
     <div id="app">
         <header>
@@ -15,6 +18,10 @@
                 <h1>SimRocas 2D</h1>
             </div>
             <div class="header-actions">
+                <div class="mode-switcher" role="group" aria-label="Modo de vista">
+                    <button id="mode-2d" type="button" class="mode-btn active" aria-pressed="true">Perfil 2D</button>
+                    <button id="mode-3d" type="button" class="mode-btn" aria-pressed="false">Vista 3D</button>
+                </div>
                 <button id="theme-toggle" class="theme-toggle" title="Cambiar tema">
                     <svg class="theme-icon" viewBox="0 0 24 24" width="18" height="18">
                         <g class="sun-icon">
@@ -41,7 +48,9 @@
                     <button class="tab active" data-tab="terrain">Perfil Terreno</button>
                     <button class="tab" data-tab="barriers">Barreras</button>
                     <button class="tab" data-tab="parameters">Parámetros</button>
-                    <button class="tab" data-tab="stl3d">Topografía 3D</button>
+                    <button class="tab" data-tab="stl3d">STL 2.5D</button>
+                    <button class="tab" data-tab="dem3d">DEM 3D</button>
+                    <button class="tab" data-tab="sim3d">Simulación 3D</button>
                     <button class="tab" data-tab="results">Resultados</button>
                 </nav>
 
@@ -450,6 +459,254 @@
                     </div>
                 </div>
 
+                <div class="tab-content" id="tab-dem3d">
+                    <div class="section">
+                        <h3>Topografía 3D (DEM)</h3>
+                        <p class="help-text">Importa un terreno (STL, OBJ, PLY, nube XYZ, ASCII Grid o GeoTIFF) y visualízalo en la Vista 3D.</p>
+                        <div class="control-group">
+                            <label id="btn-import-dem" for="dem-file-input" class="btn btn-primary" style="display: block; text-align: center; cursor: pointer; width: 100%;" data-tooltip="Carga un archivo de topografía y genera un DEM con su malla de visualización.">📂 Importar terreno</label>
+                            <input type="file" id="dem-file-input" accept=".stl,.obj,.ply,.xyz,.csv,.txt,.pts,.asc,.grd,.tif,.tiff,.dxf,.las,.laz" style="display:none">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Tamaño de celda del DEM resultante. 'Automática' elige la mejor cara al DEM según el tamaño y la densidad de datos.">Resolución de celda:</label>
+                            <select id="dem-cell-size">
+                                <option value="">Automática</option>
+                                <option value="0.25">0,25 m</option>
+                                <option value="0.5">0,5 m</option>
+                                <option value="1">1 m</option>
+                                <option value="2">2 m</option>
+                                <option value="5">5 m</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Eje vertical del archivo: Z es estándar CAD/Cartografía, Y se usa en OpenGL/Blender.">Eje vertical:</label>
+                            <select id="dem-up-axis">
+                                <option value="Z">Eje Z</option>
+                                <option value="Y">Eje Y</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="En nubes de puntos e importaciones por celda, cómo se calcula la altura de la celda.">Modo de puntos:</label>
+                            <select id="dem-point-mode">
+                                <option value="mean">Media</option>
+                                <option value="min">Mínimo</option>
+                                <option value="max">Máximo</option>
+                            </select>
+                        </div>
+                        <div id="dem-progress" class="dem-progress" style="display:none;">
+                            <div class="dem-progress-track"><div id="dem-progress-fill" class="dem-progress-fill"></div></div>
+                            <div class="dem-progress-row">
+                                <span id="dem-progress-label" class="dem-progress-label">Leyendo… 0%</span>
+                                <button id="btn-dem-cancel" class="btn btn-danger btn-small" type="button">Cancelar</button>
+                            </div>
+                        </div>
+                        <div id="dem-error" class="dem-error" style="display:none;"></div>
+                        <div id="dem-info" class="dem-info-panel" style="display:none;">
+                            <div><strong>Formato:</strong> <span id="dem-fmt">-</span></div>
+                            <div><strong>Archivo:</strong> <span id="dem-file">-</span></div>
+                            <div><strong>Tamaño:</strong> <span id="dem-size">-</span></div>
+                            <div><strong>Celdas:</strong> <span id="dem-cells">-</span></div>
+                            <div><strong>Resolución:</strong> <span id="dem-res">-</span></div>
+                            <div><strong>Celdas con datos:</strong> <span id="dem-valid">-</span></div>
+                            <div><strong>Extensión:</strong> <span id="dem-extent">-</span></div>
+                            <div><strong>CRS:</strong> <span id="dem-crs">-</span></div>
+                        </div>
+                        <div id="dem-warnings" class="dem-warnings" style="display:none;">
+                            <strong>Advertencias:</strong>
+                            <ul id="dem-warning-list"></ul>
+                        </div>
+                        <div id="dem-view-controls" class="dem-view-controls" style="display:none;">
+                            <button id="btn-dem-color-elevation" class="btn btn-small active" type="button">Cota</button>
+                            <button id="btn-dem-color-slope" class="btn btn-small" type="button">Pendiente</button>
+                            <button id="btn-dem-exag1" class="btn btn-small active" type="button">1×</button>
+                            <button id="btn-dem-exag2" class="btn btn-small" type="button">2×</button>
+                            <button id="btn-dem-exag3" class="btn btn-small" type="button">3×</button>
+                        </div>
+                        <div id="dem-profile-controls" class="dem-profile-controls" style="display:none;">
+                            <div class="button-row">
+                                <button id="btn-dem-profile-draw" class="btn btn-small" type="button" data-tooltip="Trazar una polilínea sobre el terreno: cada clic agrega un vértice; doble clic o Terminar cierran; Esc cancela.">✎ Trazar perfil</button>
+                                <button id="btn-dem-profile-finish" class="btn btn-small" type="button" disabled>Terminar</button>
+                                <button id="btn-dem-profile-undo" class="btn btn-small" type="button" disabled>Deshacer vértice</button>
+                                <button id="btn-dem-profile-cancel" class="btn btn-small" type="button">Cancelar</button>
+                            </div>
+                            <div class="button-row">
+                                <button id="btn-dem-profile-send" class="btn btn-primary btn-small" type="button" disabled data-tooltip="Muestrea el DEM sobre la polilínea, reduce los puntos y carga el perfil en el modo 2D.">⇥ Enviar a Perfil 2D</button>
+                                <button id="btn-dem-profile-clear" class="btn btn-small" type="button" disabled>Borrar línea</button>
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Número de puntos del perfil 2D tras la reducción.">Puntos del perfil:</label>
+                                <select id="dem-profile-points">
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="200" selected>200</option>
+                                    <option value="500">500</option>
+                                </select>
+                            </div>
+                            <div id="dem-profile-info" class="dem-profile-info">Sin vértices.</div>
+                            <div id="dem-profile-warning" class="dem-warnings" style="display:none;"></div>
+                            <div id="dem-profile-status" class="dem-profile-status" style="display:none;"></div>
+                        </div>
+                        <div id="dem-plan-controls" class="dem-profile-controls" style="display:none;">
+                            <button id="btn-dem-plan-view" class="btn btn-small" type="button" data-tooltip="Cámara cenital sobre el terreno." onclick="window.app && window.app.togglePlanView()">🜨 Vista en planta</button>
+                            <label class="checkbox-label" data-tooltip="Curvas de nivel sobre el terreno (marching squares sobre los nodos del DEM).">
+                                <input type="checkbox" id="dem-contours-toggle"> Curvas de nivel
+                            </label>
+                            <div class="dem-contour-row">
+                                <label for="dem-contour-interval">Intervalo (m):</label>
+                                <input type="number" id="dem-contour-interval" min="0.01" step="any" style="width:80px;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-sim3d">
+                    <div class="section">
+                        <h3>Zonas de liberación</h3>
+                        <p class="help-text">Dibuja un polígono con clics sobre el terreno (doble clic o Terminar cierra; Esc cancela) o coloca un punto de liberación con un clic.</p>
+                        <div class="button-row">
+                            <button id="btn-sim3d-zone" class="btn btn-small" type="button" data-tooltip="Dibujar una zona poligonal: cada clic agrega un vértice sobre el terreno.">Dibujar zona</button>
+                            <button id="btn-sim3d-zone-finish" class="btn btn-small" type="button" disabled>Terminar</button>
+                            <button id="btn-sim3d-zone-cancel" class="btn btn-small" type="button">Cancelar</button>
+                        </div>
+                        <div class="button-row">
+                            <button id="btn-sim3d-point" class="btn btn-small" type="button" data-tooltip="El próximo clic sobre el terreno crea un punto de liberación.">Punto de liberación</button>
+                            <button id="btn-sim3d-clear-zones" class="btn btn-danger btn-small" type="button">Limpiar todas</button>
+                        </div>
+                        <div class="control-group">
+                            <label>Zonas de liberación:</label>
+                            <div id="sim3d-zones-list" class="segments-list"></div>
+                        </div>
+                        <div id="sim3d-zones-status" class="dem-profile-status" style="display:none;"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Parámetros de la simulación 3D</h3>
+                        <div class="control-group">
+                            <label data-tooltip="Cantidad total de rocas distribuidas entre las zonas. Hasta 10 000 rocas por corrida.">Número de rocas:</label>
+                            <input type="number" id="sim3d-rocks" value="500" min="1" max="10000" step="10">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Diámetro medio de las rocas (esfera equivalente).">Diámetro (m):</label>
+                            <input type="number" id="sim3d-diameter" value="0.5" min="0.05" step="0.1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Densidad del material de la roca. Granito típico: 2700 kg/m³.">Densidad (kg/m³):</label>
+                            <input type="number" id="sim3d-density" value="2700" min="500" step="100">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Caída libre: la roca se suelta a una altura sobre el terreno. Desprendimiento: la roca inicia apoyada en la superficie.">Modo de liberación:</label>
+                            <select id="sim3d-release-mode">
+                                <option value="fall">Caída libre (con altura)</option>
+                                <option value="detachment">Desprendimiento (en terreno)</option>
+                            </select>
+                        </div>
+                        <div class="control-group" id="sim3d-height-group">
+                            <label data-tooltip="Altura inicial sobre el terreno en modo caída libre.">Altura sobre el terreno (m):</label>
+                            <input type="number" id="sim3d-height" value="2" min="0" step="0.5">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Método de cálculo del contacto.">Método:</label>
+                            <select id="sim3d-method"></select>
+                            <p class="help-text" id="sim3d-method-note"></p>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de restitución normal (Kn) del impacto.">Kn (Normal):</label>
+                            <input type="number" id="sim3d-kn" value="0.35" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de restitución tangencial (Kt) del impacto.">Kt (Tangencial):</label>
+                            <input type="number" id="sim3d-kt" value="0.75" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Variabilidad aleatoria de Kn/Kt entre rocas (%).">Variabilidad (%):</label>
+                            <input type="number" id="sim3d-variability" value="10" min="0" max="100" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de fricción de rodadura sobre el terreno.">Fricción de rodadura:</label>
+                            <input type="number" id="sim3d-rolling" value="0.15" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Rugosidad CRSP del terreno en grados (0° = liso).">Rugosidad (°):</label>
+                            <input type="number" id="sim3d-roughness" value="0" min="0" max="30" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Tiempo máximo de simulación por roca. Las rocas sin terminar por reposo o salida se cortan aquí.">Duración máxima (s):</label>
+                            <input type="number" id="sim3d-duration" value="60" min="1" max="600" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Semilla entera para resultados reproducibles. Vacía = semilla aleatoria.">Semilla:</label>
+                            <input type="text" id="sim3d-seed" placeholder="(aleatoria)" inputmode="numeric">
+                        </div>
+                    </div>
+
+                    <div class="sim-action-bar">
+                        <button id="btn-sim3d-run" class="btn btn-primary" data-tooltip="Ejecuta la simulación 3D en paralelo (workers).">▶ Ejecutar simulación 3D</button>
+                        <button id="btn-sim3d-cancel" class="btn btn-warning" disabled data-tooltip="Cancela la corrida en curso.">⏸ Cancelar</button>
+                    </div>
+                    <div id="sim3d-progress" class="dem-progress" style="display:none;">
+                        <div class="dem-progress-track"><div id="sim3d-progress-fill" class="dem-progress-fill"></div></div>
+                        <div class="dem-progress-row">
+                            <span id="sim3d-progress-label" class="dem-progress-label">Simulando… 0%</span>
+                        </div>
+                    </div>
+                    <div id="sim3d-error" class="dem-error" style="display:none;"></div>
+
+                    <div class="section" id="sim3d-results" style="display:none;">
+                        <h3>Resultados 3D</h3>
+                        <div class="sim3d-stats">
+                            <span>Rocas totales: <strong id="sim3d-stat-total">-</strong></span>
+                            <span>En reposo: <strong id="sim3d-stat-rest">-</strong></span>
+                            <span>Salidas del terreno: <strong id="sim3d-stat-culled">-</strong></span>
+                            <span>Por tiempo máx.: <strong id="sim3d-stat-maxsteps">-</strong></span>
+                            <span>Alcance medio: <strong id="sim3d-stat-mean">-</strong></span>
+                            <span>Alcance P95: <strong id="sim3d-stat-p95">-</strong></span>
+                            <span>Energía máx.: <strong id="sim3d-stat-energy">-</strong></span>
+                            <span>Cómputo: <strong id="sim3d-stat-time">-</strong></span>
+                            <span>Workers: <strong id="sim3d-stat-workers">-</strong></span>
+                            <span>Semilla: <strong id="sim3d-stat-seed">-</strong></span>
+                        </div>
+
+                        <div class="control-group">
+                            <label class="checkbox-label" data-tooltip="Muestra las trayectorias muestreadas (hasta 500 rocas) con colores por velocidad.">
+                                <input type="checkbox" id="sim3d-show-tracks" checked> Mostrar trayectorias (≤ 500)
+                            </label>
+                        </div>
+                        <div id="sim3d-track-legend" class="sim3d-legend" style="display:none;">
+                            <div id="sim3d-track-bar" class="sim3d-legend-bar"></div>
+                            <div class="sim3d-legend-row">
+                                <span id="sim3d-track-min">-</span>
+                                <span>Velocidad</span>
+                                <span id="sim3d-track-max">-</span>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label data-tooltip="Colorea la malla de visualización muestreando el ráster de resultados del campo elegido.">Mapa sobre el terreno:</label>
+                            <select id="sim3d-map">
+                                <option value="">Ninguno</option>
+                                <option value="reachProbability">Probabilidad de alcance</option>
+                                <option value="maxEnergyKJ">Energía máxima (kJ)</option>
+                                <option value="maxBounceHeight">Altura de rebote (m)</option>
+                                <option value="stopCount">Detenciones</option>
+                            </select>
+                        </div>
+                        <div id="sim3d-map-legend" class="sim3d-legend" style="display:none;">
+                            <div id="sim3d-map-legend-title" class="sim3d-legend-title">-</div>
+                            <div id="sim3d-map-bar" class="sim3d-legend-bar"></div>
+                            <div class="sim3d-legend-row">
+                                <span id="sim3d-map-min">-</span>
+                                <span>máx ↓</span>
+                                <span id="sim3d-map-max">-</span>
+                            </div>
+                        </div>
+
+                        <div class="button-row">
+                            <button id="btn-sim3d-export-asc" class="btn btn-small" type="button" data-tooltip="Descarga el ráster del campo activo como ESRI ASCII Grid.">Exportar ASC</button>
+                            <button id="btn-sim3d-export-csv" class="btn btn-small" type="button" data-tooltip="Descarga id, posición final en coordenadas mundo, estado, energía y alcance por roca.">Exportar CSV de rocas</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="tab-content" id="tab-results">
                     <div class="section">
                         <h3>Panel de Resultados</h3>
@@ -490,6 +747,14 @@
                     <button id="btn-reset-view" class="btn btn-small" style="margin-left:auto;">⟲ Reset Vista</button>
                 </div>
                 <canvas id="main-canvas"></canvas>
+                <div id="view3d-container" aria-label="Visor 3D">
+                    <div class="view3d-overlay" id="view3d-overlay">
+                        <button id="btn-view3d-plan" class="btn btn-small" type="button" data-tooltip="Conmuta entre cámara cenital (planta) y la vista 3D.">Vista en planta</button>
+                        <label class="checkbox-label view3d-overlay-cb" data-tooltip="Curvas de nivel sobre el terreno.">
+                            <input type="checkbox" id="view3d-contours-check"> Curvas
+                        </label>
+                    </div>
+                </div>
                 <div class="canvas-tools-right" id="canvas-tools-right">
                     <!-- Navegación -->
                     <button id="tool-zoom-in" class="tool-btn" title="Zoom + (scroll)">
@@ -637,12 +902,30 @@
         <canvas id="histogram-canvas" width="380" height="200"></canvas>
     </div>
 
-    <script src="js/terrain.js?v=6"></script>
-    <script src="js/stl.js?v=6"></script>
-    <script src="js/physics.js?v=6"></script>
+    <script src="js/terrain.js?v=8"></script>
+    <script src="js/dem.js?v=1"></script>
+    <script src="js/view3d-profile.js?v=1"></script>
+    <script src="js/view3d-plan.js?v=1"></script>
+    <script src="js/view3d.js?v=3"></script>
+    <script src="js/view3d-terrain.js?v=1"></script>
+    <script src="js/stl.js?v=7"></script>
+    <script src="js/physics.js?v=8"></script>
     <script src="js/simulation.js?v=6"></script>
     <script src="js/renderer.js?v=5"></script>
     <script src="js/stats.js?v=5"></script>
-    <script src="js/app.js?v=7"></script>
+    <script src="js/math3d.js?v=1"></script>
+    <script src="js/physics3d.js?v=1"></script>
+    <script src="js/source-zones.js?v=1"></script>
+    <script src="js/simulation3d.js?v=1"></script>
+    <script src="js/sim3d-pool.js?v=1"></script>
+    <script src="js/results3d.js?v=1"></script>
+    <script src="js/view3d-trajectories.js?v=1"></script>
+    <script src="js/app.js?v=9"></script>
+    <script src="js/app-stl.js?v=2"></script>
+    <script src="js/app-worker.js?v=2"></script>
+    <script src="js/app-modes.js?v=2"></script>
+    <script src="js/app-import.js?v=4"></script>
+    <script src="js/app-profile3d.js?v=2"></script>
+    <script src="js/app-sim3d.js?v=1"></script>
 </body>
 </html>

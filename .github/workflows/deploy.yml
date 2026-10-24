@@ -27,10 +27,14 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
+      - name: Prepare site
+        run: |
+          mkdir -p _site && cp -r index.html css js _site/ && if [ -d vendor ]; then cp -r vendor _site/; fi
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: '_site'
 
       - name: Deploy to GitHub Pages
         id: deployment

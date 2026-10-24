@@ -6,7 +6,7 @@
  * to extract a clean, continuous 2D profile.
  */
 
-window.SimRocas = window.SimRocas || {};
+globalThis.SimRocas = globalThis.SimRocas || {};
 
 (function(SimRocas) {
     'use strict';
@@ -659,4 +659,4 @@ window.SimRocas = window.SimRocas || {};
     SimRocas.StlSlicer = StlSlicer;
     SimRocas.StlContour = StlContour;
 
-})(window.SimRocas);
+})(globalThis.SimRocas);

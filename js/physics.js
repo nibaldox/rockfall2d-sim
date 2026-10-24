@@ -18,9 +18,8 @@
  *   - Moreau (1988) "Numerical analysis of the unilateral contact problem"
  */
 
-const _global = typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : self);
-_global.SimRocas = _global.SimRocas || {};
-_global.SimRocas.nextRockId = _global.SimRocas.nextRockId || 1;
+globalThis.SimRocas = globalThis.SimRocas || {};
+globalThis.SimRocas.nextRockId = globalThis.SimRocas.nextRockId || 1;
 
 class Rock {
     /**
@@ -34,6 +33,17 @@ class Rock {
      * @param {number} aspectRatio - Minor/major axis ratio (0.2-1.0)
      */
     constructor(x, y, diameter, density, initialVelocity = 0, angle = 0, shapeType = 'polygon', aspectRatio = 0.6) {
+        // Validación de entrada (T0.12): diámetro o densidad no positivos no
+        // tienen reparación física — con ellos la masa sale 0 y el momento de
+        // inercia 0/0 = NaN, envenenando toda la simulación (impulsos,
+        // energías, estadísticas). Fallamos temprano con un error claro en
+        // español en lugar de propagar NaN silenciosamente.
+        if (!(diameter > 0)) {
+            throw new Error(`Rock: diámetro inválido (${diameter} m) — debe ser mayor que 0`);
+        }
+        if (!(density > 0)) {
+            throw new Error(`Rock: densidad inválida (${density} kg/m³) — debe ser mayor que 0`);
+        }
         this.x = x;
         this.y = y;
         this.vx = initialVelocity * Math.cos(angle * Math.PI / 180);
@@ -47,13 +57,23 @@ class Rock {
         // Generate shape FIRST — needed for area/mass/inertia computations
         this.shape = this.generateShape(shapeType, aspectRatio);
 
-        // Mass: sphere volume vs polygon area × thickness
+        // Mass: sphere volume vs polygon area × equivalent thickness.
+        // La masa debe ser independiente de la forma: un círculo poligonal
+        // con este espesor pesa lo mismo que la esfera (T0.10).
         if (shapeType === 'sphere') {
             this.mass = density * (4 / 3) * Math.PI * Math.pow(this.radius, 3);
         } else {
             const area = this.computePolygonArea();
-            const thickness = this.radius * 0.5;
+            const thickness = Rock.equivalentThickness(this.radius);
             this.mass = density * area * thickness;
+        }
+
+        // Guardía T0.12: masa mínima positiva. Con geometría degenerada
+        // (aspectRatio → 0 ⇒ área 0) la masa saldría 0 y las divisiones del
+        // motor (1/m en los impulsos) producirían Inf/NaN. 1e-6 kg (1 mg) es
+        // físicamente irrelevante pero mantiene todas las magnitudes finitas.
+        if (!(this.mass > 0)) {
+            this.mass = Rock.MINIMUM_MASS;
         }
 
         this.momentOfInertia = this.computeMomentOfInertia();
@@ -62,6 +82,10 @@ class Rock {
         this.angularVelocity = (Math.random() - 0.5) * 2;
 
         this.bounces = 0;
+        // Sustained-contact state for lumped-mass: true once a sub-step contact
+        // with |vn| below slideVelocityThreshold has been handled as
+        // sliding/rolling instead of an impact (T0.7b fix 1).
+        this._sustainedContact = false;
         this.maxBounceHeight = 0;
         this.maxKineticEnergy = 0;
         this.maxImpactVelocity = 0;
@@ -74,6 +98,15 @@ class Rock {
         this.finalY = y;
         this.isResting = false;
         this.restThreshold = 0.08;
+        // Normal-velocity threshold separating a real IMPACT from sustained
+        // contact (sliding/rolling) in the lumped-mass method. Below it the
+        // impact law (vn -> -kn·vn, vt -> kt·vt) must NOT be applied: gravity
+        // re-injects |vn| ≈ g·cosθ·dt ≈ 0.013 m/s every sub-step on a slope,
+        // and applying kt = 0.75 ~600 times per second brings rocks to a stop
+        // even on 35° slopes with low rolling friction. Reference lumped-mass
+        // models (RocFall 'minimum velocity', CRSP, Pierre2) use a similar
+        // threshold. (T0.7b fix 1)
+        this.slideVelocityThreshold = 0.5;
         this._restCheckCount = 0;
         this.ignoreResting = false;
         this.elapsedTime = 0;
@@ -92,7 +125,7 @@ class Rock {
         this._colorStroke = `rgba(${Math.min(255, (c.r | 0) + 40)}, ${Math.min(255, (c.g | 0) + 40)}, ${Math.min(255, (c.b | 0) + 40)}, 0.54)`;
 
         // Fragmentation properties
-        this.id = _global.SimRocas.nextRockId++;
+        this.id = globalThis.SimRocas.nextRockId++;
         this.generation = 0;
         this.parentId = null;
         this.isFragmented = false;
@@ -100,6 +133,57 @@ class Rock {
         this.isCore = false;          // true if this rock is a surviving core
         this.massLossRatio = 0;       // cumulative fraction of mass lost to spalling (0-1)
         this.originalDiameter = diameter; // track original size for erosion display
+    }
+
+    /**
+     * Espesor fuera-de-plano equivalente para las formas no esféricas
+     * (polígonos/ellipse/block tratados como área 2D × espesor).
+     *
+     * t = (4/3)·r hace que un polígono circular de radio r pese exactamente
+     * la esfera de radio r: ρ·πr²·(4/3)r = ρ·(4/3)πr³. Con el valor legado
+     * 0.5·r las rocas no esféricas pesaban ~1/5.7 y la energía cinética
+     * (kJ) dependía artificialmente de la forma elegida (T0.10).
+     *
+     * Úsalo (no re-derives el factor) en TODO lugar que convierta
+     * masa ↔ diámetro/área.
+     *
+     * @param {number} radius - Radio nominal de la roca (m)
+     * @returns {number} Espesor equivalente (m)
+     */
+    static equivalentThickness(radius) {
+        return (4 / 3) * radius;
+    }
+
+    /**
+     * Masa mínima positiva aceptada en el motor (T0.12).
+     *
+     * Con geometría degenerada (área 0: aspectRatio → 0, vértices
+     * coincidentes) la masa saldría 0 y las divisiones del motor
+     * (1/m en impulsos, m·g en fricción) producirían Inf/NaN. 1e-6 kg
+     * (1 mg) es física y numéricamente irrelevante pero conserva todas
+     * las magnitudes finitas.
+     *
+     * @type {number} kg
+     */
+    static MINIMUM_MASS = 1e-6;
+
+    /**
+     * Diámetro de la esfera equivalente para una masa dada (T0.12).
+     *
+     * m = ρ·(4/3)·π·(d/2)³  ⇔  d = 2·cbrt(3m/(4πρ)).
+     *
+     * Coherente con la regla de masa T0.10 (espesor (4/3)·r ⇒ una roca
+     * circular de radio r pesa la esfera de radio r). Úsalo — no vuelvas a
+     * derivar el factor — en TODO lugar que convierta masa ↔ diámetro:
+     * antes los esquirlas usaban la convención AREAL
+     * r = sqrt(m/(ρπ)), incoherente con el espesor de masa.
+     *
+     * @param {number} mass - Masa (kg)
+     * @param {number} density - Densidad (kg/m³)
+     * @returns {number} Diámetro equivalente (m)
+     */
+    static diameterFromMass(mass, density) {
+        return 2 * Math.cbrt(3 * mass / (4 * Math.PI * density));
     }
 
     /**
@@ -211,7 +295,21 @@ class Rock {
     computeMomentOfInertia() {
         const n = this.shape.length;
         let sum = 0;
-        const rho = this.mass / this.computePolygonArea();
+        const area = this.computePolygonArea();
+        // Guardía T0.12: con formas degeneradas (aspectRatio → 0, vértices
+        // coincidentes) el rho normalizado this.mass/area puede dar 0/0 = NaN
+        // y degradar todo el motor (I NaN → NaN en las divisiones de los
+        // impulsos). Con área no positiva o masa no positiva usamos el
+        // momento de inercia de un disco equivalente con el radio nominal y
+        // la masa mínima positiva (1e-6 kg): I finita siempre, y el paso de
+        // simulación sigue siendo estable.
+        if (!(area > 0) || !(this.mass > 0)) {
+            // Radio efectivo: el nominal si es válido, 1 mm si no — la I
+            // resultante es pequeña pero siempre finita y positiva.
+            const rEffective = this.radius > 0 ? this.radius : 0.001;
+            return 0.5 * Rock.MINIMUM_MASS * rEffective * rEffective;
+        }
+        const rho = this.mass / area;
 
         for (let i = 0; i < n; i++) {
             const j = (i + 1) % n;
@@ -286,6 +384,53 @@ class Rock {
     }
 
     /**
+     * Resolves the penetration of one impact without creating energy:
+     * the rock is lifted vertically by `lift` metres (the vertical penetration
+     * of the deepest contact point) plus a margin of at most 1e-4 m, and —
+     * when `chargeClimb` is true — the work m·g·lift of that climb is charged
+     * to the outgoing translational velocity. A pure geometric lift would add
+     * potential energy for free (on a 10 m drop with cn = 0.85 the accumulated
+     * lift is ~0.15 m, i.e. ~250 J ≈ 1.4 % of E0); charging the climb-out work
+     * keeps the position fix energy-neutral, as required by the conservation
+     * test.
+     *
+     * T0.7b fix 2: when the speed cannot pay the climb-out, the velocity is
+     * LEFT INTACT instead of zeroed. Zeroing froze rocks released at rest on
+     * slopes. And in sustained (slow) contact `chargeClimb` is false: the
+     * normal-velocity removal that precedes the lift already discards exactly
+     * the energy gravity injected to build that penetration
+     * (m·vn²/2 ≈ m·g·lift), so charging it again double-counts and pins
+     * creeping rocks at v ≈ sqrt(2·g·lift) forever.
+     * @param {number} lift - Vertical penetration to resolve (m)
+     * @param {boolean} [chargeClimb=true] - Charge the climb-out work to the
+     *   velocity (impact mode); false for sustained-contact lifts.
+     */
+    _penetrationCorrection(lift, chargeClimb = true) {
+        if (lift <= 0) return;
+        const margin = Math.min(1e-4, 0.05 * lift);
+        const total = lift + margin;
+        this.y += total;
+        this._verticesDirty = true;
+
+        if (!chargeClimb) return;
+
+        const speedSq = this.vx * this.vx + this.vy * this.vy;
+        const climbOut = 2 * 9.81 * total; // v² needed to climb `total` metres
+        if (speedSq > climbOut) {
+            const f = Math.sqrt(1 - climbOut / speedSq);
+            this.vx *= f;
+            this.vy *= f;
+        }
+        // T0.7b fix 2: when the kinetic energy cannot pay for the climb-out,
+        // LEAVE the velocity intact instead of zeroing it. In sustained or
+        // slow contact the lift is at most a few sub-steps of free fall
+        // (microns), so the maximum energy created is m·g·(lift + 1e-4),
+        // negligible; zeroing the velocity froze rocks released at rest on
+        // slopes (that path is exercised by tests/physics.slope.test.js). The
+        // energy charge above still applies whenever the speed allows it.
+    }
+
+    /**
      * Total kinetic energy (translational + rotational) in Joules.
      * @returns {number}
      */
@@ -329,7 +474,8 @@ class Rock {
         const slopeFactor = Math.max(0.1, 1 - slope * 2);
         const adjustedThreshold = this.restThreshold * slopeFactor;
 
-        if (this.speed < adjustedThreshold && this.angularVelocity < 0.5 && this.bounces > 2) {
+        if (this.speed < adjustedThreshold && Math.abs(this.angularVelocity) < 0.5 &&
+            (this.bounces > 2 || this._sustainedContact)) {
             this.isResting = true;
             this.vx = 0;
             this.vy = 0;
@@ -522,83 +668,146 @@ class Rock {
      */
     _handleLumpedMass(terrain, kn, kt) {
         const terrainY = terrain.getHeightAt(this.x);
-        const penetration = terrainY - this.y;
+        // Contact is body vs terrain, not centre vs terrain: the bottom of the
+        // rock reaches the ground one radius below the centre (T0.7 fix 5).
+        const penetration = terrainY - (this.y - this.radius);
 
         if (penetration <= 0) return false;
 
-        this.bounces++;
-
         const normal = terrain.getSurfaceNormalAt(this.x);
 
-        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
-        let rnx = normal.nx;
-        let rny = normal.ny;
-        const seg = terrain.getSegmentAt(this.x);
-        if (seg && seg.properties && seg.properties.roughness > 0) {
-            const roughness = seg.properties.roughness;
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
-            const cosPhi = Math.cos(phi);
-            const sinPhi = Math.sin(phi);
-            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
-            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
-            if (proposedRny > 0) {
-                rnx = proposedRnx;
-                rny = proposedRny;
-            }
-        }
-
-        const vn = this.vx * rnx + this.vy * rny;
-
-        if (vn >= 0) return false;
-
-        // Save for fragmentation check
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
+        // Macro approach test on the TRUE surface normal: the contact exists
+        // while the rock moves toward the real terrain, regardless of the
+        // roughness perturbation applied to individual impacts below.
+        const vnTrue = this.vx * normal.nx + this.vy * normal.ny;
+        if (vnTrue >= 0) return false;
 
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
 
-        const vtX = this.vx - vn * rnx;
-        const vtY = this.vy - vn * rny;
+        // T0.7b fix 1: distinguish a real IMPACT (|vn| >= slideVelocityThreshold)
+        // from SUSTAINED CONTACT (sliding/rolling, |vn| < threshold), using the
+        // TRUE surface normal. On a slope, gravity re-injects |vn| ≈ g·cosθ·dt
+        // ≈ 0.013 m/s every sub-step, so a rolling rock is always in sustained
+        // contact; classifying with the roughness-perturbed normal instead
+        // turned every fast sub-step into an impact and froze rocks mid-slope.
+        // Reference lumped-mass models (RocFall 'minimum velocity', CRSP,
+        // Pierre2) use a similar impact/sliding threshold.
+        const sustainedContact = Math.abs(vnTrue) < this.slideVelocityThreshold;
 
-        this.vx = -kn * vn * rnx + kt * vtX;
-        this.vy = -kn * vn * rny + kt * vtY;
+        if (sustainedContact) {
+            // Smooth sustained contact: remove only the incoming normal
+            // component, measured on the TRUE surface normal. The tangential
+            // velocity is left un-scaled — NO kt factor — so there is no
+            // artificial braking per sub-step; the deceleration in contact is
+            // provided by applyRollingFriction, not by the impact law. The
+            // CRSP-style roughness perturbation must NOT rotate the contact
+            // direction during sliding (it would deflect the trajectory by up
+            // to `roughness` degrees every sub-step, pushing the rock off the
+            // slope and into hundreds of spurious re-impacts per second).
+            this.vx -= vnTrue * normal.nx;
+            this.vy -= vnTrue * normal.ny;
+            this._sustainedContact = true;
+            // Lift without climb-out charge: the normal-velocity removal above
+            // already discarded exactly the energy gravity injected to build
+            // this penetration (m·vnTrue²/2 ≈ m·g·lift); charging the climb
+            // again double-counts and pins creeping rocks at
+            // v ≈ sqrt(2·g·lift) forever (T0.7b fix 2).
+            this._penetrationCorrection(penetration, false);
 
-        this.y = Math.max(terrainY + 0.01, this.y);
-        this._verticesDirty = true;
+            // Angular velocity update for lumped-mass (rolling coupling).
+            // Tangent direction (perpendicular to the true normal).
+            const tx = -normal.ny;
+            const ty = normal.nx;
+            const vtAfter = this.vx * tx + this.vy * ty;
+            const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
+            const transferRatio = 0.4;
+            this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+        } else {
+            // Real impact: full impact law with the CRSP-style perturbed
+            // normal (unchanged behaviour, T0.7b fix 1).
+            let rnx = normal.nx;
+            let rny = normal.ny;
+            const seg = terrain.getSegmentAt(this.x);
+            if (seg && seg.properties && seg.properties.roughness > 0) {
+                const roughness = seg.properties.roughness;
+                const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+                const cosPhi = Math.cos(phi);
+                const sinPhi = Math.sin(phi);
+                const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
+                const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
+                if (proposedRny > 0) {
+                    rnx = proposedRnx;
+                    rny = proposedRny;
+                }
+            }
 
-        // Angular velocity update for lumped-mass:
-        // Transfer some tangential velocity to rotation (rolling coupling).
-        // The tangential velocity at the contact point drives spin.
-        // Tangent direction (perpendicular to normal, in the surface direction)
-        const tx = -rny;
-        const ty = rnx;
-        const vtAfter = this.vx * tx + this.vy * ty;
-        // Rolling without slipping: v_tangential = omega * R
-        // Blend between current spin and rolling equilibrium
-        const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
-        // Transfer ratio: higher for rounded rocks, lower for blocky ones
-        const transferRatio = 0.4;
-        this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+            const vn = this.vx * rnx + this.vy * rny;
+            if (vn < 0) {
+                this.bounces++;
+                // Save for fragmentation check (impacts only — sustained
+                // contact must never trigger fragmentation, T0.7b fix 1).
+                this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
+
+                const vtX = this.vx - vn * rnx;
+                const vtY = this.vy - vn * rny;
+
+                this.vx = -kn * vn * rnx + kt * vtX;
+                this.vy = -kn * vn * rny + kt * vtY;
+            }
+            // else: approaching per the true normal but separating per the
+            // perturbed one (large roughness draw) — lift only, no bounce.
+
+            // Lift by the real penetration so the body rests on the terrain
+            // (centre at terrainY + radius), not 1 cm above ground (T0.7 fix 5).
+            this._penetrationCorrection(penetration);
+
+            // Angular velocity update for lumped-mass (rolling coupling).
+            const tx = -rny;
+            const ty = rnx;
+            const vtAfter = this.vx * tx + this.vy * ty;
+            const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
+            const transferRatio = 0.4;
+            this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+        }
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
-        this.impactEnergies.push(keBefore / 1000);
 
-        const bounceH = this.y - terrainY;
-        if (bounceH > this.maxBounceHeight) {
-            this.maxBounceHeight = bounceH;
+        if (sustainedContact) {
+            // Sustained contact: NOT a bounce — no impactEnergies entry, no
+            // bouncePoints push, no maxBounceHeight update, no _lastCollision.
+            // The rest check is allowed here (it increments _restCheckCount),
+            // which is how a rock that rolls onto a gentle flat section can
+            // finally stop even if it never had 3 real impacts (T0.7b fix 1).
+            if (this.ignoreResting) return true;
+            if (this._checkResting(normal)) return false;
+            return true;
         }
 
-        this.bouncePoints.push({
-            x: this.x,
-            y: terrainY,
-            energy: keBefore / 1000,
-            velocity: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore)
-        });
+        const bounced = this._lastCollision !== null;
+
+        if (bounced) {
+            this.impactEnergies.push(keBefore / 1000);
+
+            const bounceH = this.y - terrainY;
+            if (bounceH > this.maxBounceHeight) {
+                this.maxBounceHeight = bounceH;
+            }
+
+            this.bouncePoints.push({
+                x: this.x,
+                y: terrainY,
+                energy: keBefore / 1000,
+                velocity: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore)
+            });
+        }
 
         if (this.ignoreResting) return true;
-        this._restCheckCount = 0;
+        // No counter reset here: _checkResting requires _restCheckCount >= 3
+        // and the old `reset + check` pattern made resting unreachable
+        // (T0.7 fix 1).
         if (this._checkResting(normal)) return false;
         return true;
     }
@@ -692,7 +901,10 @@ class Rock {
 
         const rCrossT = rx * tangentY - ry * tangentX;
         const denomT = 1 / this.mass + (rCrossT * rCrossT) / this.momentOfInertia;
-        const jtFree = -vDotT / denomT;
+        // Free impulse that cancels the contact sliding exactly; Coulomb
+        // clamps it to mu*|jn|. The old `-vDotT / denomT` had the sign
+        // inverted and friction ADDED tangential energy (T0.7 fix 3).
+        const jtFree = vDotT / denomT;
 
         const jtMax = mu * Math.abs(jn);
         const jt = Math.max(-jtMax, Math.min(jtMax, jtFree));
@@ -701,9 +913,11 @@ class Rock {
         this.vy -= jt * tangentY / this.mass;
         this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
 
-        // Clamp position above terrain to prevent tunneling/jitter
-        this.y = contactTerrainY + 0.01;
-        this._verticesDirty = true;
+        // Lift by the vertical penetration of the deepest vertex so the body
+        // rests on the terrain; the old absolute clamp `terrainY + 0.01`
+        // placed the CENTRE 1 cm above ground regardless of rock size or
+        // penetration depth (T0.7 fix 4).
+        this._penetrationCorrection(deepestPenetration);
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
@@ -722,7 +936,9 @@ class Rock {
         });
 
         if (this.ignoreResting) return true;
-        this._restCheckCount = 0;
+        // No counter reset here: _checkResting requires _restCheckCount >= 3
+        // and the old `reset + check` pattern made resting unreachable
+        // (T0.7 fix 1).
         if (this._checkResting(normal)) return false;
         return true;
     }
@@ -827,9 +1043,11 @@ class Rock {
             this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
         }
 
-        // Clamp position above terrain to prevent tunneling/jitter
-        this.y = contactTerrainY + 0.01;
-        this._verticesDirty = true;
+        // Lift by the vertical penetration of the deepest vertex so the body
+        // rests on the terrain; the old absolute clamp `terrainY + 0.01`
+        // placed the CENTRE 1 cm above ground regardless of rock size or
+        // penetration depth (T0.7 fix 4).
+        this._penetrationCorrection(deepestPenetration);
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
@@ -848,7 +1066,9 @@ class Rock {
         });
 
         if (this.ignoreResting) return true;
-        this._restCheckCount = 0;
+        // No counter reset here: _checkResting requires _restCheckCount >= 3
+        // and the old `reset + check` pattern made resting unreachable
+        // (T0.7 fix 1).
         if (this._checkResting(normal)) return false;
         return true;
     }
@@ -875,12 +1095,18 @@ class Rock {
 
         if (calcMethod === 'lumped-mass') {
             const terrainY = terrain.getHeightAt(this.x);
-            onGround = this.y >= terrainY - 0.02;
+            // Ground contact means the BODY (centre minus radius) touches the
+            // terrain; comparing the bare centre marked rocks in mid-air as
+            // grounded (T0.7 fix 6).
+            onGround = (this.y - this.radius) <= terrainY + 0.02;
         } else {
             const vertices = this.getShapeVertices();
             for (const v of vertices) {
                 const terrainY = terrain.getHeightAt(v.x);
-                if (v.y >= terrainY - 0.02) {
+                // A vertex AT or BELOW the terrain (within tolerance) means
+                // ground contact; `v.y >= terrainY - 0.02` was true for any
+                // rock flying above the terrain (T0.7 fix 6).
+                if (v.y <= terrainY + 0.02) {
                     onGround = true;
                     break;
                 }
@@ -992,13 +1218,37 @@ class PhysicsEngine {
     }
 
     /**
+     * Número de sub-pasos adaptativos para un paso de duración dt (T0.12).
+     *
+     * Fórmula: min(64, max(3, ceil(dt·speedEstimate/0.1))) con
+     * speedEstimate = rapidez actual + g·dt (cota de la ganancia por
+     * gravedad dentro del paso). Garantiza un desplazamiento máx. ~0.1 m
+     * por sub-paso: con dt 0.02 y 60 m/s una roca ya no atraviesa una
+     * pared de 0.3 m sin contacto (tunneling, hallazgo F0).
+     *
+     * Con dt = 0.005 el cálculo sigue dando 3 sub-pasos hasta ~60 m/s,
+     * así que los resultados por defecto (rocas < 55 m/s) no cambian.
+     *
+     * NAN-safe: con velocidad inválida (NaN) devuelve el mínimo 3.
+     *
+     * @param {Rock} rock
+     * @param {number} dt - Duración del paso completo (s)
+     * @returns {number} Sub-pasos (3..64)
+     */
+    subStepsFor(rock, dt) {
+        const speedEstimate = (Math.hypot(rock.vx, rock.vy) + this.gravity * dt) || 0;
+        const maxSubStepDisplacement = 0.1;
+        return Math.min(64, Math.max(3, Math.ceil(dt * speedEstimate / maxSubStepDisplacement)));
+    }
+
+    /**
      * Simulates one time step for a rock, with sub-stepping for stability.
      * @param {Rock} rock
      * @param {Terrain} terrain
      * @param {number} dt - Time step (s)
      */
     simulateStep(rock, terrain, dt, barriers) {
-        const subSteps = 3;
+        const subSteps = this.subStepsFor(rock, dt);
         const subDt = dt / subSteps;
         let spawnedChildren = null;
 
@@ -1006,6 +1256,14 @@ class PhysicsEngine {
         const ct = this.randomVariation(this.ct, this.ctVariability, 'ct');
         const kn = this.randomVariation(this.kn, this.cnVariability, 'cn');
         const kt = this.randomVariation(this.kt, this.ctVariability, 'ct');
+
+        // Culling bounds: derived from the terrain when available, legacy
+        // fixed values otherwise. Computed once per step, not per sub-step.
+        const hasBounds = terrain && typeof terrain.getBounds === 'function';
+        const bounds = hasBounds ? terrain.getBounds() : null;
+        const cullMinX = bounds ? bounds.minX - 50 : -50;
+        const cullMaxX = bounds ? bounds.maxX + 50 : 500;
+        const cullMinY = bounds ? bounds.minY - 100 : -100;
 
         for (let i = 0; i < subSteps; i++) {
             // Reset collision tracking at each sub-step
@@ -1053,7 +1311,7 @@ class PhysicsEngine {
 
             if (rock.isResting) break;
 
-            if (rock.x < -50 || rock.x > 500 || rock.y < -100) {
+            if (rock.x < cullMinX || rock.x > cullMaxX || rock.y < cullMinY) {
                 rock.isResting = true;
                 break;
             }
@@ -1124,9 +1382,10 @@ class PhysicsEngine {
             // Create spalls — ejected from the contact zone
             for (let i = 0; i < numSpalls; i++) {
                 const sm = spallMasses[i];
-                const childArea = sm / rock.density;
-                const childRadius = Math.sqrt(childArea / Math.PI);
-                const childDiameter = childRadius * 2;
+                // Esfera equivalente por masa (T0.12): la convención areal
+                // r = sqrt(m/(ρπ)) quedaba desalineada de la regla de masa
+                // T0.10 (espesor (4/3)·r).
+                const childDiameter = Rock.diameterFromMass(sm, rock.density);
 
                 if (childDiameter < 0.05) continue; // skip dust-sized fragments
 
@@ -1144,6 +1403,7 @@ class PhysicsEngine {
                 const parentVt = vxParent * tx + vyParent * ty;
 
                 // Position: offset along surface tangent from impact point
+                const childRadius = childDiameter * 0.5;
                 const offsetFactor = (i - (numSpalls - 1) / 2) * childDiameter * 1.2;
 
                 const spall = this.createRock(
@@ -1164,9 +1424,8 @@ class PhysicsEngine {
             }
 
             // Create surviving core — continues the trajectory
-            const coreArea = coreMass / rock.density;
-            const coreRadius = Math.sqrt(coreArea / Math.PI);
-            const coreDiameter = coreRadius * 2;
+            // Esfera equivalente por masa (T0.12), igual que las esquirlas.
+            const coreDiameter = Rock.diameterFromMass(coreMass, rock.density);
 
             core = this.createRock(
                 rock.x, rock.y,
@@ -1184,7 +1443,10 @@ class PhysicsEngine {
             core.generation = rock.generation; // same generation — it's a surviving core
             core.parentId = rock.parentId;
             core.isCore = true;
-            core.massLossRatio = rock.massLossRatio + totalSpallMass / rock.originalDiameter;
+            // Fraction of mass lost, in the same units as the rupture branch:
+            // divided by the parent's mass at fragmentation time, not by the
+            // original diameter in metres (kg/m summed into a ratio, T0.7 fix 7).
+            core.massLossRatio = rock.massLossRatio + totalSpallMass / parentMass;
             core.originalDiameter = rock.originalDiameter;
             core.id = rock.id; // keep same ID for trajectory continuity
 
@@ -1214,9 +1476,8 @@ class PhysicsEngine {
             // --- Create spalls ---
             for (let i = 0; i < spallMasses.length; i++) {
                 const sm = spallMasses[i];
-                const childArea = sm / rock.density;
-                const childRadius = Math.sqrt(childArea / Math.PI);
-                const childDiameter = childRadius * 2;
+                // Esfera equivalente por masa (T0.12).
+                const childDiameter = Rock.diameterFromMass(sm, rock.density);
                 if (childDiameter < 0.05) continue;
 
                 const ejectAngle = ((Math.random() * 2 - 1) * 30) * Math.PI / 180;
@@ -1265,9 +1526,8 @@ class PhysicsEngine {
 
             for (let i = 0; i < 2; i++) {
                 const cm = mainMasses[i];
-                const childArea = cm / rock.density;
-                const childRadius = Math.sqrt(childArea / Math.PI);
-                const childDiameter = childRadius * 2;
+                // Esfera equivalente por masa (T0.12).
+                const childDiameter = Rock.diameterFromMass(cm, rock.density);
 
                 const offsetFactor = (i === 0 ? -1 : 1) * childDiameter * 0.5;
 
@@ -1296,7 +1556,10 @@ class PhysicsEngine {
     }
 
     /**
-     * Legacy fragmentRock method — kept for compatibility with worker.js
+     * Legacy fragmentRock method — kept for compatibility with the legacy
+     * test only (tests/physics.fragmentation.test.js). The worker no longer
+     * uses it (T0.8 unified js/worker.js on the shared engine; simulateStep
+     * drives all fragmentation through _fragmentRockProgressive directly).
      * Delegates to the new progressive model.
      */
     fragmentRock(rock, normal) {
