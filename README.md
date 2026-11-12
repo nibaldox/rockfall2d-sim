@@ -47,6 +47,16 @@ Fragmentación (`_fragmentRockProgressive`):
 - La masa se **conserva** salvo el polvo (fragmentos < 0.05 m), que se descarta.
 - La disipación de fractura configurada se aplica **exactamente solo a los fragmentos principales en ruptura** — en abrasión, las esquirlas tienen dispersión aleatoria ±30 % en su velocidad de eyección.
 
+## Cambios de P0.2-β (nov-2026)
+
+β **agrega** campos e instrumentación: no reinterpreta los campos existentes. Con la variabilidad de Cn/Ct en 0, las trayectorias son idénticas a P0.3 en corridas sin impactos fuera del perfil.
+
+- **Impacto real (C1)**: se registra un evento cuando en una superficie (terreno o barrera) pasa la guardia de aproximación existente, la velocidad normal de aproximación cumple `|vn| ≥ 0.5 m/s` y no hay un episodio abierto en esa superficie. El episodio se abre en el primer sub-paso con contacto detectado y se cierra en el primero sin contacto, así que un rebote no se cuenta una vez por sub-paso. La captura es de solo lectura y ocurre antes del impulso. En nonsmooth con polígonos el conteo de impactos incluye golpes de vértice al volcar, y `vn` es la velocidad normal del punto de contacto (incluye `ω × r`), no la del centro.
+- **Altura de vuelo (C3)**: un vuelo empieza después de un impacto C1 y termina en el siguiente sub-paso con contacto detectado en cualquier superficie. La muestra es la altura del **centro de la roca** sobre el terreno (`y − terrain.getHeightAt(x)`), solo si x está dentro del perfil y el tramo existe; la caída inicial desde la liberación no cuenta y el valor es nulo si no hubo ninguna muestra válida. No es la altura de un colector ni se atribuye a RocFall.
+- **Materiales por tramo (U4)**: en cuerpo rígido y nonsmooth el impacto lo gobiernan el Cn, el Ct y la rugosidad del tramo; la variabilidad de Cn/Ct (en %) multiplica el valor de ese tramo y el resultado se acota a [0, 1]. Los controles globales de Cn/Ct quedan deshabilitados en los tres métodos y solo actúan en perfiles de menos de 2 puntos. Un impacto más allá de los extremos del perfil (su prolongación horizontal) usa el Cn y el Ct del tramo extremo más cercano (sin rugosidad fuera del perfil), con el mismo factor de variabilidad, y las estadísticas lo advierten (`fueraDelPerfil`). La advertencia mira la x del centro de la roca en los eventos de impacto: un contacto fuera del perfil que no genera evento no la dispara. En Lumped Mass el evento fuera del perfil también lleva el índice del tramo extremo, pero la física sigue usando Kn/Kt globales y la advertencia lo dice. Un tramo sin tipo recibe igualmente la variabilidad y figura como «sin tipo». En Lumped Mass la misma variabilidad actúa sobre Kn/Kt, y las barreras conservan sus propios coeficientes.
+- **Exportación de impactos**: «Exportar impactos (CSV)» genera una fila por evento, con tope de 200 eventos por roca y 100 000 en total. Si se descartan eventos se emite una advertencia; los máximos y los conteos por roca incluyen todos los eventos. La exportación queda bloqueada con fragmentación activa o tras cancelar la corrida, y el botón se deshabilita igual que las demás exportaciones.
+- **Invariante de instrumentación**: la instrumentación es de solo lectura —no agrega sorteos de `Math.random`, no cambia su cantidad ni su orden y no altera operaciones de punto flotante del estado físico; las llamadas adicionales a `getHeightAt` solo pueden tocar la caché `_lastSegIdx`. Con variabilidad 0 las corridas son idénticas a P0.3 en corridas sin impactos fuera del perfil (ahí cambian a propósito: manda el tramo extremo y no los globales), y Lumped Mass es idéntico con cualquier variabilidad.
+
 ## Funcionalidades
 
 ### Editor de terreno
@@ -58,7 +68,7 @@ Fragmentación (`_fragmentRockProgressive`):
 - Zoom con scroll del mouse
 - Pan con botón central o Shift+clic
 - Botón "Reset Vista" para ajustar automáticamente
-- Editor de segmentos: asignar material (roca, suelo, vegetación, relleno, concreto, asfalto) por tramo y calibrar su rugosidad geológica
+- Editor de segmentos: asignar material (roca, suelo, vegetación, relleno, concreto, asfalto) por tramo, calibrar su rugosidad geológica y fijar su Cn y Ct por tramo
 - **Topografía 3D (STL)**: Importar archivos STL (ASCII y Binario) con proyección interactiva en planta 2D. Permite trazar planos de sección transversal y generar perfiles 2D optimizados de exactamente N puntos (envolvente de altura máxima y suavizado por interpolación lineal).
 
 ### Motor de física
@@ -75,13 +85,13 @@ Características del motor:
 - Colisiones poligonales reales: cada roca es un polígono convexo irregular (5-9 vértices)
 - Detección de impacto por vértice más profundo
 - Cálculo de velocidad del punto de contacto: `v_c = v_cm + ω × r`
-- Impulso normal con restitución Cn
-- Impulso tangencial con fricción Ct
+- Impulso normal con restitución Cn del tramo
+- Impulso tangencial con fricción Ct del tramo
 - Torque real: impactos asimétricos generan rotación
 - Momento de inercia calculado por forma poligonal
 - Dos modelos de fricción de rodadura: simple y Davis & McInnes (1991)
 - Dos modelos de disipación de energía: impulso clásico y energy ratio
-- Variabilidad Monte Carlo en coeficientes de restitución
+- Variabilidad Monte Carlo de Cn/Ct aplicada al valor de cada tramo (en Lumped Mass actúa sobre Kn/Kt)
 - 3 sub-steps por timestep para estabilidad numérica
 - **Rugosidad Geológica Estocástica (tipo CRSP)**: Permite asignar a cada tramo del talud un ángulo de rugosidad en grados ($\theta_r$, de $0^\circ$ a $30^\circ$). Al colisionar, el vector normal de contacto se rota estocásticamente de forma acotada por $\pm\theta_r$. La normal real se mantiene pura en cálculos estáticos para evitar vibraciones artificiales de rocas en reposo.
 - **Fragmentación Progresiva por Abrasión**: Al ocurrir impactos de alta energía normal ($E_{k,n} > E_{crit}$), la energía de impacto se compara con el umbral de fractura y el bloque responde según su intensidad:
@@ -125,9 +135,11 @@ Características del motor:
 
 ### Resultados y estadísticas
 - Energía cinética máxima/media (kJ)
-- Altura máxima de rebote
+- Altura de vuelo del centro, máx. por roca (m)
 - Distancia de runout máxima
-- Velocidad máxima de impacto
+- Velocidad normal de impacto, máx. por roca (m/s)
+- Energía de impacto (traslación + rotación), máx. por roca (kJ)
+- Impactos por roca (vn ≥ 0.5 m/s)
 - Contactos detectados
 - Percentiles P50, P83, P95
 - Ángulo de energía de Savigny (H/L)
@@ -138,6 +150,7 @@ Características del motor:
 ### Exportar
 - Captura PNG del canvas
 - Datos CSV con estadísticas completas
+- Impactos detallados (`simrocas_impactos.csv`): una fila por evento C1, con tiempo, centro, superficie, tramo o barrera, velocidad normal, rapidez, rapidez del punto de contacto, energía total, coeficientes efectivos y altura de vuelo previa
 - Reporte de texto formateado
 - Perfil de terreno como JSON o CSV
 

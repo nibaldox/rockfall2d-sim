@@ -265,14 +265,15 @@
                                 <p class="help-text">Cn: relación velocidad normal después/antes del impacto. Ct: relación velocidad tangencial.</p>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de restitución NORMAL. Define qué fracción de velocidad perpendicular se conserva tras el impacto. 0 = no rebote, 1 = rebote perfecto.">Cn (Normal):</label>
-                                    <input type="range" id="cn-range" min="0" max="1" step="0.01" value="0.6">
+                                    <input type="range" id="cn-range" min="0" max="1" step="0.01" disabled value="0.6">
                                     <span id="cn-value">0.60</span>
                                 </div>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de restitución TANGENCIAL. Define qué fracción de velocidad paralela se conserva. Alto Ct = la roca desliza, bajo Ct = se adhiere.">Ct (Tangencial):</label>
-                                    <input type="range" id="ct-range" min="0" max="1" step="0.01" value="0.4">
+                                    <input type="range" id="ct-range" min="0" max="1" step="0.01" disabled value="0.4">
                                     <span id="ct-value">0.40</span>
                                 </div>
+                                <p class="help-text" id="cn-ct-notice">Los coeficientes Cn/Ct se definen por tramo en la pestaña Perfil; la variabilidad se aplica al valor de cada tramo.</p>
                             </div>
                             <div id="lumped-mass-controls" style="display:none;">
                                 <p class="help-text">Kn: coef. restitución normal. Kt: coef. restitución tangencial. La roca se trata como un punto masivo sin rotación.</p>
@@ -291,14 +292,15 @@
                                 <p class="help-text">Cn: coef. restitución normal (Poisson). Ct: coef. fricción Coulomb (mu) para el cono de fricción.</p>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de restitución normal de Poisson para modelo Nonsmooth. Define la energía conservada en el impacto.">Cn (Restitución):</label>
-                                    <input type="range" id="cn-range-ns" min="0" max="1" step="0.01" value="0.6">
+                                    <input type="range" id="cn-range-ns" min="0" max="1" step="0.01" disabled value="0.6">
                                     <span id="cn-value-ns">0.60</span>
                                 </div>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de fricción de Coulomb (mu). Define el cono de fricción en modelo Nonsmooth. Alto mu = más fricción, menos deslizamiento.">mu (Fricción Coulomb):</label>
-                                    <input type="range" id="mu-range" min="0" max="1" step="0.01" value="0.5">
+                                    <input type="range" id="mu-range" min="0" max="1" step="0.01" disabled value="0.5">
                                     <span id="mu-value">0.50</span>
                                 </div>
+                                <p class="help-text" id="cn-ct-notice-ns">Los coeficientes Cn/Ct se definen por tramo en la pestaña Perfil; la variabilidad se aplica al valor de cada tramo.</p>
                             </div>
                             <div class="control-group">
                                 <label data-tooltip="Coeficiente de fricción por rodadura. Frena la rotación de la roca al rodar sobre el terreno. 0 = sin fricción, 1 = frena completamente.">Coef. fricción rodadura:</label>
@@ -313,7 +315,7 @@
                                 </select>
                             </div>
                             <div class="control-group" id="energy-ratio-group" style="display:none;">
-                                <label data-tooltip="Fracción de energía cinética conservada tras cada impacto. 1.0 = sin pérdida, 0.5 = pierde la mitad en cada rebote.">Coeef. energía (0-1):</label>
+                                <label data-tooltip="Fracción de energía cinética conservada tras cada contacto detectado con el terreno. 1.0 = sin pérdida, 0.5 = pierde la mitad en cada contacto.">Coef. energía (0-1):</label>
                                 <input type="range" id="energy-ratio-coef" min="0.1" max="1" step="0.01" value="0.7">
                                 <span id="energy-ratio-value">0.70</span>
                             </div>
@@ -340,7 +342,7 @@
                     <div class="sub-tab-content" id="subtab-fragmentation">
                         <div class="section">
                             <h3>Fragmentación de Bloques</h3>
-                            <p class="help-text" style="margin-bottom: 8px;">Modelo de abrasión progresiva: la roca pierde fragmentos pequeños (spalls) en cada impacto, manteniendo un núcleo que sigue rebotando. Impactos de muy alta energía pueden partir el núcleo en dos.</p>
+                            <p class="help-text" style="margin-bottom: 8px;">Modelo de abrasión progresiva: la roca pierde fragmentos pequeños (spalls) en cada contacto detectado con el terreno, manteniendo un núcleo que sigue descendiendo. Los contactos de muy alta energía pueden partir el núcleo en dos.</p>
                             <div class="control-group">
                                 <label class="checkbox-label" data-tooltip="Permite que los bloques grandes de roca se rompan en fragmentos más pequeños al impactar con alta energía.">
                                     <input type="checkbox" id="fragmentation-enabled" checked> Habilitar Fragmentación
@@ -373,11 +375,11 @@
                                 <input type="number" id="gravity" value="9.81" step="0.01" min="1" max="20">
                             </div>
                             <div class="control-group">
-                                <label data-tooltip="Porcentaje de variación aleatoria en Cn entre rocas. Simula la heterogeneidad natural del terreno.">Variabilidad Cn (%):</label>
+                                <label id="cn-variability-label" data-tooltip="Porcentaje de variación aleatoria aplicado al Cn de cada tramo. Solo se usa el Cn global como respaldo cuando el perfil tiene menos de 2 puntos.">Variabilidad Cn (%):</label>
                                 <input type="number" id="cn-variability" value="10" min="0" max="50" step="1">
                             </div>
                             <div class="control-group">
-                                <label data-tooltip="Porcentaje de variación aleatoria en Ct entre rocas. Simula variaciones en la superficie de impacto.">Variabilidad Ct (%):</label>
+                                <label id="ct-variability-label" data-tooltip="Porcentaje de variación aleatoria aplicado al Ct de cada tramo. Solo se usa el Ct global como respaldo cuando el perfil tiene menos de 2 puntos.">Variabilidad Ct (%):</label>
                                 <input type="number" id="ct-variability" value="10" min="0" max="50" step="1">
                             </div>
                             <div class="control-group">
@@ -731,6 +733,7 @@
                             </div>
                             <div class="button-row">
                                 <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Dashboard Completo</button>
+                                <button id="btn-export-impacts" class="btn btn-small" disabled data-tooltip="Descarga un CSV con los eventos de impacto registrados (200 por roca como máximo).">Exportar impactos (CSV)</button>
                             </div>
                             <p class="help-text" style="margin-top:8px;font-size:10px;">Los datos de exportación están disponibles en el dashboard.</p>
                         </div>
@@ -838,12 +841,12 @@
                         <span class="dash-stat-val" id="dash-stat-total">-</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Energía cinética máx. (kJ)</span>
+                        <span class="dash-stat-label">Energía cinética máx. de trayectoria (kJ)</span>
                         <span class="dash-stat-val" id="dash-stat-max-ke">-</span>
                         <span class="dash-stat-unit">kJ</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Altura del centro al contacto máx. (m)</span>
+                        <span class="dash-stat-label">Altura de vuelo del centro, máx. (m)</span>
                         <span class="dash-stat-val" id="dash-stat-max-bounce">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
@@ -872,10 +875,13 @@
             <div class="dashboard-stats">
                 <div class="dash-stat-badge"><span class="dash-stat-label">Energía cinética máx. de trayectoria (kJ)</span><span class="dash-stat-val" id="stat-max-ke">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Energía cinética máx. por roca, media (kJ)</span><span class="dash-stat-val" id="stat-mean-ke">—</span></div>
-                <div class="dash-stat-badge"><span class="dash-stat-label">Altura del centro al contacto, máx. (m)</span><span class="dash-stat-val" id="stat-max-bounce">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Altura de vuelo del centro, máx. (m)</span><span class="dash-stat-val" id="stat-max-bounce">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final relativo máx. (m)</span><span class="dash-stat-val" id="stat-max-runout">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Velocidad máx. de trayectoria (m/s)</span><span class="dash-stat-val" id="stat-max-velocity">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Contactos detectados, máx. (conteo interno; no son impactos)</span><span class="dash-stat-val" id="stat-max-bounces">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Velocidad normal de impacto, máx. por roca (m/s)</span><span class="dash-stat-val" id="stat-max-impact-vn">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Energía de impacto (traslación + rotación), máx. por roca (kJ)</span><span class="dash-stat-val" id="stat-max-impact-energy">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Impactos por roca (vn ≥ 0.5 m/s)</span><span class="dash-stat-val" id="stat-max-impacts">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Ángulo de alcance mín. (°)</span><span class="dash-stat-val" id="stat-savigny-angle">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Rocas en reposo / evaluadas</span><span class="dash-stat-val" id="stat-n-rest">—</span></div>
                 <div class="dash-stat-badge"><span class="dash-stat-label">Salen del perfil aguas abajo (%)</span><span class="dash-stat-val" id="stat-pct-leaving">—</span></div>
@@ -896,11 +902,11 @@
                     <canvas id="chart-accumulation" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Altura del centro al contacto vs X final</h4>
+                    <h4>Altura de vuelo del centro vs X final</h4>
                     <canvas id="chart-bounce-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Velocidad máx. de trayectoria vs X final</h4>
+                    <h4>Velocidad normal de impacto, máx. vs X final</h4>
                     <canvas id="chart-velocity-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
@@ -923,10 +929,10 @@
     <script src="js/view3d.js?v=3"></script>
     <script src="js/view3d-terrain.js?v=1"></script>
     <script src="js/stl.js?v=7"></script>
-    <script src="js/physics.js?v=11"></script>
+    <script src="js/physics.js?v=12"></script>
     <script src="js/simulation.js?v=11"></script>
-    <script src="js/renderer.js?v=6"></script>
-    <script src="js/stats.js?v=8"></script>
+    <script src="js/renderer.js?v=7"></script>
+    <script src="js/stats.js?v=9"></script>
     <script src="js/math3d.js?v=1"></script>
     <script src="js/physics3d.js?v=1"></script>
     <script src="js/source-zones.js?v=1"></script>
@@ -934,9 +940,9 @@
     <script src="js/sim3d-pool.js?v=1"></script>
     <script src="js/results3d.js?v=1"></script>
     <script src="js/view3d-trajectories.js?v=1"></script>
-    <script src="js/app.js?v=14"></script>
+    <script src="js/app.js?v=15"></script>
     <script src="js/app-stl.js?v=2"></script>
-    <script src="js/app-worker.js?v=7"></script>
+    <script src="js/app-worker.js?v=8"></script>
     <script src="js/app-modes.js?v=2"></script>
     <script src="js/app-import.js?v=4"></script>
     <script src="js/app-profile3d.js?v=2"></script>

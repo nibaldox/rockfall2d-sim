@@ -109,6 +109,31 @@ function snapshotFrame(rocks) {
 }
 
 /**
+ * Copia los eventos de impacto objeto por objeto (P0.2-β, §4): el hilo
+ * principal no debe compartir referencias con el estado del worker.
+ *
+ * @param {Array<Object>} events
+ * @returns {Array<Object>}
+ */
+function copyImpactEvents(events) {
+    if (!Array.isArray(events)) return [];
+    return events.map(e => ({
+        t: e.t,
+        x: e.x,
+        y: e.y,
+        surface: e.surface,
+        index: e.index,
+        vn: e.vn,
+        speed: e.speed,
+        contactSpeed: e.contactSpeed,
+        energy: e.energy,
+        cnEff: e.cnEff,
+        ctEff: e.ctEff,
+        flightHeightBefore: e.flightHeightBefore
+    }));
+}
+
+/**
  * Serializa las rocas terminadas para el hilo principal. Campos conforme a
  * sus consumidores:
  *   - js/stats.js compute(): maxKineticEnergy, maxBounceHeight, finalX,
@@ -121,6 +146,9 @@ function snapshotFrame(rocks) {
  *   - js/renderer.js renderTimelineFrame(): shape, color ({r,g,b}), radius
  *   - fragmentación: generation, parentId, isFragmented, isCore,
  *     massLossRatio, originalDiameter
+ *   - P0.2-β: impactCount, maxImpactNormalSpeed, maxImpactSpeed,
+ *     maxImpactContactSpeed, maxImpactEnergy, maxFlightHeight, impactEvents,
+ *     droppedImpactEvents
  */
 function serializeRocks(rocks) {
     return rocks.map(r => ({
@@ -147,6 +175,14 @@ function serializeRocks(rocks) {
         trajectory: r.trajectory,
         bouncePoints: r.bouncePoints,
         impactEnergies: r.impactEnergies,
+        impactCount: r.impactCount,
+        maxImpactNormalSpeed: r.maxImpactNormalSpeed,
+        maxImpactSpeed: r.maxImpactSpeed,
+        maxImpactContactSpeed: r.maxImpactContactSpeed,
+        maxImpactEnergy: r.maxImpactEnergy,
+        maxFlightHeight: r.maxFlightHeight,
+        impactEvents: copyImpactEvents(r.impactEvents),
+        droppedImpactEvents: r.droppedImpactEvents,
         releaseX: r.releaseX,
         releaseY: r.releaseY,
         sourceIndex: r.sourceIndex,

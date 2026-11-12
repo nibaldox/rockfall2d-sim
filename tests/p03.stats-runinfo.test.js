@@ -8,7 +8,6 @@ const { loadScripts } = require('./helpers/load');
 
 const BASELINE_DIR = process.env.P03_BASELINE_DIR ||
     path.join(os.homedir(), '.hermes', 'profiles', 'rocxkfall', 'reports', 'rockfall-p0', 'exec', 'W2-r2');
-const UPDATE_BASELINE = process.env.P03_UPDATE_BASELINE === '1';
 
 const DT_GRUESO_MESSAGE = 'Con dt > 0.02 s en cuerpo rígido o nonsmooth, algunas rocas pueden no alcanzar el reposo; use dt ≤ 0.02 s y revise el porcentaje censurado.';
 
@@ -43,6 +42,8 @@ function blockedInvalidRocks() {
 }
 
 const plain = x => JSON.parse(JSON.stringify(x));
+// P0.2-β §3: runInfo se amplía a cinco campos; sin datos β, los tres nuevos son null.
+const info = (timeStep, calcMethod) => ({ timeStep, calcMethod, cnVariability: null, ctVariability: null, segments: null });
 const codes = r => r.warnings.map(w => w.code);
 const hasCode = (r, code) => codes(r).includes(code);
 const strip = r => {
@@ -55,7 +56,7 @@ const strip = r => {
 test('runInfo válido se publica como copia sanitizada', () => {
     const input = { timeStep: 0.005, calcMethod: 'rigid-body', extra: 'ignorado' };
     const r = stats().compute([rock()], null, input);
-    assert.deepEqual(plain(r.runInfo), { timeStep: 0.005, calcMethod: 'rigid-body' });
+    assert.deepEqual(plain(r.runInfo), info(0.005, 'rigid-body'));
     assert.notEqual(r.runInfo, input);
     r.runInfo.timeStep = 1;
     assert.equal(input.timeStep, 0.005);
@@ -63,7 +64,7 @@ test('runInfo válido se publica como copia sanitizada', () => {
 
 test('compute sin tercer argumento deja runInfo con null', () => {
     const r = stats().compute([rock()]);
-    assert.deepEqual(plain(r.runInfo), { timeStep: null, calcMethod: null });
+    assert.deepEqual(plain(r.runInfo), info(null, null));
     assert.equal(hasCode(r, 'dtGrueso'), false);
 });
 
@@ -104,14 +105,14 @@ test('runInfo inválido o ausente no advierte y deja null', () => {
     ];
     for (const [label, runInfo, timeStep, calcMethod] of cases) {
         const r = stats().compute([rock()], null, runInfo);
-        assert.deepEqual(plain(r.runInfo), { timeStep, calcMethod }, label);
+        assert.deepEqual(plain(r.runInfo), info(timeStep, calcMethod), label);
         assert.equal(hasCode(r, 'dtGrueso'), false, label);
     }
 });
 
 test('runInfo parcial conserva solo el dato válido', () => {
     const r = stats().compute([rock()], null, { timeStep: 0.5 });
-    assert.deepEqual(plain(r.runInfo), { timeStep: 0.5, calcMethod: null });
+    assert.deepEqual(plain(r.runInfo), info(0.5, null));
     assert.equal(hasCode(r, 'dtGrueso'), false);
 });
 
@@ -135,15 +136,15 @@ test('los resultados bloqueados incluyen runInfo y dtGrueso', () => {
     const runInfo = { timeStep: 0.05, calcMethod: 'rigid-body' };
     const fragmented = stats().compute(blockedFragmentedRocks(), null, runInfo);
     assert.equal(fragmented.status, 'bloqueado');
-    assert.deepEqual(plain(fragmented.runInfo), runInfo);
+    assert.deepEqual(plain(fragmented.runInfo), info(runInfo.timeStep, runInfo.calcMethod));
     assert.equal(hasCode(fragmented, 'dtGrueso'), true);
     const invalid = stats().compute(blockedInvalidRocks(), null, runInfo);
     assert.equal(invalid.blockedReason, 'esquemaInvalido');
-    assert.deepEqual(plain(invalid.runInfo), runInfo);
+    assert.deepEqual(plain(invalid.runInfo), info(runInfo.timeStep, runInfo.calcMethod));
     assert.equal(hasCode(invalid, 'dtGrueso'), true);
     const empty = stats().compute([], null, runInfo);
     assert.equal(empty.blockedReason, 'sinRocas');
-    assert.deepEqual(plain(empty.runInfo), runInfo);
+    assert.deepEqual(plain(empty.runInfo), info(runInfo.timeStep, runInfo.calcMethod));
     assert.equal(hasCode(empty, 'dtGrueso'), true);
 });
 
@@ -209,17 +210,43 @@ test('sin runInfo no se agregan filas de parámetros efectivos', () => {
     assert.equal(rows.some(row => row[0] === 'Método de cálculo'), false);
 });
 
-test('sin runInfo, CSV y reporte son idénticos a la salida de referencia', () => {
+// P0.2-β §3: la referencia de P0.3 no se regenera. La salida esperada es esa
+// referencia con los cambios de β enumerados aquí, y nada más:
+//   1. sale la fila «Altura del centro al contacto (m)» (bounceHeight);
+//   2. en su lugar entran los cinco agregados β, vacíos porque el fixture no trae campos β;
+//   3. antes de «Convenciones» entran la versión del contrato y el tope de eventos.
+const BETA_LABELS = ['Altura de vuelo del centro, máx. por roca (m)', 'Velocidad normal de impacto, máx. por roca (m/s)',
+    'Rapidez de impacto, máx. por roca (m/s)', 'Energía de impacto (traslación + rotación), máx. por roca (kJ)',
+    'Impactos por roca (vn ≥ 0.5 m/s)'];
+const BETA_TAIL = [['Versión del contrato de resultados', 'P0.2-beta'], ['Tope de eventos de impacto por roca', '200']];
+const NO_DATA = ['N', 'mínimo', 'media', 'máximo', 'desviación', 'P10', 'P50', 'P83', 'P95'].map(k => `${k}=No disponible`).join('; ');
+const csvCell = label => (label.includes(',') ? `"${label}"` : label);
+const BETA_FORMAT = {
+    'baseline.csv': { aggregate: label => csvCell(label) + ','.repeat(14), tail: ([k, v]) => `${k},${v}` + ','.repeat(13),
+        removed: 'Altura del centro al contacto (m),', conventions: 'Convenciones,' },
+    'baseline.txt': { aggregate: label => `${label}: ${NO_DATA}`, tail: ([k, v]) => `${k}: ${v}`,
+        removed: 'Altura del centro al contacto (m):', conventions: 'Convenciones:' }
+};
+
+function expectedBeta(name, reference) {
+    const format = BETA_FORMAT[name];
+    const lines = reference.split('\n');
+    const removed = lines.findIndex(line => line.startsWith(format.removed));
+    assert.ok(removed >= 0, `${name}: la referencia de P0.3 trae la fila de bounceHeight`);
+    lines.splice(removed, 1, ...BETA_LABELS.map(format.aggregate));
+    const conventions = lines.findIndex(line => line.startsWith(format.conventions));
+    assert.ok(conventions > removed, `${name}: la referencia trae la fila de convenciones`);
+    lines.splice(conventions, 0, ...BETA_TAIL.map(format.tail));
+    return lines.join('\n');
+}
+
+test('sin runInfo, CSV y reporte son la referencia de P0.3 con los cambios enumerados de β', () => {
     const s = stats();
     s.compute(fixtureRocks());
     const outputs = { 'baseline.csv': s.generateCSV(), 'baseline.txt': s.generateReport() };
-    fs.mkdirSync(BASELINE_DIR, { recursive: true });
     for (const [name, text] of Object.entries(outputs)) {
         const file = path.join(BASELINE_DIR, name);
-        if (UPDATE_BASELINE) fs.writeFileSync(file, text);
-        if (!fs.existsSync(file)) {
-            assert.fail(`falta la referencia ${file}; ejecute con P03_UPDATE_BASELINE=1 sobre el código actual`);
-        }
-        assert.equal(text, fs.readFileSync(file, 'utf8'), name);
+        if (!fs.existsSync(file)) assert.fail(`falta la referencia de P0.3 ${file}`);
+        assert.equal(text, expectedBeta(name, fs.readFileSync(file, 'utf8')), name);
     }
 });

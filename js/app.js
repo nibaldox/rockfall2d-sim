@@ -11,6 +11,44 @@ function clamp(value, min, max, fallback) {
     return (isNaN(n) || n < min || n > max) ? fallback : n;
 }
 
+/**
+ * Copia del terreno en el momento de la captura por época: índice de tramo,
+ * extremos en X, tipo, etiqueta del preset, cn, ct y rugosidad. Son primitivas
+ * copiadas, así que editar el perfil después no altera lo ya publicado.
+ */
+function copyRunSegments(terrain) {
+    const points = Array.isArray(terrain?.points) ? terrain.points : [];
+    const segments = Array.isArray(terrain?.segments) ? terrain.segments : [];
+    const presets = typeof SimRocas !== 'undefined' && SimRocas.TerrainPresets ? SimRocas.TerrainPresets : {};
+    const count = Math.min(segments.length, Math.max(0, points.length - 1));
+    const result = [];
+    for (let i = 0; i < count; i++) {
+        const seg = segments[i] || {};
+        const preset = presets[seg.type] || null;
+        result.push({
+            index: i,
+            x0: Number.isFinite(points[i]?.x) ? points[i].x : null,
+            x1: Number.isFinite(points[i + 1]?.x) ? points[i + 1].x : null,
+            type: typeof seg.type === 'string' ? seg.type : '',
+            label: preset && typeof preset.label === 'string' ? preset.label : '',
+            cn: Number.isFinite(seg.cn) ? seg.cn : null,
+            ct: Number.isFinite(seg.ct) ? seg.ct : null,
+            roughness: Number.isFinite(seg.roughness) ? seg.roughness : 0
+        });
+    }
+    return result;
+}
+
+/** Etiquetas de variabilidad: en masa concentrada los sorteos actúan sobre Kn/Kt. */
+function syncVariabilityLabels() {
+    const method = document.getElementById('calc-method');
+    const suffix = method && method.value === 'lumped-mass' ? ' (se aplica a Kn/Kt)' : '';
+    const cnLabel = document.getElementById('cn-variability-label');
+    const ctLabel = document.getElementById('ct-variability-label');
+    if (cnLabel) cnLabel.textContent = `Variabilidad Cn (%)${suffix}`;
+    if (ctLabel) ctLabel.textContent = `Variabilidad Ct (%)${suffix}`;
+}
+
 class App {
     constructor() {
         this.terrain = new SimRocas.Terrain();
@@ -460,6 +498,7 @@ class App {
             nonsmoothControls.style.display = method === 'nonsmooth' ? 'block' : 'none';
             energyModelGroup.style.display = method === 'rigid-body' ? 'block' : 'none';
             this.physics.calcMethod = method;
+            syncVariabilityLabels();
         };
         calcMethod.addEventListener('change', updateCalcMethodVisibility);
         updateCalcMethodVisibility();
@@ -937,6 +976,21 @@ class App {
             URL.revokeObjectURL(url);
         });
 
+        const impactsBtn = document.getElementById('btn-export-impacts');
+        if (impactsBtn) impactsBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
+            if (!this.stats.results || this.stats.results.impactExportAvailable !== true) return;
+            const csv = this.stats.generateImpactCSV();
+            if (csv === null || csv === undefined) return;
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas_impactos.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
         const reportBtn = document.getElementById('btn-export-report');
         if (reportBtn) reportBtn.addEventListener('click', () => {
             if (!this._resultsValid) return;
@@ -1122,7 +1176,7 @@ class App {
             const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
             document.getElementById('dash-stat-total').textContent = r.population.rest;
             document.getElementById('dash-stat-max-ke').textContent = format(r.kineticEnergy?.max);
-            document.getElementById('dash-stat-max-bounce').textContent = format(r.bounceHeight?.max);
+            document.getElementById('dash-stat-max-bounce').textContent = format(r.flightHeight?.max);
             document.getElementById('dash-stat-max-runout').textContent = format(r.finalRunout?.max);
             document.getElementById('dash-stat-max-vel').textContent = format(r.impactVelocity?.max);
             document.getElementById('dash-stat-savigny').textContent = format(r.reachAngle?.min);
@@ -1538,9 +1592,16 @@ class App {
     }
 
     getSimulationParams() {
+        // P03-6: el motor exige entero; se redondea, luego se acota a [1, 10000]
+        // y el input muestra el valor efectivo. Un dato no numérico usa 100.
+        const numRocksInput = document.getElementById('num-rocks');
+        const rawNumRocks = parseFloat(numRocksInput.value);
+        const numRocks = Number.isFinite(rawNumRocks)
+            ? Math.min(10000, Math.max(1, Math.round(rawNumRocks))) : 100;
+        if (numRocksInput) numRocksInput.value = String(numRocks);
         return {
             downhillMode: document.getElementById('downhill-mode')?.value || 'auto',
-            numRocks: clamp(document.getElementById('num-rocks').value, 1, 10000, 100),
+            numRocks,
             gravity: clamp(document.getElementById('gravity').value, 1, 20, 9.81),
             cn: this.physics.cn,
             ct: this.physics.ct,
@@ -1586,7 +1647,7 @@ class App {
         const content = document.getElementById('results-sidebar-content');
         if (placeholder) placeholder.style.display = 'block';
         if (content) content.style.display = 'none';
-        ['btn-export-csv', 'btn-export-report', 'btn-dashboard-csv', 'btn-dashboard-report',
+        ['btn-export-csv', 'btn-export-report', 'btn-export-impacts', 'btn-dashboard-csv', 'btn-dashboard-report',
             'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
             const el = document.getElementById(id); if (el) el.disabled = true;
         });
@@ -1611,6 +1672,31 @@ class App {
                 !finiteArray(rock.impactEnergies) || !Array.isArray(rock.bouncePoints) ||
                 !Array.from(rock.bouncePoints).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.energy)) ||
                 !Array.isArray(rock.shape) || !Array.from(rock.shape).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))) return false;
+            // Campos β del §2: cada uno se valida con su regla; un fallo rechaza la roca.
+            const betaNumber = value => value === null || (Number.isFinite(value) && value >= 0);
+            const eventKeys = ['t', 'x', 'y', 'surface', 'index', 'vn', 'speed', 'contactSpeed',
+                'energy', 'cnEff', 'ctEff', 'flightHeightBefore'];
+            const isImpactEvent = event => {
+                if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
+                const keys = Object.keys(event);
+                if (keys.length !== eventKeys.length || !eventKeys.every(key => Object.hasOwn(event, key))) return false;
+                const nums = [event.t, event.x, event.y, event.vn, event.speed, event.energy, event.cnEff, event.ctEff];
+                if (!nums.every(Number.isFinite)) return false;
+                // Magnitudes del §2: ninguna puede ser negativa.
+                if (event.vn < 0 || event.speed < 0 || event.energy < 0) return false;
+                if (!(event.contactSpeed === null || (Number.isFinite(event.contactSpeed) && event.contactSpeed >= 0))) return false;
+                if (!(event.flightHeightBefore === null || Number.isFinite(event.flightHeightBefore))) return false;
+                return ['terrain', 'barrier'].includes(event.surface) &&
+                    Number.isInteger(event.index) && event.index >= 0;
+            };
+            if (!Number.isInteger(rock.impactCount) || rock.impactCount < 0 ||
+                !betaNumber(rock.maxImpactNormalSpeed) || !betaNumber(rock.maxImpactSpeed) ||
+                !betaNumber(rock.maxImpactContactSpeed) || !betaNumber(rock.maxImpactEnergy) ||
+                !(rock.maxFlightHeight === null || Number.isFinite(rock.maxFlightHeight)) ||
+                !Array.isArray(rock.impactEvents) || rock.impactEvents.length > 200 ||
+                !rock.impactEvents.every(isImpactEvent) ||
+                !Number.isInteger(rock.droppedImpactEvents) || rock.droppedImpactEvents < 0 ||
+                rock.droppedImpactEvents !== rock.impactCount - rock.impactEvents.length) return false;
             if (!Number.isFinite(rock.releaseX) || !Number.isFinite(rock.releaseY) ||
                 !Number.isInteger(rock.sourceIndex) || rock.sourceIndex < 0 ||
                 ![1, -1, null].includes(rock.downhillSign) ||
@@ -1652,7 +1738,11 @@ class App {
             // Misma regla de época que _runSources: solo la corrida vigente aporta
             // sus valores efectivos, copiados como primitivas.
             const info = this._runInfo && this._runInfo.epoch === this._runEpoch ?
-                { timeStep: this._runInfo.timeStep, calcMethod: this._runInfo.calcMethod } : null;
+                {
+                    timeStep: this._runInfo.timeStep, calcMethod: this._runInfo.calcMethod,
+                    cnVariability: this._runInfo.cnVariability, ctVariability: this._runInfo.ctVariability,
+                    segments: this._runInfo.segments.map(segment => ({ ...segment }))
+                } : null;
             this.stats.compute(rocks, this.releasePoint, info);
             const result = this.stats.results;
             if (result.status === 'bloqueado') {
@@ -1685,6 +1775,8 @@ class App {
                     'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
                     const el = document.getElementById(id); if (el) el.disabled = false;
                 });
+                const impactsBtn = document.getElementById('btn-export-impacts');
+                if (impactsBtn) impactsBtn.disabled = result.impactExportAvailable !== true;
                 const warnings = result.warnings.map(w => w.message).join(' ');
                 let mapReason = '';
                 if (!mapEligible) {
@@ -1821,7 +1913,10 @@ class App {
         this._runInfo = {
             epoch: runEpoch,
             timeStep: this.simulation.physics.dt,
-            calcMethod: this.simulation.physics.calcMethod
+            calcMethod: this.simulation.physics.calcMethod,
+            cnVariability: this.simulation.physics.cnVariability,
+            ctVariability: this.simulation.physics.ctVariability,
+            segments: copyRunSegments(this.terrain)
         };
 
         document.getElementById('btn-run').disabled = true;
@@ -1973,4 +2068,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // Export to namespace
 SimRocas.App = App;
 SimRocas.clamp = clamp;
+SimRocas.copyRunSegments = copyRunSegments;
+SimRocas.syncVariabilityLabels = syncVariabilityLabels;
 window.SimRocas = SimRocas; // Make namespace globally accessible

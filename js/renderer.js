@@ -1849,7 +1849,8 @@ class Renderer {
     }
 
     /**
-     * Chart 4: Bounce Height vs Distance scatter plot.
+     * Chart 4: maximum flight height of the centre vs final X scatter plot.
+     * Omits rocks with maxFlightHeight === null and reports N over the valid ones.
      */
     renderBounceHeightVsDistance(canvas, rocks, terrain, releasePoint) {
         if (!canvas) return;
@@ -1867,7 +1868,8 @@ class Renderer {
 
         this.drawTerrainSilhouette(ctx, terrain, w, h, padding);
 
-        if (rocks.length === 0) {
+        const valid = rocks.filter(r => Number.isFinite(r.maxFlightHeight));
+        if (valid.length === 0) {
             ctx.fillStyle = 'rgba(255,255,255,0.3)';
             ctx.font = '13px sans-serif';
             ctx.textAlign = 'center';
@@ -1876,12 +1878,12 @@ class Renderer {
             return;
         }
 
-        let minX = rocks[0].finalX, maxX = rocks[0].finalX;
+        let minX = valid[0].finalX, maxX = valid[0].finalX;
         let maxBH = 0;
-        for (const r of rocks) {
+        for (const r of valid) {
             if (r.finalX < minX) minX = r.finalX;
             if (r.finalX > maxX) maxX = r.finalX;
-            if (r.maxBounceHeight > maxBH) maxBH = r.maxBounceHeight;
+            if (r.maxFlightHeight > maxBH) maxBH = r.maxFlightHeight;
         }
         const rangeX = maxX - minX || 1;
         const rangeBH = maxBH || 1;
@@ -1893,12 +1895,12 @@ class Renderer {
             value: v, norm: (v - minX) / rangeX, label: v.toFixed(0)
         }));
 
-        this.drawChartAxes(ctx, w, h, padding, 'X final (m)', 'Altura del centro al contacto (m)', xTicks, yTicks);
+        this.drawChartAxes(ctx, w, h, padding, 'X final (m)', 'Altura de vuelo del centro (m)', xTicks, yTicks);
 
         // Teal/cyan dots
-        for (const r of rocks) {
+        for (const r of valid) {
             const px = padding.left + ((r.finalX - minX) / rangeX) * plotW;
-            const py = padding.top + plotH - (r.maxBounceHeight / rangeBH) * plotH;
+            const py = padding.top + plotH - (r.maxFlightHeight / rangeBH) * plotH;
 
             ctx.beginPath();
             ctx.arc(px, py, 3, 0, Math.PI * 2);
@@ -1907,22 +1909,23 @@ class Renderer {
         }
 
         // Trend line
-        const bhPoints = rocks.map(r => ({ x: r.finalX, y: r.maxBounceHeight }));
+        const bhPoints = valid.map(r => ({ x: r.finalX, y: r.maxFlightHeight }));
         this._drawTrendLine(ctx, bhPoints, padding, plotW, plotH, minX, rangeX, 0, rangeBH, 'rgba(78, 205, 196, 0.6)');
 
-        // Statistics
-        const bhVals = rocks.map(r => r.maxBounceHeight);
+        // Statistics (solo rocas con muestra válida)
+        const bhVals = valid.map(r => r.maxFlightHeight);
         const meanBH = bhVals.reduce((s, v) => s + v, 0) / bhVals.length;
         const maxBHactual = bhVals.reduce((m, v) => Math.max(m, v), 0);
         this._drawStatsBox(ctx, w - padding.right - 155, padding.top + 4, [
-            `N = ${rocks.length}`,
+            `N = ${valid.length}`,
             `Max = ${maxBHactual.toFixed(2)} m`,
             `Media = ${meanBH.toFixed(2)} m`
         ]);
     }
 
     /**
-     * Chart 5: Impact Velocity vs Distance scatter plot.
+     * Chart 5: maximum impact normal speed vs final X scatter plot.
+     * Omits rocks with maxImpactNormalSpeed === null and reports N over the valid ones.
      */
     renderImpactVelocityVsDistance(canvas, rocks, terrain, releasePoint) {
         if (!canvas) return;
@@ -1940,7 +1943,8 @@ class Renderer {
 
         this.drawTerrainSilhouette(ctx, terrain, w, h, padding);
 
-        if (rocks.length === 0) {
+        const valid = rocks.filter(r => Number.isFinite(r.maxImpactNormalSpeed));
+        if (valid.length === 0) {
             ctx.fillStyle = 'rgba(255,255,255,0.3)';
             ctx.font = '13px sans-serif';
             ctx.textAlign = 'center';
@@ -1949,12 +1953,12 @@ class Renderer {
             return;
         }
 
-        let minX = rocks[0].finalX, maxX = rocks[0].finalX;
+        let minX = valid[0].finalX, maxX = valid[0].finalX;
         let maxV = 0;
-        for (const r of rocks) {
+        for (const r of valid) {
             if (r.finalX < minX) minX = r.finalX;
             if (r.finalX > maxX) maxX = r.finalX;
-            if (r.maxImpactVelocity > maxV) maxV = r.maxImpactVelocity;
+            if (r.maxImpactNormalSpeed > maxV) maxV = r.maxImpactNormalSpeed;
         }
         const rangeX = maxX - minX || 1;
         const rangeV = maxV || 1;
@@ -1966,12 +1970,12 @@ class Renderer {
             value: v, norm: (v - minX) / rangeX, label: v.toFixed(0)
         }));
 
-        this.drawChartAxes(ctx, w, h, padding, 'X final (m)', 'Velocidad máx. de trayectoria (m/s)', xTicks, yTicks);
+        this.drawChartAxes(ctx, w, h, padding, 'X final (m)', 'Velocidad normal de impacto, máx. (m/s)', xTicks, yTicks);
 
         // Orange dots
-        for (const r of rocks) {
+        for (const r of valid) {
             const px = padding.left + ((r.finalX - minX) / rangeX) * plotW;
-            const py = padding.top + plotH - (r.maxImpactVelocity / rangeV) * plotH;
+            const py = padding.top + plotH - (r.maxImpactNormalSpeed / rangeV) * plotH;
 
             ctx.beginPath();
             ctx.arc(px, py, 3, 0, Math.PI * 2);
@@ -1980,15 +1984,15 @@ class Renderer {
         }
 
         // Trend line
-        const ivPoints = rocks.map(r => ({ x: r.finalX, y: r.maxImpactVelocity }));
+        const ivPoints = valid.map(r => ({ x: r.finalX, y: r.maxImpactNormalSpeed }));
         this._drawTrendLine(ctx, ivPoints, padding, plotW, plotH, minX, rangeX, 0, rangeV, 'rgba(243, 156, 18, 0.6)');
 
-        // Statistics
-        const ivVals = rocks.map(r => r.maxImpactVelocity);
+        // Statistics (solo rocas con muestra válida)
+        const ivVals = valid.map(r => r.maxImpactNormalSpeed);
         const meanV = ivVals.reduce((s, v) => s + v, 0) / ivVals.length;
         const maxVactual = ivVals.reduce((m, v) => Math.max(m, v), 0);
         this._drawStatsBox(ctx, w - padding.right - 165, padding.top + 4, [
-            `N = ${rocks.length}`,
+            `N = ${valid.length}`,
             `Max = ${maxVactual.toFixed(1)} m/s`,
             `Media = ${meanV.toFixed(1)} m/s`
         ]);

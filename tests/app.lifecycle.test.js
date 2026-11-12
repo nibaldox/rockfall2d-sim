@@ -47,6 +47,8 @@ function fixture(workerMode = true) {
 const rock = reason => ({ stopReason: reason, releaseX: 0, releaseY: 1, sourceIndex: 0, downhillSign: 1, maxDownhillAdvance: 1, cullBoundary: reason === 'culled' ? 'maxX' : null, isResting: true, x: 1, y: 0, finalX: 1, finalY: 0,
     stepsTaken: 1, elapsedTime: 1, rotation: 0, radius: 1, bounces: 1,
     maxKineticEnergy: 1000, maxBounceHeight: 2, maxImpactVelocity: 3,
+    impactCount: 0, maxImpactNormalSpeed: null, maxImpactSpeed: null, maxImpactContactSpeed: null,
+    maxImpactEnergy: null, maxFlightHeight: null, impactEvents: [], droppedImpactEvents: 0,
     impactEnergies: [], trajectory: [], bouncePoints: [], shape: [{ x: 0, y: 0 }],
     parentId: null, id: 1, color: { r: 1, g: 2, b: 3 },
     getShapeVertices() { return this.shape; },

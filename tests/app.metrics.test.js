@@ -14,7 +14,9 @@ const { runWorker, buildTerrainJSON } = new Function('require', '__dirname', wor
 function payload() {
     const msg = runWorker({ type: 'start', terrainJSON: buildTerrainJSON(), simParams: { numRocks: 1, timeStep: 0.005, maxDuration: 0.005, downhillMode: '+x' }, physicsParams: {}, barriers: [], startArgs: [10, 130, 0.8, 2700, 2, 30, 0.005, true, 'sphere', 0.6, 'freefall', null] }).find(m => m.type === 'complete');
     assert.ok(msg); assert.equal(msg.status, 'completed');
-    return structuredClone(msg.rocks[0]);
+    const rock = structuredClone(msg.rocks[0]);
+    // Sin relleno: los campos β llegan tal como los publica serializeRocks de js/worker.js.
+    return rock;
 }
 function setup() { const f = fixture(); f.app.stats = new f.Stats(); f.app.runSimulation(); return f; }
 function complete(f, rocks, status = 'completed') { f.workers[0].onmessage({ data: { type: 'complete', status, rocks } }); }

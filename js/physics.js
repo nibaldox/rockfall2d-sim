@@ -100,6 +100,25 @@ class Rock {
         this._maxTrajectoryPoints = 500;
         this.bouncePoints = [];
         this.impactEnergies = [];
+
+        // --- P0.2-β (C1/C3): eventos de impacto por episodio y vuelo ---------
+        this.impactCount = 0;
+        this.maxImpactNormalSpeed = null;
+        this.maxImpactSpeed = null;
+        this.maxImpactContactSpeed = null;
+        this.maxImpactEnergy = null;
+        this.maxFlightHeight = null;
+        this.impactEvents = [];
+        this.droppedImpactEvents = 0;
+        this._maxImpactEvents = Rock.MAX_IMPACT_EVENTS;
+        this._impactEpisodes = new Set();   // superficies con episodio abierto
+        this._episodeOpened = new Set();    // episodios abiertos en este sub-paso
+        this._substepContacts = new Set();  // superficies tocadas en este sub-paso
+        this._flightActive = false;
+        this._flightMax = null;
+        this._pendingFlightMax = null;
+        this._flightStartedThisSubstep = false;
+
         this.finalX = x;
         this.finalY = y;
         this.isResting = false;
@@ -174,6 +193,14 @@ class Rock {
      * @type {number} kg
      */
     static MINIMUM_MASS = 1e-6;
+
+    /**
+     * Tope de eventos de impacto por roca (P0.2-β, §2): se guardan los
+     * primeros 200; `impactCount` y los máximos incluyen los descartados.
+     *
+     * @type {number}
+     */
+    static MAX_IMPACT_EVENTS = 200;
 
     /**
      * Diámetro de la esfera equivalente para una masa dada (T0.12).
@@ -489,6 +516,121 @@ class Rock {
         return true;
     }
 
+    /**
+     * Marca contacto detectado con una superficie en el sub-paso actual
+     * (P0.2-β, C1). Abre el episodio si no había uno activo y cierra el vuelo
+     * vigente si lo había (C3). Solo escribe estado de instrumentación: no
+     * altera ninguna magnitud física ni consume sorteos.
+     *
+     * @param {string} surfaceKey - 'terrain' o `barrier:<i>`
+     */
+    noteSurfaceContact(surfaceKey) {
+        this._substepContacts.add(surfaceKey);
+        if (!this._impactEpisodes.has(surfaceKey)) {
+            this._impactEpisodes.add(surfaceKey);
+            this._episodeOpened.add(surfaceKey);
+        }
+        if (this._flightActive && !this._flightStartedThisSubstep) {
+            this._flightActive = false;
+            if (this._flightMax !== null && (this.maxFlightHeight === null || this._flightMax > this.maxFlightHeight)) {
+                this.maxFlightHeight = this._flightMax;
+            }
+            this._pendingFlightMax = this._flightMax;
+            this._flightMax = null;
+        }
+    }
+
+    /**
+     * Muestrea la altura de vuelo del centro sobre el terreno (P0.2-β, C3).
+     * Se llama después de update y antes de handleCollision; fuera del perfil,
+     * o si el tramo no existe, la muestra se omite.
+     *
+     * @param {Terrain} terrain
+     */
+    sampleFlightHeight(terrain) {
+        if (!this._flightActive) return;
+        const points = terrain && terrain.points;
+        if (!points || points.length < 2) return;
+        if (this.x < points[0].x || this.x > points[points.length - 1].x) return;
+        if (!terrain.getSegmentAt(this.x)) return;
+        const height = this.y - terrain.getHeightAt(this.x);
+        if (this._flightMax === null || height > this._flightMax) {
+            this._flightMax = height;
+        }
+    }
+
+    /**
+     * Cierra los episodios de contacto que no tocaron su superficie en este
+     * sub-paso y limpia el estado efímero de instrumentación (P0.2-β, C1).
+     */
+    closeImpactEpisodes() {
+        if (this._impactEpisodes.size > 0) {
+            for (const key of this._impactEpisodes) {
+                if (!this._substepContacts.has(key)) this._impactEpisodes.delete(key);
+            }
+        }
+        this._substepContacts.clear();
+        this._episodeOpened.clear();
+        this._pendingFlightMax = null;
+        this._flightStartedThisSubstep = false;
+    }
+
+    /**
+     * Registra un evento de impacto C1 con las magnitudes previas al impulso.
+     * Devuelve null si la superficie ya tenía un episodio activo (C1.3).
+     *
+     * @param {{surface: string, index: number, vn: number, speed: number,
+     *          contactSpeed: number|null, energy: number, cnEff: number,
+     *          ctEff: number}} fields
+     * @returns {Object|null}
+     */
+    recordImpactEvent(fields) {
+        const surfaceKey = fields.surface === 'barrier' ? `barrier:${fields.index}` : 'terrain';
+        if (!this._episodeOpened.has(surfaceKey)) return null;
+
+        const vnAbs = Math.abs(fields.vn);
+        const event = {
+            t: this.elapsedTime,
+            x: this.x,
+            y: this.y,
+            surface: fields.surface,
+            index: fields.index,
+            vn: vnAbs,
+            speed: fields.speed,
+            contactSpeed: fields.contactSpeed,
+            energy: fields.energy,
+            cnEff: fields.cnEff,
+            ctEff: fields.ctEff,
+            flightHeightBefore: this._pendingFlightMax
+        };
+
+        this.impactCount++;
+        if (this.maxImpactNormalSpeed === null || vnAbs > this.maxImpactNormalSpeed) {
+            this.maxImpactNormalSpeed = vnAbs;
+        }
+        if (this.maxImpactSpeed === null || fields.speed > this.maxImpactSpeed) {
+            this.maxImpactSpeed = fields.speed;
+        }
+        if (fields.contactSpeed !== null && fields.contactSpeed !== undefined
+            && (this.maxImpactContactSpeed === null || fields.contactSpeed > this.maxImpactContactSpeed)) {
+            this.maxImpactContactSpeed = fields.contactSpeed;
+        }
+        if (this.maxImpactEnergy === null || fields.energy > this.maxImpactEnergy) {
+            this.maxImpactEnergy = fields.energy;
+        }
+        if (this.impactEvents.length < this._maxImpactEvents) {
+            this.impactEvents.push(event);
+        }
+        this.droppedImpactEvents = this.impactCount - this.impactEvents.length;
+
+        // El vuelo siguiente empieza en este evento (C3).
+        this._flightActive = true;
+        this._flightMax = null;
+        this._flightStartedThisSubstep = true;
+        this._pendingFlightMax = null;
+        return event;
+    }
+
     _checkResting(normal) {
         this._restCheckCount++;
         if (this._restCheckCount < 3) return false;
@@ -560,6 +702,38 @@ class Rock {
     }
 
     /**
+     * E2.2: índice del tramo extremo más cercano cuando `x` cae fuera del
+     * perfil (prolongación horizontal). Devuelve -1 dentro del perfil o si el
+     * perfil tiene menos de 2 puntos. No sortea.
+     *
+     * @param {Terrain} terrain
+     * @param {number} x
+     * @returns {number}
+     */
+    _edgeSegmentIndexAt(terrain, x) {
+        const points = terrain && terrain.points;
+        if (!points || points.length < 2) return -1;
+        if (x < points[0].x) return 0;
+        if (x > points[points.length - 1].x) return points.length - 2;
+        return -1;
+    }
+
+    /**
+     * Índice de tramo de un evento de terreno en rígido y nonsmooth: el tramo
+     * bajo `x` o, fuera del perfil, el tramo extremo más cercano (E2.2).
+     *
+     * @param {Terrain} terrain
+     * @param {number} x
+     * @returns {number}
+     */
+    _impactSegmentIndexAt(terrain, x) {
+        const segAt = terrain.getSegmentAt(x);
+        if (segAt) return segAt.index;
+        const edgeIndex = this._edgeSegmentIndexAt(terrain, x);
+        return edgeIndex >= 0 ? edgeIndex : 0;
+    }
+
+    /**
      * Handles rock-terrain collision using one of three calculation methods:
      *   - 'rigid-body': polygonal collision with impulse or energy-ratio models
      *   - 'lumped-mass': point mass with Kn/Kt coefficients (GeoRock, CRSP)
@@ -575,7 +749,7 @@ class Rock {
      * @param {number} kt - Tangential restitution coefficient (Kt) — lumped-mass only
      * @returns {boolean} true if rock is still active after collision
      */
-    handleCollision(terrain, cn, ct, energyModel, energyRatio, calcMethod, kn, kt) {
+    handleCollision(terrain, cn, ct, energyModel, energyRatio, calcMethod, kn, kt, cnFactor, ctFactor) {
         if (this.isResting) return false;
 
         // Determine impact X for segment lookup
@@ -595,9 +769,29 @@ class Rock {
         }
 
         // Read segment properties at impact point
-        const segProps = terrain.getSegmentPropertiesAt(impactX, cn, ct);
-        const segCn = segProps.cn;
-        const segCt = segProps.ct;
+        let segProps = terrain.getSegmentPropertiesAt(impactX, cn, ct);
+        // E2.2: sobre la prolongación horizontal del perfil manda el material
+        // del tramo extremo más cercano, no los Cn/Ct globales.
+        const edgeIndex = calcMethod === 'lumped-mass' ? -1 : this._edgeSegmentIndexAt(terrain, impactX);
+        const edgeSegment = edgeIndex >= 0 ? terrain.segments[edgeIndex] : null;
+        if (edgeSegment) {
+            segProps = { cn: edgeSegment.cn, ct: edgeSegment.ct, type: edgeSegment.type };
+        }
+        let segCn = segProps.cn;
+        let segCt = segProps.ct;
+
+        // U4/I4: la variabilidad del paso se aplica al Cn/Ct del tramo, también
+        // al del tramo extremo fuera del perfil. Con menos de 2 puntos la base
+        // ya es el global sorteado del paso y no se vuelve a variar.
+        // RVBa-2: decide la existencia del tramo, no su `type`.
+        if (edgeSegment || terrain.getSegmentAt(impactX)) {
+            if (cnFactor !== undefined && cnFactor !== null) {
+                segCn = Math.max(0, Math.min(1, segCn * cnFactor));
+            }
+            if (ctFactor !== undefined && ctFactor !== null) {
+                segCt = Math.max(0, Math.min(1, segCt * ctFactor));
+            }
+        }
 
         if (calcMethod === 'lumped-mass') {
             return this._handleLumpedMass(terrain, kn, kt);
@@ -615,13 +809,13 @@ class Rock {
      * Uses circle-line segment intersection with the rock radius.
      */
     handleBarrierCollisions(barriers) {
-        for (const barrier of barriers) {
-            this._checkBarrierCollision(barrier);
+        for (let i = 0; i < barriers.length; i++) {
+            this._checkBarrierCollision(barriers[i], i);
             if (this.isResting) break;
         }
     }
 
-    _checkBarrierCollision(barrier) {
+    _checkBarrierCollision(barrier, barrierIndex = 0) {
         const dx = barrier.x2 - barrier.x1;
         const dy = barrier.y2 - barrier.y1;
         const segLenSq = dx * dx + dy * dy;
@@ -642,6 +836,10 @@ class Rock {
 
         if (distSq >= collisionDist * collisionDist) return;
 
+        // Contacto detectado con esta barrera (P0.2-β, C1): abre episodio y
+        // cierra el vuelo vigente antes de cualquier guardia de aproximación.
+        this.noteSurfaceContact(`barrier:${barrierIndex}`);
+
         const dist = Math.sqrt(distSq);
         if (dist < 0.001) return;
 
@@ -655,6 +853,24 @@ class Rock {
 
         const barrierCn = barrier.cn !== undefined ? barrier.cn : 0.3;
         const barrierCt = barrier.ct !== undefined ? barrier.ct : 0.5;
+
+        // Captura previa al impulso (P0.2-β, C1): rapidez traslacional y
+        // energía total del centro. Sin punto de contacto en barreras.
+        const vxBefore = this.vx;
+        const vyBefore = this.vy;
+        const keBeforeEvent = this.kineticEnergy;
+        if (-vn >= 0.5) {
+            this.recordImpactEvent({
+                surface: 'barrier',
+                index: barrierIndex,
+                vn: vn,
+                speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                contactSpeed: null,
+                energy: keBeforeEvent,
+                cnEff: barrierCn,
+                ctEff: barrierCt
+            });
+        }
 
         // Decompose velocity
         const vtX = this.vx - vn * nx;
@@ -694,6 +910,10 @@ class Rock {
         const penetration = terrainY - (this.y - this.radius);
 
         if (penetration <= 0) return false;
+
+        // Contacto detectado con el terreno (P0.2-β, C1): abre episodio y
+        // cierra el vuelo vigente, incluso si el contacto es sostenido.
+        this.noteSurfaceContact('terrain');
 
         const normal = terrain.getSurfaceNormalAt(this.x);
 
@@ -770,6 +990,23 @@ class Rock {
                 // Save for fragmentation check (impacts only — sustained
                 // contact must never trigger fragmentation, T0.7b fix 1).
                 this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
+
+                // Evento C1 previo al impulso: modelo de punto, sin punto de
+                // contacto; coeficientes efectivos Kn/Kt.
+                if (-vn >= 0.5) {
+                    // P02B-3: fuera del perfil, el tramo extremo más cercano
+                    // (solo dato; Kn/Kt no dependen del tramo).
+                    this.recordImpactEvent({
+                        surface: 'terrain',
+                        index: this._impactSegmentIndexAt(terrain, this.x),
+                        vn: vn,
+                        speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                        contactSpeed: null,
+                        energy: keBefore,
+                        cnEff: kn,
+                        ctEff: kt
+                    });
+                }
 
                 const vtX = this.vx - vn * rnx;
                 const vtY = this.vy - vn * rny;
@@ -865,6 +1102,9 @@ class Rock {
 
         if (deepestPenetration <= 0 || contactIndex < 0) return false;
 
+        // Contacto detectado con el terreno (P0.2-β, C1).
+        this.noteSurfaceContact('terrain');
+
         this.bounces++;
 
         const contactVertex = vertices[contactIndex];
@@ -903,6 +1143,20 @@ class Rock {
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
+
+        // Evento C1 previo al impulso (terreno, método nonsmooth).
+        if (-vDotN >= 0.5) {
+            this.recordImpactEvent({
+                surface: 'terrain',
+                index: this._impactSegmentIndexAt(terrain, contactVertex.x),
+                vn: vDotN,
+                speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                contactSpeed: Math.sqrt(vContactX * vContactX + vContactY * vContactY),
+                energy: keBefore,
+                cnEff: cn,
+                ctEff: mu
+            });
+        }
 
         // Poisson impact law — normal impulse
         const rCrossN = rx * rny - ry * rnx;
@@ -988,6 +1242,9 @@ class Rock {
 
         if (deepestPenetration <= 0 || contactIndex < 0) return false;
 
+        // Contacto detectado con el terreno (P0.2-β, C1).
+        this.noteSurfaceContact('terrain');
+
         this.bounces++;
 
         const contactVertex = vertices[contactIndex];
@@ -1026,6 +1283,20 @@ class Rock {
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
+
+        // Evento C1 previo al impulso (terreno, método rígido).
+        if (-vDotN >= 0.5) {
+            this.recordImpactEvent({
+                surface: 'terrain',
+                index: this._impactSegmentIndexAt(terrain, contactVertex.x),
+                vn: vDotN,
+                speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                contactSpeed: Math.sqrt(vContactX * vContactX + vContactY * vContactY),
+                energy: keBefore,
+                cnEff: cn,
+                ctEff: ct
+            });
+        }
 
         if (energyModel === 'energy-ratio') {
             const vn = this.vx * rnx + this.vy * rny;
@@ -1219,6 +1490,20 @@ class PhysicsEngine {
      * @returns {number} Varied coefficient
      */
     randomVariation(base, variability, paramType) {
+        return Math.max(0, Math.min(1, base * this.variationFactor(variability, paramType)));
+    }
+
+    /**
+     * Factor de variación del paso (P0.2-β, I4). Es el mismo sorteo que usaba
+     * `randomVariation`, separado del valor base para poder aplicar la
+     * variabilidad al Cn/Ct de cada tramo sin alterar el orden, la cantidad
+     * de sorteos ni la correlación.
+     *
+     * @param {number} variability - Variabilidad porcentual (0-50)
+     * @param {string} paramType - 'cn' o 'ct' para la correlación
+     * @returns {number} Factor multiplicativo (1 ± variabilidad/100)
+     */
+    variationFactor(variability, paramType) {
         const variation = variability / 100;
         let factor;
 
@@ -1235,7 +1520,7 @@ class PhysicsEngine {
             factor = 1 + (Math.random() * 2 - 1) * variation;
         }
 
-        return Math.max(0, Math.min(1, base * factor));
+        return factor;
     }
 
     /**
@@ -1277,10 +1562,17 @@ class PhysicsEngine {
         const compensationBeforeStep = rock._elapsedTimeCompensation;
         let spawnedChildren = null;
 
-        const cn = this.randomVariation(this.cn, this.cnVariability, 'cn');
-        const ct = this.randomVariation(this.ct, this.ctVariability, 'ct');
-        const kn = this.randomVariation(this.kn, this.cnVariability, 'cn');
-        const kt = this.randomVariation(this.kt, this.ctVariability, 'ct');
+        // I3: mismos sorteos, mismo orden. El factor se separa del valor base
+        // para aplicarlo también al Cn/Ct de cada tramo (I4/U4).
+        const cnFactor = this.variationFactor(this.cnVariability, 'cn');
+        const ctFactor = this.variationFactor(this.ctVariability, 'ct');
+        const knFactor = this.variationFactor(this.cnVariability, 'cn');
+        const ktFactor = this.variationFactor(this.ctVariability, 'ct');
+
+        const cn = Math.max(0, Math.min(1, this.cn * cnFactor));
+        const ct = Math.max(0, Math.min(1, this.ct * ctFactor));
+        const kn = Math.max(0, Math.min(1, this.kn * knFactor));
+        const kt = Math.max(0, Math.min(1, this.kt * ktFactor));
 
         // Culling bounds: derived from the terrain when available, legacy
         // fixed values otherwise. Computed once per step, not per sub-step.
@@ -1302,12 +1594,17 @@ class PhysicsEngine {
             const elapsed = elapsedBeforeStep + correctedDt;
             rock._elapsedTimeCompensation = (elapsed - elapsedBeforeStep) - correctedDt;
             rock.elapsedTime = elapsed;
-            rock.handleCollision(terrain, cn, ct, this.energyModel, this.energyRatio, this.calcMethod, kn, kt);
+            // C3: muestra de vuelo después de update y antes de la colisión.
+            rock.sampleFlightHeight(terrain);
+            rock.handleCollision(terrain, cn, ct, this.energyModel, this.energyRatio, this.calcMethod, kn, kt, cnFactor, ctFactor);
 
             // Barrier collision (independent of terrain)
             if (!rock.isResting && barriers && barriers.length > 0) {
                 rock.handleBarrierCollisions(barriers);
             }
+
+            // C1: cierra los episodios sin contacto en este sub-paso.
+            rock.closeImpactEpisodes();
 
             rock.sampleDownhillAdvance();
 

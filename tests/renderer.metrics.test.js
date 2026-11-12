@@ -7,7 +7,8 @@ function rock(overrides = {}) {
     return { releaseX: 10, releaseY: 40, finalX: 30, finalY: 20, sourceIndex: 0,
         downhillSign: 1, maxDownhillAdvance: 20, cullBoundary: null, stopReason: 'rest',
         isResting: true, isCore: false, generation: 0, maxKineticEnergy: 1000,
-        maxBounceHeight: 2, maxImpactVelocity: 4, bounces: 3, impactEnergies: [], ...overrides };
+        maxBounceHeight: 2, maxImpactVelocity: 4, maxFlightHeight: 2.5,
+        maxImpactNormalSpeed: 3.5, bounces: 3, impactEnergies: [], ...overrides };
 }
 function canvas() {
     const calls = [];
@@ -58,8 +59,8 @@ test('dashboard usa reposo central para puntos y ejes honestos', () => {
     assert.ok(texts(charts['chart-runout-dist']).includes('Alcance final relativo (m)'));
     assert.ok(texts(charts['chart-energy-hist']).includes('Energía cinética máx. por roca (kJ)'));
     assert.ok(texts(charts['chart-energy-hist']).some(t => /N\s*=\s*2/.test(t)));
-    assert.ok(texts(charts['chart-bounce-distance']).includes('Altura del centro al contacto (m)'));
-    assert.ok(texts(charts['chart-velocity-distance']).includes('Velocidad máx. de trayectoria (m/s)'));
+    assert.ok(texts(charts['chart-bounce-distance']).includes('Altura de vuelo del centro (m)'));
+    assert.ok(texts(charts['chart-velocity-distance']).includes('Velocidad normal de impacto, máx. (m/s)'));
 });
 test('curva relativa conserva valores negativos y porcentaje sobre N en reposo', () => {
     const { renderer, stats, charts, terrain } = setup();
