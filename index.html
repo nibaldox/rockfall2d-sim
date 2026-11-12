@@ -190,6 +190,14 @@
                                 <label data-tooltip="Coordenada horizontal del punto donde se liberan las rocas. Define desde dónde caen.">Posición X (m):</label>
                                 <input type="number" id="release-x" value="10" step="0.1">
                             </div>
+                            <div class="control-group">
+                                <label for="downhill-mode">Sentido de descenso:</label>
+                                <select id="downhill-mode">
+                                    <option value="auto">Automático</option>
+                                    <option value="+x">Hacia +X</option>
+                                    <option value="-x">Hacia −X</option>
+                                </select>
+                            </div>
                             <div class="control-group" id="release-y-group">
                                 <label data-tooltip="Altura del punto de liberación respecto al nivel de referencia. Mayor valor = más altura.">Posición Y (m):</label>
                                 <input type="number" id="release-y" value="55" step="0.1">
@@ -713,9 +721,9 @@
                         <p class="help-text" id="results-placeholder-msg">Ejecuta una simulación para ver resultados.</p>
                         <div id="results-sidebar-content" style="display:none;">
                             <div class="control-group">
-                                <label data-tooltip="Resalta en el canvas las zonas donde las rocas llegan con más del 50% de su energía máxima.">Mostrar zonas de riesgo:</label>
+                                <label data-tooltip="Muestra las posiciones finales de las rocas en reposo.">Posiciones finales (reposo):</label>
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="show-risk-zones"> Superior al 50% energía
+                                    <input type="checkbox" id="show-risk-zones"> Posiciones finales (reposo)
                                 </label>
                                 <label class="checkbox-label" data-tooltip="Muestra bandas de probabilidad de alcance (P10, P50, P83, P95) sobre el perfil. Se calcula al finalizar la simulación.">
                                     <input type="checkbox" id="show-probability-map"> Mapa de probabilidad
@@ -826,79 +834,85 @@
                 </div>
                 <div class="dashboard-stats" id="dashboard-stats-row">
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Rocas</span>
+                        <span class="dash-stat-label">Rocas en reposo</span>
                         <span class="dash-stat-val" id="dash-stat-total">-</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Energía Máx</span>
+                        <span class="dash-stat-label">Energía cinética máx. (kJ)</span>
                         <span class="dash-stat-val" id="dash-stat-max-ke">-</span>
                         <span class="dash-stat-unit">kJ</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Altura Máx Rebote</span>
+                        <span class="dash-stat-label">Altura del centro al contacto máx. (m)</span>
                         <span class="dash-stat-val" id="dash-stat-max-bounce">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Runout Máx</span>
+                        <span class="dash-stat-label">Alcance final relativo máx. (m)</span>
                         <span class="dash-stat-val" id="dash-stat-max-runout">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Vel. Impacto Máx</span>
+                        <span class="dash-stat-label">Velocidad máx. de trayectoria (m/s)</span>
                         <span class="dash-stat-val" id="dash-stat-max-vel">-</span>
                         <span class="dash-stat-unit">m/s</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Ángulo Savigny</span>
+                        <span class="dash-stat-label">Ángulo de alcance mín. (°)</span>
                         <span class="dash-stat-val" id="dash-stat-savigny">-</span>
                         <span class="dash-stat-unit">°</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">P95 Runout</span>
+                        <span class="dash-stat-label">Alcance máximo P95 (m)</span>
                         <span class="dash-stat-val" id="dash-stat-p95">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
                 </div>
             </div>
+            <div class="dashboard-stats">
+                <div class="dash-stat-badge"><span class="dash-stat-label">Energía cinética máx. de trayectoria (kJ)</span><span class="dash-stat-val" id="stat-max-ke">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Energía cinética máx. por roca, media (kJ)</span><span class="dash-stat-val" id="stat-mean-ke">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Altura del centro al contacto, máx. (m)</span><span class="dash-stat-val" id="stat-max-bounce">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final relativo máx. (m)</span><span class="dash-stat-val" id="stat-max-runout">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Velocidad máx. de trayectoria (m/s)</span><span class="dash-stat-val" id="stat-max-velocity">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Contactos detectados, máx. (conteo interno; no son impactos)</span><span class="dash-stat-val" id="stat-max-bounces">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Ángulo de alcance mín. (°)</span><span class="dash-stat-val" id="stat-savigny-angle">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Rocas en reposo / evaluadas</span><span class="dash-stat-val" id="stat-n-rest">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Salen del perfil aguas abajo (%)</span><span class="dash-stat-val" id="stat-pct-leaving">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Alcance máximo P95 (m)</span><span class="dash-stat-val" id="stat-reach-p95">—</span></div>
+            </div>
+            <div id="stats-warnings" role="status"></div>
             <div class="dashboard-grid">
                 <div class="chart-panel">
-                    <h4>Distribución de Energía Cinética</h4>
+                    <h4>Energía cinética máx. por roca</h4>
                     <canvas id="chart-energy-hist" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Energía vs Distancia</h4>
+                    <h4>Energía vs X final</h4>
                     <canvas id="chart-energy-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Zonas de Acumulación</h4>
+                    <h4>Acumulación en X final</h4>
                     <canvas id="chart-accumulation" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Altura de Rebote vs Distancia</h4>
+                    <h4>Altura del centro al contacto vs X final</h4>
                     <canvas id="chart-bounce-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Velocidad de Impacto vs Distancia</h4>
+                    <h4>Velocidad máx. de trayectoria vs X final</h4>
                     <canvas id="chart-velocity-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Distribución de Runout</h4>
+                    <h4>Alcance final relativo acumulado de las rocas en reposo</h4>
                     <canvas id="chart-runout-dist" width="600" height="350"></canvas>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Hidden stat elements for updateUI compatibility -->
+    <!-- Hidden histogram canvas for compatibility -->
     <div style="display:none;">
-        <span id="stat-max-ke">-</span>
-        <span id="stat-mean-ke">-</span>
-        <span id="stat-max-bounce">-</span>
-        <span id="stat-max-runout">-</span>
-        <span id="stat-max-velocity">-</span>
-        <span id="stat-max-bounces">-</span>
-        <span id="stat-savigny-angle">-</span>
         <canvas id="histogram-canvas" width="380" height="200"></canvas>
     </div>
 
@@ -909,10 +923,10 @@
     <script src="js/view3d.js?v=3"></script>
     <script src="js/view3d-terrain.js?v=1"></script>
     <script src="js/stl.js?v=7"></script>
-    <script src="js/physics.js?v=10"></script>
-    <script src="js/simulation.js?v=9"></script>
-    <script src="js/renderer.js?v=5"></script>
-    <script src="js/stats.js?v=5"></script>
+    <script src="js/physics.js?v=11"></script>
+    <script src="js/simulation.js?v=10"></script>
+    <script src="js/renderer.js?v=6"></script>
+    <script src="js/stats.js?v=7"></script>
     <script src="js/math3d.js?v=1"></script>
     <script src="js/physics3d.js?v=1"></script>
     <script src="js/source-zones.js?v=1"></script>
@@ -920,9 +934,9 @@
     <script src="js/sim3d-pool.js?v=1"></script>
     <script src="js/results3d.js?v=1"></script>
     <script src="js/view3d-trajectories.js?v=1"></script>
-    <script src="js/app.js?v=11"></script>
+    <script src="js/app.js?v=13"></script>
     <script src="js/app-stl.js?v=2"></script>
-    <script src="js/app-worker.js?v=5"></script>
+    <script src="js/app-worker.js?v=6"></script>
     <script src="js/app-modes.js?v=2"></script>
     <script src="js/app-import.js?v=4"></script>
     <script src="js/app-profile3d.js?v=2"></script>

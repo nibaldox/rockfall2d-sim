@@ -1119,26 +1119,22 @@ class App {
         // Update stat badges
         const r = this.stats.results;
         if (r) {
-            document.getElementById('dash-stat-total').textContent = r.finishedRocks;
-            document.getElementById('dash-stat-max-ke').textContent = r.kineticEnergy.max.toFixed(1);
-            document.getElementById('dash-stat-max-bounce').textContent = r.bounceHeight.max.toFixed(1);
-            document.getElementById('dash-stat-max-runout').textContent = r.runoutDistance.max.toFixed(1);
-            document.getElementById('dash-stat-max-vel').textContent = r.impactVelocity.max.toFixed(1);
-            document.getElementById('dash-stat-savigny').textContent =
-                r.savignyAngle !== null ? r.savignyAngle.toFixed(1) : '-';
-            document.getElementById('dash-stat-p95').textContent = r.runoutDistance.p95.toFixed(1);
+            const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
+            document.getElementById('dash-stat-total').textContent = r.population.rest;
+            document.getElementById('dash-stat-max-ke').textContent = format(r.kineticEnergy?.max);
+            document.getElementById('dash-stat-max-bounce').textContent = format(r.bounceHeight?.max);
+            document.getElementById('dash-stat-max-runout').textContent = format(r.finalRunout?.max);
+            document.getElementById('dash-stat-max-vel').textContent = format(r.impactVelocity?.max);
+            document.getElementById('dash-stat-savigny').textContent = format(r.reachAngle?.min);
+            const p95 = r.reachBounds?.p95;
+            document.getElementById('dash-stat-p95').textContent = p95 ? `${p95.exact ? '' : '≥ '}${format(p95.lower)}` : '—';
         }
 
         // Render charts after a frame so the DOM has updated dimensions
         const resultEpoch = this._runEpoch;
         requestAnimationFrame(() => {
             if (!this._resultsValid || resultEpoch !== this._runEpoch) return;
-            this.renderer.renderResultsDashboard(
-                this.simulation.rocks,
-                this.terrain,
-                this.releasePoint,
-                r
-            );
+            this.renderer.renderResultsDashboard(r, this.terrain);
         });
     }
 
@@ -1543,6 +1539,7 @@ class App {
 
     getSimulationParams() {
         return {
+            downhillMode: document.getElementById('downhill-mode')?.value || 'auto',
             numRocks: clamp(document.getElementById('num-rocks').value, 1, 10000, 100),
             gravity: clamp(document.getElementById('gravity').value, 1, 20, 9.81),
             cn: this.physics.cn,
@@ -1564,6 +1561,8 @@ class App {
     // _completeRun (censura) y onerror de runSimulationWithWorker.
     _invalidateResults() {
         this._resultsValid = false;
+        const count = document.getElementById('rock-count-display');
+        if (count) { count.textContent = 'Rocas: 0'; count.classList.remove('warning-amber', 'warning-red'); }
         this.stats.results = null;
         this.renderer.probabilityPercentiles = null;
         const ids = ['stat-max-ke', 'stat-mean-ke', 'stat-max-bounce', 'stat-max-runout',
@@ -1571,6 +1570,11 @@ class App {
             'dash-stat-max-ke', 'dash-stat-max-bounce', 'dash-stat-max-runout',
             'dash-stat-max-vel', 'dash-stat-savigny', 'dash-stat-p95'];
         ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '-'; });
+        ['stat-n-rest', 'stat-pct-leaving', 'stat-reach-p95'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.textContent = '—';
+        });
+        const warnings = document.getElementById('stats-warnings');
+        if (warnings) warnings.textContent = '';
         const dashboard = document.getElementById('results-dashboard');
         if (dashboard) {
             dashboard.classList.add('hidden');
@@ -1607,6 +1611,12 @@ class App {
                 !finiteArray(rock.impactEnergies) || !Array.isArray(rock.bouncePoints) ||
                 !Array.from(rock.bouncePoints).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.energy)) ||
                 !Array.isArray(rock.shape) || !Array.from(rock.shape).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))) return false;
+            if (!Number.isFinite(rock.releaseX) || !Number.isFinite(rock.releaseY) ||
+                !Number.isInteger(rock.sourceIndex) || rock.sourceIndex < 0 ||
+                ![1, -1, null].includes(rock.downhillSign) ||
+                (rock.downhillSign === null ? rock.maxDownhillAdvance !== null : !Number.isFinite(rock.maxDownhillAdvance)) ||
+                !['minX', 'maxX', 'minY', 'maxY', null].includes(rock.cullBoundary) ||
+                (rock.stopReason !== 'culled' && rock.cullBoundary !== null)) return false;
             if (!rock.color || !['r', 'g', 'b'].every(key => Number.isFinite(rock.color[key]))) return false;
             return ['_colorActive', '_colorResting', '_colorStroke'].every(key => typeof rock[key] === 'string');
         };
@@ -1631,43 +1641,64 @@ class App {
             const key = allowed.includes(reason) ? reason : 'desconocido';
             counts[key] = (counts[key] || 0) + 1;
         });
-        const censored = status === 'safetyLimit' || incompatible ||
-            rocks.some(r => r && ['culled', 'maxTime', 'maxSteps', 'cancelled', 'safetyLimit'].includes(r.stopReason));
-        if (!censored) {
-            this.stats.compute(rocks, this.releasePoint);
-            this.stats.updateUI();
-            this.renderer.renderHistogram(this.histogramCanvas, rocks);
-            const sorted = rocks.filter(r => r.isResting).map(r => r.finalX).sort((a, b) => a - b);
-            if (sorted.length) {
-                const p = pct => {
-                    const idx = pct / 100 * (sorted.length - 1);
-                    const lo = Math.floor(idx), hi = Math.ceil(idx), f = idx - lo;
-                    return sorted[lo] * (1 - f) + sorted[hi] * f;
-                };
-                this.renderer.probabilityPercentiles = { p10: p(10), p50: p(50), p83: p(83), p95: p(95), mean: this.stats.results.runoutDistance.mean };
-            }
-            this._resultsValid = true;
-            const placeholder = document.getElementById('results-placeholder-msg');
-            const content = document.getElementById('results-sidebar-content');
-            if (placeholder) placeholder.style.display = 'none';
-            if (content) content.style.display = 'block';
-            ['btn-export-csv', 'btn-export-report', 'btn-dashboard-csv', 'btn-dashboard-report',
-                'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
-                const el = document.getElementById(id); if (el) el.disabled = false;
-            });
-        } else {
-            this._invalidateResults();
-        }
+        const invalid = status === 'safetyLimit' || incompatible ||
+            rocks.some(r => r && ['cancelled', 'safetyLimit'].includes(r.stopReason));
         const summary = Object.entries(counts).map(([reason, count]) => `${reason}: ${count}`).join(', ');
-        document.getElementById('simulation-status').textContent = censored
-            ? `Corrida incompleta/censurada${incompatible ? ' (protocolo incompatible)' : ''}: ${summary || 'sin datos'}${status === 'safetyLimit' ? ' (límite de seguridad)' : ''}`
-            : `Completado (${rocks.length} rocas${worker ? ', Worker' : ''})`;
+        let message;
+        if (invalid) {
+            this._invalidateResults();
+            message = `Corrida incompleta/censurada${incompatible ? ' (protocolo incompatible)' : ''}: ${summary || 'sin datos'}${status === 'safetyLimit' ? ' (límite de seguridad)' : ''}`;
+        } else {
+            this.stats.compute(rocks, this.releasePoint);
+            const result = this.stats.results;
+            if (result.status === 'bloqueado') {
+                const reason = result.blockedReason;
+                this._invalidateResults();
+                message = `Resultados bloqueados (${reason}): ${summary || 'sin datos'}`;
+            } else {
+                this.stats.updateUI();
+                this.renderer.renderHistogram(this.histogramCanvas, result);
+                const population = result.population;
+                const sign = rocks[0].downhillSign;
+                const sourceIndex = population.sources[0];
+                // Sin instantánea solo se admite compatibilidad con llamadas directas de prueba.
+                const snapshot = this._runSources;
+                const sources = snapshot ? (snapshot.epoch === this._runEpoch ? (snapshot.multi || [snapshot.single]) : []) :
+                    (this.multiReleaseEnabled && this.multiReleasePoints?.length ? this.multiReleasePoints : [this.releasePoint]);
+                const source = sources[sourceIndex];
+                const mapEligible = population.sources.length === 1 && population.directionResolved && result.reachBounds &&
+                    rocks.every(r => r.downhillSign === sign) && source && Number.isFinite(source.x);
+                this.renderer.probabilityPercentiles = mapEligible ? {
+                    originX: source.x, sign, title: 'Alcance máximo',
+                    bands: [10, 50, 83, 95].map(p => ({ label: `P${p}`, value: result.reachBounds[`p${p}`].lower, exact: result.reachBounds[`p${p}`].exact }))
+                } : null;
+                this._resultsValid = true;
+                const placeholder = document.getElementById('results-placeholder-msg');
+                const content = document.getElementById('results-sidebar-content');
+                if (placeholder) placeholder.style.display = 'none';
+                if (content) content.style.display = 'block';
+                ['btn-export-csv', 'btn-export-report', 'btn-dashboard-csv', 'btn-dashboard-report',
+                    'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
+                    const el = document.getElementById(id); if (el) el.disabled = false;
+                });
+                const warnings = result.warnings.map(w => w.message).join(' ');
+                let mapReason = '';
+                if (!mapEligible) {
+                    const cause = population.sources.length !== 1 ? 'varias fuentes o ninguna fuente' :
+                        !population.directionResolved || !rocks.every(r => r.downhillSign === sign) ? 'sentido ambiguo o no común' :
+                        !result.reachBounds ? 'cotas de alcance no disponibles' : 'origen nominal no disponible';
+                    mapReason = ` Mapa no disponible: ${cause}.`;
+                }
+                message = `${result.status === 'parcial' ? 'Resultado parcial' : 'Completado'} (${rocks.length} rocas${worker ? ', Worker' : ''}): ${summary}. ${warnings}${mapReason}`;
+            }
+        }
+        document.getElementById('simulation-status').textContent = message;
         document.getElementById('btn-run').disabled = false;
         document.getElementById('btn-stop').disabled = true;
         const fab = document.getElementById('fab-run');
         if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
         const count = document.getElementById('rock-count-display');
-        if (count) count.textContent = `Rocas: ${rocks.length}`;
+        if (count && this._resultsValid) count.textContent = `Rocas: ${rocks.length}`;
         if (this.simulation.frameCount > 0) this.activateTimeline();
     }
 
@@ -1727,6 +1758,12 @@ class App {
 
         this._runEpoch = (this._runEpoch || 0) + 1;
         const runEpoch = this._runEpoch;
+        // Guardar las coordenadas nominales ajustadas enviadas en esta época.
+        this._runSources = {
+            epoch: runEpoch,
+            single: { x: this.releasePoint.x, y: this.releasePoint.y },
+            multi: multiPoints && multiPoints.length ? multiPoints.map(p => ({ ...p })) : null
+        };
         if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
         if (this._worker) this._worker.terminate();
         this._worker = null;

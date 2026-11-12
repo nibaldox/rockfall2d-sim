@@ -36,7 +36,7 @@ function fixture(workerMode = true) {
         stop() { this.isRunning = false; this.rocks.forEach(r => { r.isResting = true; r.stopReason = 'cancelled'; }); },
         reset() { this.isRunning = false; this.rocks = []; this.frames = []; }, step() { this.steps = (this.steps || 0) + 1; }
     };
-    app.stats = { results: { old: true }, calls: 0, compute() { this.calls++; this.results = { runoutDistance: { mean: 1 } }; }, updateUI() {}, generateCSV() { this.exports = (this.exports || 0) + 1; }, generateReport() { this.exports = (this.exports || 0) + 1; } };
+    app.stats = { results: { old: true }, calls: 0, compute() { this.calls++; this.results = { status: 'completo', population: { rest: 1, sources: [0], directionResolved: true }, reachBounds: null, warnings: [] }; }, updateUI() {}, generateCSV() { this.exports = (this.exports || 0) + 1; }, generateReport() { this.exports = (this.exports || 0) + 1; } };
     app.renderer = { probabilityPercentiles: { old: true }, renderHistogram() {}, render() {}, renderResultsDashboard() {} };
     app.histogramCanvas = element('histogram'); app.canvas = element('canvas');
     app.getSimulationParams = () => ({ maxDuration: 30 }); app.hideTimeline = () => {}; app.activateTimeline = () => {}; app.render = () => {}; app._doRender = () => {};
@@ -44,7 +44,7 @@ function fixture(workerMode = true) {
     app._renderWorkerFrame = () => {};
     return { app, element, workers, frames, confirmation, Stats: ctx.SimRocas.Stats };
 }
-const rock = reason => ({ stopReason: reason, isResting: true, x: 1, y: 0, finalX: 1, finalY: 0,
+const rock = reason => ({ stopReason: reason, releaseX: 0, releaseY: 1, sourceIndex: 0, downhillSign: 1, maxDownhillAdvance: 1, cullBoundary: reason === 'culled' ? 'maxX' : null, isResting: true, x: 1, y: 0, finalX: 1, finalY: 0,
     stepsTaken: 1, elapsedTime: 1, rotation: 0, radius: 1, bounces: 1,
     maxKineticEnergy: 1000, maxBounceHeight: 2, maxImpactVelocity: 3,
     impactEnergies: [], trajectory: [], bouncePoints: [], shape: [{ x: 0, y: 0 }],
@@ -71,14 +71,15 @@ test('worker anterior no modifica corrida nueva con progress frame complete o er
     old.onerror({});
     assert.equal(element('simulation-status').textContent, before); assert.equal(app.stats.calls, 0); assert.equal(app.simulation.frames.length, 0); assert.equal(app._workerActive, true);
 });
-test('censura y seguridad conservan motivos sin agregados', () => {
+test('censura publicable y seguridad conservan motivos', () => {
     for (const [status, reason] of [['completed', 'culled'], ['completed', 'maxTime'],
         ['completed', 'maxSteps'], ['completed', 'cancelled'], ['completed', 'safetyLimit'],
         ['safetyLimit', 'safetyLimit'], ['completed', undefined], [undefined, 'rest']]) {
         const { app, workers, element } = fixture(); app.runSimulation();
         workers[0].onmessage({ data: { type: 'complete', status, rocks: [rock(reason)] } });
-        assert.equal(app.stats.calls, 0); assert.equal(app.simulation.rocks[0].stopReason, reason);
-        assert.match(element('simulation-status').textContent, /incomplet|censur|incompatible/i);
+        const publishable = status === 'completed' && ['culled', 'maxTime', 'maxSteps'].includes(reason);
+        assert.equal(app.stats.calls, publishable ? 1 : 0); assert.equal(app.simulation.rocks[0].stopReason, reason);
+        assert.match(element('simulation-status').textContent, publishable ? /culled|maxTime|maxSteps/ : /incomplet|censur|incompatible/i);
     }
 });
 test('final natural válido publica resultados', () => {
@@ -117,17 +118,17 @@ test('cancelación normal conserva motivo sin agregados y callbacks previos se i
     assert.equal(element('simulation-status').textContent, status);
 });
 
-test('fin normal censurado conserva roca y bloquea resultados', () => {
+test('fin normal censurado conserva roca y publica resultados', () => {
     const { app, element } = fixture(false);
     app.runSimulation();
     const rocks = [rock('maxSteps'), rock('rest')];
     app.simulation.rocks = rocks;
     app.simulation.onComplete(rocks);
-    assert.equal(app.stats.calls, 0);
+    assert.equal(app.stats.calls, 1);
     assert.match(element('simulation-status').textContent, /maxSteps: 1/);
     assert.equal(app.simulation.rocks[0].stopReason, 'maxSteps');
     app.showResultsTab();
-    assert.equal(element('results-sidebar-content').style.display, 'none');
+    assert.equal(element('results-sidebar-content').style.display, 'block');
 });
 
 test('error worker elimina rocas y callbacks antiguos después de reiniciar', () => {
@@ -212,7 +213,7 @@ test('Stats real se publica en fin válido y se invalida al reiniciar', () => {
     const result = { ...rock('rest'), maxKineticEnergy: 1000, maxBounceHeight: 2,
         maxImpactVelocity: 3, bounces: 1, impactEnergies: [] };
     workers[0].onmessage({ data: { type: 'complete', status: 'completed', rocks: [result] } });
-    assert.equal(app.stats.results.finishedRocks, 1);
+    assert.equal(app.stats.results.population.rest, 1);
     assert.equal(element('stat-max-ke').textContent, '1.0');
     assert.equal(element('btn-export-csv').disabled, false);
     assert.equal(element('results-sidebar-content').style.display, 'block');
@@ -298,9 +299,9 @@ test('complete real del worker se publica con Stats real y acepta cero y negativ
     const raw = fixture(); raw.app.stats = new raw.Stats(); raw.app.runSimulation();
     raw.workers[0].onmessage({ data: original });
     assert.doesNotMatch(raw.element('simulation-status').textContent, /incompatible/i);
-    if (original.rocks[0].stopReason !== 'rest') assert.equal(raw.app._resultsValid, false);
+    if (['culled', 'maxTime', 'maxSteps'].includes(original.rocks[0].stopReason)) assert.equal(raw.app._resultsValid, true);
     // Solo el motivo se cambia sintéticamente: el resto es emitido por el worker real.
-    message.rocks[0].stopReason = 'rest';
+    message.rocks[0].stopReason = 'rest'; message.rocks[0].cullBoundary = null;
     const negative = structuredClone(message);
     const { app, workers, Stats } = fixture(); app.stats = new Stats(); app.runSimulation();
     workers[0].onmessage({ data: message }); assert.equal(app._resultsValid, true);
@@ -365,8 +366,8 @@ test('finalización normal con motor real conserva censura compatible', () => {
     while (app.simulation.isRunning) app.simulation.step();
     assert.ok(app.simulation.rocks.length > 0);
     assert.doesNotMatch(element('simulation-status').textContent, /incompatible/i);
-    assert.match(element('simulation-status').textContent, /incompleta|censurada/i);
-    assert.equal(app.stats.results, null);
+    assert.match(element('simulation-status').textContent, /parcial/i);
+    assert.equal(app.stats.results.status, 'parcial');
 });
 
 test('campos numéricos incompatibles se rechazan en ambos caminos', () => {

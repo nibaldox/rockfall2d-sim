@@ -46,6 +46,12 @@ class Rock {
         }
         this.x = x;
         this.y = y;
+        this.releaseX = x;
+        this.releaseY = y;
+        this.sourceIndex = 0;
+        this.downhillSign = null;
+        this.maxDownhillAdvance = null;
+        this.cullBoundary = null;
         this.vx = initialVelocity * Math.cos(angle * Math.PI / 180);
         this.vy = initialVelocity * Math.sin(angle * Math.PI / 180);
         this.diameter = diameter;
@@ -467,8 +473,15 @@ class Rock {
      * @param {{nx: number, ny: number}} normal - Surface normal at impact
      * @returns {boolean} true if rock is resting
      */
+    sampleDownhillAdvance() {
+        if (this.downhillSign !== null) {
+            this.maxDownhillAdvance = Math.max(this.maxDownhillAdvance, this.downhillSign * (this.x - this.releaseX));
+        }
+    }
+
     finish(reason) {
         if (this.stopReason !== null) return false;
+        this.sampleDownhillAdvance();
         this.stopReason = reason;
         this.isResting = true;
         this.finalX = this.x;
@@ -1296,6 +1309,8 @@ class PhysicsEngine {
                 rock.handleBarrierCollisions(barriers);
             }
 
+            rock.sampleDownhillAdvance();
+
             // Check for fragmentation after collision
             if (!rock.isResting && this.fragmentationEnabled && rock._lastCollision) {
                 const { normal, vn } = rock._lastCollision;
@@ -1331,6 +1346,7 @@ class PhysicsEngine {
             if (rock.isResting) break;
 
             if (rock.x < cullMinX || rock.x > cullMaxX || rock.y < cullMinY) {
+                rock.cullBoundary = rock.x < cullMinX ? 'minX' : rock.x > cullMaxX ? 'maxX' : 'minY';
                 rock.finish('culled');
                 break;
             }
@@ -1571,6 +1587,14 @@ class PhysicsEngine {
             }
         }
 
+        for (const fragment of core ? [...children, core] : children) {
+            fragment.releaseX = rock.releaseX;
+            fragment.releaseY = rock.releaseY;
+            fragment.sourceIndex = rock.sourceIndex;
+            fragment.downhillSign = rock.downhillSign;
+            fragment.maxDownhillAdvance = fragment.downhillSign === null ? null :
+                fragment.downhillSign * (fragment.x - fragment.releaseX);
+        }
         return { children, core };
     }
 

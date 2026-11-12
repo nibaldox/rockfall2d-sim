@@ -14,6 +14,7 @@ class Simulation {
         this._maxStepsExplicit = false;
         this.maxDuration = 30;
         this.ignoreResting = false;
+        this.downhillMode = 'auto';
         this.onUpdate = null;
         this.onComplete = null;
         // Frame recording for timeline playback (throttled)
@@ -48,6 +49,7 @@ class Simulation {
         this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
         this._maxStepsExplicit = false;
         this.ignoreResting = !!params.ignoreResting;
+        this.downhillMode = params.downhillMode === '+x' || params.downhillMode === '-x' ? params.downhillMode : 'auto';
 
         // Sync fragmentation properties
         this.physics.fragmentationEnabled = params.fragmentationEnabled !== undefined ? params.fragmentationEnabled : true;
@@ -86,6 +88,13 @@ class Simulation {
 
         for (let oi = 0; oi < origins.length; oi++) {
             const origin = origins[oi];
+            let downhillSign = this.downhillMode === '+x' ? 1 : this.downhillMode === '-x' ? -1 : null;
+            if (this.downhillMode === 'auto') {
+                const bounds = this.terrain.getBounds();
+                const clamp = x => bounds ? Math.max(bounds.minX, Math.min(bounds.maxX, x)) : x;
+                const delta = this.terrain.getHeightAt(clamp(origin.x - 10)) - this.terrain.getHeightAt(clamp(origin.x + 10));
+                downhillSign = delta >= 0.5 ? 1 : delta <= -0.5 ? -1 : null;
+            }
             const count = Math.min(perOrigin, this.totalRocks - rocksCreated);
             const originVel = origin.velocity !== undefined ? origin.velocity : initialVelocity;
             const originAng = origin.angle !== undefined ? origin.angle : angle;
@@ -113,6 +122,9 @@ class Simulation {
                     shapeType,
                     aspectRatio
                 );
+                rock.sourceIndex = oi;
+                rock.downhillSign = downhillSign;
+                rock.maxDownhillAdvance = downhillSign === null ? null : 0;
                 rock.stepsTaken = 0;
                 rock.elapsedTime = 0;
                 rock.ignoreResting = this.ignoreResting;
