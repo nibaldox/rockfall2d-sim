@@ -34,6 +34,19 @@ class Simulation {
         this.maxFrames = 5000; // Hard cap to prevent OOM
         // Barriers (line segments for containment structures)
         this.barriers = [];
+        // P0.5: semilla opcional de la corrida y su generador (null = Math.random).
+        this.seed = undefined;
+        this._rng = null;
+    }
+
+    /**
+     * P0.5: único punto de sorteo de la simulación. Sin semilla usa
+     * `Math.random`, resuelto en cada llamada.
+     * @returns {number} Valor en [0, 1)
+     */
+    rng() {
+        const generator = this._rng;
+        return generator ? generator() : Math.random();
     }
 
     get maxStepsPerRock() {
@@ -46,6 +59,11 @@ class Simulation {
     }
 
     configure(params) {
+        // P0.5: `params.seed` opcional (entero en [0, 2^32 - 1]). Una semilla
+        // inválida lanza antes de cambiar la configuración; `undefined` deja
+        // la corrida con `Math.random`.
+        if (params.seed !== undefined) globalThis.SimRocas.createRng(params.seed);
+        this.seed = params.seed;
         this.totalRocks = effectiveNumber(params.numRocks, 100, false, true);
         this.animationSpeed = effectiveNumber(params.animationSpeed, 50, false, false);
         this.physics.gravity = effectiveNumber(params.gravity, 9.81, false, false);
@@ -71,6 +89,10 @@ class Simulation {
         // P0.4: contador de `id` por corrida, sin sorteos. El modo normal y el
         // Worker asignan así los mismos `id`.
         globalThis.SimRocas.nextRockId = 1;
+        // P0.5: un generador nuevo por corrida, compartido con el motor, para
+        // que repetir `start` con la misma semilla repita la corrida.
+        this._rng = this.seed === undefined ? null : globalThis.SimRocas.createRng(this.seed);
+        if (typeof this.physics.setRng === 'function') this.physics.setRng(this._rng);
         this.rocks = [];
         this.activeRocks = [];
         this.finishedRocks = [];
@@ -113,8 +135,8 @@ class Simulation {
             const originAng = origin.angle !== undefined ? origin.angle : angle;
 
             for (let i = 0; i < count; i++) {
-                const jitterX = (Math.random() - 0.5) * diameter;
-                const jitterY = isDetachment ? 0 : (Math.random() - 0.5) * diameter * 0.5;
+                const jitterX = (this.rng() - 0.5) * diameter;
+                const jitterY = isDetachment ? 0 : (this.rng() - 0.5) * diameter * 0.5;
                 let rx = origin.x + jitterX;
                 let ry = origin.y + jitterY;
 

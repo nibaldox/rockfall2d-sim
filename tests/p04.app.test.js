@@ -232,7 +232,7 @@ test('versionado E1.1: suben solo los ?v= del §5 y WORKER_VERSION pasa de 9 a 1
     const htmlNow = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
     const now = versions(htmlNow);
     const rendererChanged = head('js/renderer.js') !== fs.readFileSync(path.join(ROOT, 'js/renderer.js'), 'utf8');
-    const expected = { ...before, 'js/physics.js': 13, 'js/simulation.js': 12, 'js/app-worker.js': 9, 'js/app.js': 17, 'js/stats.js': 10,
+    const expected = { ...before, 'js/physics.js': 14, 'js/simulation.js': 13, 'js/app-worker.js': 10, 'js/app.js': 18, 'js/stats.js': 11,
         'js/renderer.js': rendererChanged ? 8 : 7 };
     assert.deepEqual(before['js/physics.js'], 12);
     assert.deepEqual(now, expected);
@@ -241,8 +241,13 @@ test('versionado E1.1: suben solo los ?v= del §5 y WORKER_VERSION pasa de 9 a 1
     const block = /^ {12}<div id="lineage-block" style="display:none;">\n[\s\S]*?\n {12}<\/div>\n/m;
     assert.match(htmlNow, block);
     assert.match(block.exec(htmlNow)[0], /Piezas finales/);
-    assert.equal(strip(htmlNow.replace(block, '')), strip(head('index.html')));
+    // P0.5: además se admiten SOLO el bloque del campo «Semilla» y el rótulo corregido de la correlación.
+    const seedBlock = /^ {28}<div class="control-group">\n {32}<label [^\n]*>Semilla:<\/label>\n[^\n]*id="sim-seed"[^\n]*\n[^\n]*id="seed-used"[^\n]*\n {28}<\/div>\n/m;
+    assert.match(htmlNow, seedBlock);
+    const labelNow = 'Correlacionar Cn/Ct (superficie dura: Cn y Ct altos)', labelBase = 'Correlacionar Cn/Ct (roca dura = alto Cn, bajo Ct)';
+    assert.equal(htmlNow.split(labelNow).length, 2);
+    assert.equal(strip(htmlNow.replace(block, '').replace(seedBlock, '').replace(labelNow, labelBase)), strip(head('index.html')));
     const workerVersion = source => Number(/const WORKER_VERSION = (\d+);/.exec(source)[1]);
     assert.equal(workerVersion(head('js/app-worker.js')), 9);
-    assert.equal(workerVersion(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8')), 10);
+    assert.equal(workerVersion(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8')), 11);
 });

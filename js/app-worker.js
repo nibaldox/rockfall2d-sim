@@ -5,7 +5,7 @@
 
 // Cache-busting del worker: al cambiar el protocolo o los scripts cargados
 // por js/worker.js, subir este número y el ?v= de los <script> de index.html.
-const WORKER_VERSION = 10;
+const WORKER_VERSION = 11;
 
 Object.assign(SimRocas.App.prototype, {
     runSimulationWithWorker(diameter, density, initVel, angle, shapeType, aspectRatio, params, multiPoints) {
@@ -64,7 +64,7 @@ Object.assign(SimRocas.App.prototype, {
                 }
                 const progress = Math.round(msg.data.progress * 100);
                 document.getElementById('simulation-status').textContent =
-                    `Simulando (Worker)... ${progress}% (${msg.data.simulatedCount}/${msg.data.totalRocks})`;
+                    `Simulando (Worker)... ${progress}% (${msg.data.simulatedCount}/${msg.data.totalRocks}) · semilla ${params.seed}`;
             }
 
             if (msg.type === 'frame') {

@@ -165,7 +165,7 @@ for (const method of METHODS) {
         assert.ok(results, 'Stats publica');
         assert.doesNotMatch(f.element('simulation-status').textContent, /incompatible/);
         assert.notEqual(results.status, 'bloqueado');
-        assert.equal(results.contractVersion, 'P0.4');
+        assert.equal(results.contractVersion, 'P0.5');
         assert.equal(f.element('btn-export-impacts').disabled, false);
 
         // Agregados β sobre la población en reposo.
@@ -196,7 +196,7 @@ for (const method of METHODS) {
             'Impactos por roca (vn ≥ 0.5 m/s)']) assert.ok(labels.includes(label), label);
         assert.equal(labels.includes('Altura del centro al contacto (m)'), false);
         const csv = f.app.stats.generateCSV();
-        assert.match(csv, /Versión del contrato de resultados,P0\.4,/);
+        assert.match(csv, /Versión del contrato de resultados,P0\.5,/);
         assert.doesNotMatch(csv + f.app.stats.generateReport(), /NaN|Infinity|undefined/);
 
         // CSV de impactos: una fila por evento guardado, columnas exactas.

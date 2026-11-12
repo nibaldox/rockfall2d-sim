@@ -104,7 +104,7 @@ test('sin fragmentación: results igual al de 8bd08df2 salvo X1 y X2, bloque ocu
             const old = baseStats();
             const b = old.compute(...f.computeArgs);
             assert.equal(b.contractVersion, 'P0.2-beta', label);
-            assert.equal(a.contractVersion, 'P0.4', `${label}: X1`);
+            assert.equal(a.contractVersion, 'P0.5', `${label}: X1`);
             assert.equal(Object.hasOwn(a, 'lineage'), false, `${label}: sin clave lineage`);
             assert.ok(a.impactEvents.length > 0, `${label}: hay eventos`);
             for (const e of a.impactEvents) {
@@ -115,8 +115,13 @@ test('sin fragmentación: results igual al de 8bd08df2 salvo X1 y X2, bloque ocu
             const strip = r => JSON.stringify({ ...r, contractVersion: undefined,
                 impactEvents: r.impactEvents.map(({ rootId, fragmentKind, ...rest }) => rest) });
             assert.equal(strip(a), strip(b), `${label}: results`);
-            const csvA = f.app.stats.generateCSV().split('\n'), csvB = old.generateCSV().split('\n');
-            assert.deepEqual(csvA.filter((line, i) => line !== csvB[i]), ['Versión del contrato de resultados,P0.4' + ','.repeat(13)], label);
+            const csvFull = f.app.stats.generateCSV().split('\n'), csvB = old.generateCSV().split('\n');
+            // X3: se excluyen exactamente sus 4 filas, que van justo después de la versión del contrato.
+            const iVer = csvFull.findIndex(line => line.startsWith('Versión del contrato de resultados,'));
+            assert.deepEqual(csvFull.slice(iVer + 1, iVer + 5).map(line => line.split(',')[0]), ['Semilla', 'Generador pseudoaleatorio', 'Versión del motor', 'Parámetros correlacionados'], `${label}: filas X3 tras la versión`);
+            const csvA = csvFull.filter(line => !/^(?:Semilla|Generador pseudoaleatorio|Versión del motor|Parámetros correlacionados),/.test(line));
+            assert.equal(csvFull.length - csvA.length, 4, `${label}: exactamente 4 filas X3`);
+            assert.deepEqual(csvA.filter(line => !/^(?:Semilla|Generador pseudoaleatorio|Versión del motor|Parámetros correlacionados),/.test(line)).filter((line, i) => line !== csvB[i]), ['Versión del contrato de resultados,P0.5' + ','.repeat(13)], label);
             assert.equal(csvA.length, csvB.length, label);
             assert.equal(f.element('lineage-block').style.display, 'none', `${label}: bloque oculto`);
             assert.doesNotMatch(f.element('simulation-status').textContent, /piezas finales|rocas originales/i, label);
@@ -139,7 +144,7 @@ for (const calcMethod of ['rigid-body', 'lumped-mass']) {
             assert.equal(f.app._resultsValid, true, label);
             assert.doesNotMatch(f.element('simulation-status').textContent, /incompatible|bloquead/i, label);
             assert.equal(r.blockedReason, null, label);
-            assert.equal(r.contractVersion, 'P0.4', label);
+            assert.equal(r.contractVersion, 'P0.5', label);
             assert.equal(r.totalRocks, FRAG_ROCKS, `${label}: N = primarias`);
             assert.equal(r.population.released, FRAG_ROCKS, label);
             assert.ok(r.warnings.some(w => w.code === 'fragmentacion'), `${label}: advertencia informativa`);

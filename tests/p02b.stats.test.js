@@ -253,14 +253,14 @@ test('sin runInfo no aparecen filas de tramo ni de variabilidad', () => {
 test('versión del contrato P0.2-beta y sin fila de altura al contacto', () => {
     const s = stats();
     s.compute([rock()]);
-    assert.equal(s.results.contractVersion, 'P0.4');
+    assert.equal(s.results.contractVersion, 'P0.5');
     const rows = s.exportRows();
     assert.deepEqual(plain(rows.find(row => row[0] === 'Versión del contrato de resultados').slice(0, 2)),
-        ['Versión del contrato de resultados', 'P0.4']);
+        ['Versión del contrato de resultados', 'P0.5']);
     assert.equal(rows.some(row => row[0] === 'Altura del centro al contacto (m)'), false);
     const csv = s.generateCSV();
     assert.doesNotMatch(csv, /Altura del centro al contacto/);
-    assert.match(csv, /Versión del contrato de resultados,P0\.4,/);
+    assert.match(csv, /Versión del contrato de resultados,P0\.5,/);
     assert.doesNotMatch(s.generateReport(), /Altura del centro al contacto/);
 });
 

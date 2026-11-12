@@ -12,6 +12,37 @@ function clamp(value, min, max, fallback) {
 }
 
 /**
+ * Resuelve la semilla de la corrida (P0.5). Campo vacío: sorteo de 32 bits
+ * con crypto.getRandomValues, o Math.random como respaldo. Campo con valor:
+ * solo dígitos decimales, entero en [0, 2^32 - 1].
+ * @returns {number|null} la semilla, o null si el valor es inválido (ya avisado)
+ */
+function resolveRunSeed() {
+    const input = document.getElementById('sim-seed');
+    const text = input && input.value !== undefined && input.value !== null ? String(input.value).trim() : '';
+    if (text === '') {
+        if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
+            return crypto.getRandomValues(new Uint32Array(1))[0];
+        }
+        return Math.floor(Math.random() * 4294967296) >>> 0;
+    }
+    const value = /^\d+$/.test(text) ? Number(text) : NaN;
+    if (!Number.isInteger(value) || value < 0 || value > 4294967295) {
+        alert(`Semilla inválida («${text}»): debe ser un entero entre 0 y 4294967295, o quedar vacía para sortearla.`);
+        return null;
+    }
+    return value;
+}
+
+// Muestra la semilla usada sin sobrescribir lo que escribió el usuario.
+function showSeedUsed(seed) {
+    const used = document.getElementById('seed-used');
+    if (used) used.textContent = `Vacía = aleatoria; usada: ${seed}`;
+    const input = document.getElementById('sim-seed');
+    if (input) input.placeholder = `usada: ${seed}`;
+}
+
+/**
  * Copia del terreno en el momento de la captura por época: índice de tramo,
  * extremos en X, tipo, etiqueta del preset, cn, ct y rugosidad. Son primitivas
  * copiadas, así que editar el perfil después no altera lo ya publicado.
@@ -1828,7 +1859,9 @@ class App {
                 {
                     timeStep: this._runInfo.timeStep, calcMethod: this._runInfo.calcMethod,
                     cnVariability: this._runInfo.cnVariability, ctVariability: this._runInfo.ctVariability,
-                    segments: this._runInfo.segments.map(segment => ({ ...segment }))
+                    segments: this._runInfo.segments.map(segment => ({ ...segment })),
+                    seed: this._runInfo.seed, rngAlgorithm: this._runInfo.rngAlgorithm,
+                    engineVersion: this._runInfo.engineVersion, correlatedParams: this._runInfo.correlatedParams
                 } : null;
             this.stats.compute(rocks, this.releasePoint, info);
             const result = this.stats.results;
@@ -1898,6 +1931,11 @@ class App {
             return;
         }
 
+        // P0.5: la semilla se resuelve antes de cada corrida y antes de tocar
+        // cualquier estado; si es inválida, la corrida no arranca.
+        const seed = resolveRunSeed();
+        if (seed === null) return;
+
         const diameter = clamp(document.getElementById('rock-diameter').value, 0.1, 20, 0.5);
         const density = clamp(document.getElementById('rock-density').value, 1000, 5000, 2700);
         const initVel = clamp(document.getElementById('initial-velocity').value, 0, 100, 0);
@@ -1962,7 +2000,10 @@ class App {
         this._invalidateResults();
         this.hideTimeline();
 
+        // La misma semilla viaja en params por ambos caminos: configure() en
+        // el modo normal y simParams en el mensaje del Worker.
         const params = this.getSimulationParams();
+        params.seed = seed;
         this.simulation.configure(params);
 
         this.simulation.onUpdate = (data) => {
@@ -1970,7 +2011,7 @@ class App {
             this.render();
             const progress = Math.round(data.progress * 100);
             document.getElementById('simulation-status').textContent =
-                `Simulando... ${progress}% (${this.simulation.simulatedCount}/${this.simulation.totalRocks})`;
+                `Simulando... ${progress}% (${this.simulation.simulatedCount}/${this.simulation.totalRocks}) · semilla ${seed}`;
             const rockCountEl = document.getElementById('rock-count-display');
             if (rockCountEl) {
                 const count = this.simulation.simulatedCount;
@@ -2010,12 +2051,17 @@ class App {
             calcMethod: this.simulation.physics.calcMethod,
             cnVariability: this.simulation.physics.cnVariability,
             ctVariability: this.simulation.physics.ctVariability,
-            segments: copyRunSegments(this.terrain)
+            segments: copyRunSegments(this.terrain),
+            seed,
+            rngAlgorithm: SimRocas.RNG_ALGORITHM || null,
+            engineVersion: typeof WORKER_VERSION === 'number' ? WORKER_VERSION : null,
+            correlatedParams: this.simulation.physics.correlatedParams === true
         };
+        showSeedUsed(seed);
 
         document.getElementById('btn-run').disabled = true;
         document.getElementById('btn-stop').disabled = false;
-        document.getElementById('simulation-status').textContent = 'Simulando...';
+        document.getElementById('simulation-status').textContent = `Simulando... (semilla ${seed})`;
         const fabStart = document.getElementById('fab-run');
         if (fabStart) {
             fabStart.classList.add('running');

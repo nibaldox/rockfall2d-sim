@@ -162,11 +162,11 @@ for (const calcMethod of METHODS) {
                 assert.equal(a.valid, true, `${label}: publica`);
                 assert.equal(b.valid, true, `${label}: β publica`);
                 // X1: solo cambia la versión del contrato. X2: cada evento suma rootId y fragmentKind (2 columnas al final).
-                const x1 = (text, mark) => { assert.equal(text.split(mark).length, 2, `${label}: X1 una sola vez`); return text.replace(mark, mark.replace('P0.4', 'P0.2-beta')); };
-                assert.equal(x1(a.results, '"contractVersion":"P0.4"'), b.results, `${label}: resultados de Stats`);
+                const x1 = (text, mark) => { assert.equal(text.split(mark).length, 2, `${label}: X1 una sola vez`); return text.replace(mark, mark.replace('P0.5', 'P0.2-beta')); };
+                assert.equal(x1(a.results, '"contractVersion":"P0.5"'), b.results, `${label}: resultados de Stats`);
                 assert.equal(a.lineage, 4 * JSON.parse(a.results).restRocks.length + 2 * JSON.parse(a.results).impactEvents.length, `${label}: solo linaje en restRocks y en eventos`);
                 assert.equal(b.lineage, 0, `${label}: β sin linaje`);
-                assert.equal(x1(a.csv, 'Versión del contrato de resultados,P0.4,'), b.csv, `${label}: CSV general`);
+                const x3 = /\n(?:Semilla|Generador pseudoaleatorio|Versión del motor|Parámetros correlacionados),[^\n]*/g; assert.equal((a.csv.match(x3) || []).length, 4, `${label}: X3 cuatro filas`); assert.equal(x1(a.csv.replace(x3, ''), 'Versión del contrato de resultados,P0.5,'), b.csv, `${label}: CSV general`);
                 assert.equal(a.impacts, b.impacts.split('\n').map((line, i) => !line ? line : line + (i ? `,${line.split(',')[0]},primaria` : ',Roca original,Tipo de pieza')).join('\n'), `${label}: CSV de impactos`);
                 // No vacuo: hay estadística publicada y eventos de impacto exportados.
                 assert.notEqual(JSON.parse(a.results).blockedReason, 'fragmentacion');

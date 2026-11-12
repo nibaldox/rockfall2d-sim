@@ -330,12 +330,12 @@ test('versionado del §4 coincide y ningún otro ?v= cambia', () => {
     const current = versions(fs.readFileSync(indexPath, 'utf8'));
     const head = versions(execFileSync('git', ['show', '67b34e52:index.html'],
         { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' } }));
-    assert.equal(current['js/physics.js'], 13);
-    assert.equal(current['js/simulation.js'], 12);
-    assert.equal(current['js/stats.js'], 10);
+    assert.equal(current['js/physics.js'], 14);
+    assert.equal(current['js/simulation.js'], 13);
+    assert.equal(current['js/stats.js'], 11);
     assert.equal(current['js/renderer.js'], 7);
-    assert.equal(current['js/app.js'], 17);
-    assert.equal(current['js/app-worker.js'], 9);
+    assert.equal(current['js/app.js'], 18);
+    assert.equal(current['js/app-worker.js'], 10);
     const changed = ['js/physics.js', 'js/simulation.js', 'js/stats.js', 'js/renderer.js', 'js/app.js', 'js/app-worker.js'];
     assert.equal(Object.keys(current).length, Object.keys(head).length);
     for (const [file, version] of Object.entries(head)) {
@@ -343,5 +343,5 @@ test('versionado del §4 coincide y ningún otro ?v= cambia', () => {
         assert.equal(current[file], version, file);
     }
     const worker = fs.readFileSync(path.join(ROOT, 'js', 'app-worker.js'), 'utf8');
-    assert.match(worker, /const WORKER_VERSION = 10;/);
+    assert.match(worker, /const WORKER_VERSION = 11;/);
 });

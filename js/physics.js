@@ -21,6 +21,38 @@
 globalThis.SimRocas = globalThis.SimRocas || {};
 globalThis.SimRocas.nextRockId = globalThis.SimRocas.nextRockId || 1;
 
+/**
+ * P0.5: generador pseudoaleatorio con semilla (mulberry32). Función pura de
+ * módulo: cada llamada devuelve un generador independiente.
+ *
+ * @param {number} seed - Entero sin signo de 32 bits, en [0, 2^32 - 1]
+ * @returns {function(): number} Generador de valores en [0, 1)
+ */
+function createRng(seed) {
+    if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 4294967295) {
+        throw new Error(`Semilla inválida (${String(seed)}): debe ser un entero entre 0 y 4294967295`);
+    }
+    let a = seed >>> 0;
+    return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Instala el generador de una corrida como propiedad no enumerable: no viaja
+// en copias de propiedades ni en clonados estructurados (Worker).
+function attachRng(target, rng) {
+    Object.defineProperty(target, '_rng', {
+        value: typeof rng === 'function' ? rng : null,
+        writable: true,
+        configurable: true,
+        enumerable: false
+    });
+}
+
 class Rock {
     /**
      * @param {number} x - Release X coordinate (m)
@@ -31,8 +63,11 @@ class Rock {
      * @param {number} angle - Release angle (degrees)
      * @param {string} shapeType - Shape model: 'sphere'|'ellipse'|'polygon'|'block'
      * @param {number} aspectRatio - Minor/major axis ratio (0.2-1.0)
+     * @param {?function(): number} rng - Generador de la corrida (P0.5); sin él, Math.random
      */
-    constructor(x, y, diameter, density, initialVelocity = 0, angle = 0, shapeType = 'polygon', aspectRatio = 0.6) {
+    constructor(x, y, diameter, density, initialVelocity = 0, angle = 0, shapeType = 'polygon', aspectRatio = 0.6, rng = null) {
+        // P0.5: antes de cualquier sorteo (forma, giro y color).
+        if (typeof rng === 'function') attachRng(this, rng);
         // Validación de entrada (T0.12): diámetro o densidad no positivos no
         // tienen reparación física — con ellos la masa sale 0 y el momento de
         // inercia 0/0 = NaN, envenenando toda la simulación (impulsos,
@@ -84,8 +119,8 @@ class Rock {
 
         this.momentOfInertia = this.computeMomentOfInertia();
 
-        this.rotation = Math.random() * Math.PI * 2;
-        this.angularVelocity = (Math.random() - 0.5) * 2;
+        this.rotation = this.rng() * Math.PI * 2;
+        this.angularVelocity = (this.rng() - 0.5) * 2;
 
         this.bounces = 0;
         // Sustained-contact state for lumped-mass: true once a sub-step contact
@@ -275,7 +310,7 @@ class Rock {
         const ry = this.radius * aspectRatio;
         for (let i = 0; i < n; i++) {
             const theta = (i / n) * Math.PI * 2;
-            const jitter = 0.92 + Math.random() * 0.16;
+            const jitter = 0.92 + this.rng() * 0.16;
             points.push({
                 x: Math.cos(theta) * rx * jitter,
                 y: Math.sin(theta) * ry * jitter
@@ -310,18 +345,18 @@ class Rock {
      * Default model — good general-purpose approximation.
      */
     _generatePolygon() {
-        const vertices = 5 + Math.floor(Math.random() * 5);
+        const vertices = 5 + Math.floor(this.rng() * 5);
         const points = [];
         const angles = [];
 
         for (let i = 0; i < vertices; i++) {
-            angles.push((i / vertices) * Math.PI * 2 + (Math.random() - 0.5) * 0.4);
+            angles.push((i / vertices) * Math.PI * 2 + (this.rng() - 0.5) * 0.4);
         }
         angles.sort((a, b) => a - b);
 
         for (let i = 0; i < vertices; i++) {
             const theta = angles[i];
-            const r = this.radius * (0.45 + Math.random() * 0.55);
+            const r = this.radius * (0.45 + this.rng() * 0.55);
             points.push({ x: Math.cos(theta) * r, y: Math.sin(theta) * r });
         }
 
@@ -381,14 +416,24 @@ class Rock {
         return Math.abs(area) / 2;
     }
 
+    /**
+     * P0.5: único punto de sorteo de la roca. Sin generador de corrida usa
+     * `Math.random`, resuelto en cada llamada.
+     * @returns {number} Valor en [0, 1)
+     */
+    rng() {
+        const generator = this._rng;
+        return generator ? generator() : Math.random();
+    }
+
     generateColor() {
         const types = [
-            { r: 150 + Math.random() * 40, g: 130 + Math.random() * 40, b: 110 + Math.random() * 30 },
-            { r: 120 + Math.random() * 50, g: 120 + Math.random() * 50, b: 120 + Math.random() * 50 },
-            { r: 140 + Math.random() * 30, g: 120 + Math.random() * 30, b: 100 + Math.random() * 20 },
-            { r: 160 + Math.random() * 30, g: 140 + Math.random() * 30, b: 115 + Math.random() * 25 }
+            { r: 150 + this.rng() * 40, g: 130 + this.rng() * 40, b: 110 + this.rng() * 30 },
+            { r: 120 + this.rng() * 50, g: 120 + this.rng() * 50, b: 120 + this.rng() * 50 },
+            { r: 140 + this.rng() * 30, g: 120 + this.rng() * 30, b: 100 + this.rng() * 20 },
+            { r: 160 + this.rng() * 30, g: 140 + this.rng() * 30, b: 115 + this.rng() * 25 }
         ];
-        return types[Math.floor(Math.random() * types.length)];
+        return types[Math.floor(this.rng() * types.length)];
     }
 
     /**
@@ -979,7 +1024,7 @@ class Rock {
             const seg = terrain.getSegmentAt(this.x);
             if (seg && seg.properties && seg.properties.roughness > 0) {
                 const roughness = seg.properties.roughness;
-                const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+                const phi = (this.rng() * 2 - 1) * roughness * Math.PI / 180;
                 const cosPhi = Math.cos(phi);
                 const sinPhi = Math.sin(phi);
                 const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
@@ -1123,7 +1168,7 @@ class Rock {
         const seg = terrain.getSegmentAt(contactVertex.x);
         if (seg && seg.properties && seg.properties.roughness > 0) {
             const roughness = seg.properties.roughness;
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const phi = (this.rng() * 2 - 1) * roughness * Math.PI / 180;
             const cosPhi = Math.cos(phi);
             const sinPhi = Math.sin(phi);
             const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
@@ -1263,7 +1308,7 @@ class Rock {
         const seg = terrain.getSegmentAt(contactVertex.x);
         if (seg && seg.properties && seg.properties.roughness > 0) {
             const roughness = seg.properties.roughness;
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const phi = (this.rng() * 2 - 1) * roughness * Math.PI / 180;
             const cosPhi = Math.cos(phi);
             const sinPhi = Math.sin(phi);
             const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
@@ -1486,13 +1531,13 @@ class PhysicsEngine {
     }
 
     /**
-     * Applies random variation to a base coefficient.
-     * When correlatedParams is true, Cn and Ct are inversely correlated:
-     * hard rock surfaces have high Cn (elastic) and low Ct (slippery).
+     * Applies random variation to a base coefficient (a single draw).
+     * The Cn/Ct correlation needs both parameters of the pair, so it lives
+     * in `stepVariationFactors`; `paramType` is kept for compatibility.
      *
      * @param {number} base - Base coefficient value
      * @param {number} variability - Variability percentage (0-50)
-     * @param {string} paramType - 'cn' or 'ct' for correlation
+     * @param {string} paramType - 'cn' or 'ct' (unused)
      * @returns {number} Varied coefficient
      */
     randomVariation(base, variability, paramType) {
@@ -1500,33 +1545,43 @@ class PhysicsEngine {
     }
 
     /**
-     * Factor de variación del paso (P0.2-β, I4). Es el mismo sorteo que usaba
-     * `randomVariation`, separado del valor base para poder aplicar la
-     * variabilidad al Cn/Ct de cada tramo sin alterar el orden, la cantidad
-     * de sorteos ni la correlación.
+     * Factor de variación de un parámetro: un sorteo, `1 + u·variación` con
+     * u en [-1, 1). No correlaciona: la correlación es del par y se resuelve
+     * en `stepVariationFactors`.
      *
      * @param {number} variability - Variabilidad porcentual (0-50)
-     * @param {string} paramType - 'cn' o 'ct' para la correlación
+     * @param {string} paramType - 'cn' o 'ct' (sin uso; compatibilidad)
      * @returns {number} Factor multiplicativo (1 ± variabilidad/100)
      */
     variationFactor(variability, paramType) {
-        const variation = variability / 100;
-        let factor;
+        return 1 + (this.rng() * 2 - 1) * (variability / 100);
+    }
 
-        if (this.correlatedParams && paramType) {
-            // Generate a shared random factor for correlation
-            // Hard surface: high restitution, low friction
-            const shared = (Math.random() * 2 - 1); // -1 to 1
-            if (paramType === 'cn') {
-                factor = 1 + shared * variation;
-            } else {
-                factor = 1 - shared * variation; // Inverse correlation
-            }
-        } else {
-            factor = 1 + (Math.random() * 2 - 1) * variation;
-        }
-
-        return factor;
+    /**
+     * Factores de variación de un paso (P0.2-β I4, P0.5 §4). Siempre hace
+     * cuatro sorteos, en el orden cn, ct, kn, kt.
+     * - Sin `correlatedParams`: cada factor usa su propio sorteo.
+     * - Con `correlatedParams`: el par (cn, ct) comparte el sorteo de cn y el
+     *   par (kn, kt) el de kn, ambos con `1 + shared·variación` (correlación
+     *   positiva). Los sorteos de ct y kt se consumen y se descartan para
+     *   conservar el número y el orden de las llamadas al generador.
+     *
+     * @returns {{cnFactor: number, ctFactor: number, knFactor: number, ktFactor: number}}
+     */
+    stepVariationFactors() {
+        const cnVariation = this.cnVariability / 100;
+        const ctVariation = this.ctVariability / 100;
+        const correlated = !!this.correlatedParams;
+        const cnShared = this.rng() * 2 - 1;
+        const ctOwn = this.rng() * 2 - 1;
+        const knShared = this.rng() * 2 - 1;
+        const ktOwn = this.rng() * 2 - 1;
+        return {
+            cnFactor: 1 + cnShared * cnVariation,
+            ctFactor: 1 + (correlated ? cnShared : ctOwn) * ctVariation,
+            knFactor: 1 + knShared * cnVariation,
+            ktFactor: 1 + (correlated ? knShared : ktOwn) * ctVariation
+        };
     }
 
     /**
@@ -1570,10 +1625,8 @@ class PhysicsEngine {
 
         // I3: mismos sorteos, mismo orden. El factor se separa del valor base
         // para aplicarlo también al Cn/Ct de cada tramo (I4/U4).
-        const cnFactor = this.variationFactor(this.cnVariability, 'cn');
-        const ctFactor = this.variationFactor(this.ctVariability, 'ct');
-        const knFactor = this.variationFactor(this.cnVariability, 'cn');
-        const ktFactor = this.variationFactor(this.ctVariability, 'ct');
+        // Con `correlatedParams`, (cn, ct) y (kn, kt) comparten un sorteo por par.
+        const { cnFactor, ctFactor, knFactor, ktFactor } = this.stepVariationFactors();
 
         const cn = Math.max(0, Math.min(1, this.cn * cnFactor));
         const ct = Math.max(0, Math.min(1, this.ct * ctFactor));
@@ -1691,13 +1744,13 @@ class PhysicsEngine {
             // ========================================
             // ABRASION MODE: spalls fly off, core survives
             // ========================================
-            const numSpalls = energyRatio < 1.5 ? 1 : (Math.random() < 0.6 ? 2 : 3);
+            const numSpalls = energyRatio < 1.5 ? 1 : (this.rng() < 0.6 ? 2 : 3);
 
             // Each spall takes 5-15% of parent mass
             let totalSpallMass = 0;
             const spallMasses = [];
             for (let i = 0; i < numSpalls; i++) {
-                const frac = 0.05 + Math.random() * 0.10;
+                const frac = 0.05 + this.rng() * 0.10;
                 const sm = frac * parentMass;
                 spallMasses.push(sm);
                 totalSpallMass += sm;
@@ -1716,7 +1769,7 @@ class PhysicsEngine {
 
             // Energy budget: spalls get 15-30% of the impact energy
             // (they fly off with moderate velocity)
-            const spallEnergyFraction = 0.15 + Math.random() * 0.15;
+            const spallEnergyFraction = 0.15 + this.rng() * 0.15;
             const E_spalls = E_parent * spallEnergyFraction * (1 - this.fractureDissipation);
             const E_core = E_parent * (1 - spallEnergyFraction) * (1 - this.fractureDissipation * 0.5);
 
@@ -1734,7 +1787,7 @@ class PhysicsEngine {
                 }
 
                 // Spalls fly off at ±20-45° from the impact normal
-                const ejectAngle = ((Math.random() * 2 - 1) * (20 + Math.random() * 25)) * Math.PI / 180;
+                const ejectAngle = ((this.rng() * 2 - 1) * (20 + this.rng() * 25)) * Math.PI / 180;
                 const cosE = Math.cos(ejectAngle);
                 const sinE = Math.sin(ejectAngle);
                 // Rotate normal by ejectAngle
@@ -1756,9 +1809,9 @@ class PhysicsEngine {
                     childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
                 );
 
-                spall.vx = ejNx * spallSpeed * (0.7 + Math.random() * 0.6) + tx * parentVt * 0.3;
-                spall.vy = ejNy * spallSpeed * (0.7 + Math.random() * 0.6) + ty * parentVt * 0.3;
-                spall.angularVelocity = (Math.random() - 0.5) * 10; // fast spin for debris
+                spall.vx = ejNx * spallSpeed * (0.7 + this.rng() * 0.6) + tx * parentVt * 0.3;
+                spall.vy = ejNy * spallSpeed * (0.7 + this.rng() * 0.6) + ty * parentVt * 0.3;
+                spall.angularVelocity = (this.rng() - 0.5) * 10; // fast spin for debris
                 spall.mass = sm;
                 spall.momentOfInertia = spall.computeMomentOfInertia();
                 spall.generation = rock.generation + 1;
@@ -1782,7 +1835,7 @@ class PhysicsEngine {
                 Math.sqrt(vxParent * vxParent + vyParent * vyParent + 0.001) : 0;
             core.vx = vxParent * Math.min(1.0, coreSpeedScale);
             core.vy = vyParent * Math.min(1.0, coreSpeedScale);
-            core.angularVelocity = rock.angularVelocity * (0.9 + Math.random() * 0.2);
+            core.angularVelocity = rock.angularVelocity * (0.9 + this.rng() * 0.2);
             core.mass = coreMass;
             core.momentOfInertia = core.computeMomentOfInertia();
             core.generation = rock.generation; // same generation — it's a surviving core
@@ -1801,11 +1854,11 @@ class PhysicsEngine {
             // CORE SPLIT MODE: high-energy catastrophic failure
             // Core splits in 2 + small spalls
             // ========================================
-            const numSpalls = Math.random() < 0.5 ? 1 : 2;
+            const numSpalls = this.rng() < 0.5 ? 1 : 2;
             let totalSpallMass = 0;
             const spallMasses = [];
             for (let i = 0; i < numSpalls; i++) {
-                const sm = (0.03 + Math.random() * 0.07) * parentMass;
+                const sm = (0.03 + this.rng() * 0.07) * parentMass;
                 spallMasses.push(sm);
                 totalSpallMass += sm;
             }
@@ -1813,7 +1866,7 @@ class PhysicsEngine {
             const remainingMass = parentMass - totalSpallMass;
 
             // Split remaining mass into two main fragments
-            const splitFrac = 0.40 + Math.random() * 0.20;
+            const splitFrac = 0.40 + this.rng() * 0.20;
             const m1 = splitFrac * remainingMass;
             const m2 = remainingMass - m1;
 
@@ -1829,7 +1882,7 @@ class PhysicsEngine {
                     continue;
                 }
 
-                const ejectAngle = ((Math.random() * 2 - 1) * 30) * Math.PI / 180;
+                const ejectAngle = ((this.rng() * 2 - 1) * 30) * Math.PI / 180;
                 const cosE = Math.cos(ejectAngle);
                 const sinE = Math.sin(ejectAngle);
                 const ejNx = normal.nx * cosE - normal.ny * sinE;
@@ -1845,7 +1898,7 @@ class PhysicsEngine {
 
                 spall.vx = ejNx * spallSpeed + vxParent * 0.2;
                 spall.vy = ejNy * spallSpeed + vyParent * 0.2;
-                spall.angularVelocity = (Math.random() - 0.5) * 12;
+                spall.angularVelocity = (this.rng() - 0.5) * 12;
                 spall.mass = sm;
                 spall.momentOfInertia = spall.computeMomentOfInertia();
                 spall.generation = rock.generation + 1;
@@ -1863,7 +1916,7 @@ class PhysicsEngine {
 
             for (let i = 0; i < 2; i++) {
                 // Diverge ±10-25° from parent velocity direction
-                const alpha = ((i === 0 ? -1 : 1) * (10 + Math.random() * 15)) * Math.PI / 180;
+                const alpha = ((i === 0 ? -1 : 1) * (10 + this.rng() * 15)) * Math.PI / 180;
                 const cosA = Math.cos(alpha);
                 const sinA = Math.sin(alpha);
                 const vbx = vxParent * cosA - vyParent * sinA;
@@ -1889,7 +1942,7 @@ class PhysicsEngine {
 
                 child.vx = mainVBase[i].vx * S;
                 child.vy = mainVBase[i].vy * S;
-                child.angularVelocity = rock.angularVelocity * (0.6 + Math.random() * 0.6);
+                child.angularVelocity = rock.angularVelocity * (0.6 + this.rng() * 0.6);
                 child.mass = cm;
                 child.momentOfInertia = child.computeMomentOfInertia();
                 child.generation = rock.generation + 1;
@@ -1950,9 +2003,30 @@ class PhysicsEngine {
      * @returns {Rock}
      */
     createRock(releaseX, releaseY, diameter, density, initialVelocity, angle, shapeType, aspectRatio) {
-        return new Rock(releaseX, releaseY, diameter, density, initialVelocity, angle, shapeType, aspectRatio);
+        return new Rock(releaseX, releaseY, diameter, density, initialVelocity, angle, shapeType, aspectRatio, this._rng);
+    }
+
+    /**
+     * P0.5: único punto de sorteo del motor. Sin generador de corrida usa
+     * `Math.random`, resuelto en cada llamada.
+     * @returns {number} Valor en [0, 1)
+     */
+    rng() {
+        const generator = this._rng;
+        return generator ? generator() : Math.random();
+    }
+
+    /**
+     * P0.5: fija el generador de la corrida; las rocas creadas después lo
+     * comparten. Con `null` se vuelve a `Math.random`.
+     * @param {?function(): number} rng
+     */
+    setRng(rng) {
+        attachRng(this, rng);
     }
 }
 
+SimRocas.createRng = createRng;
+SimRocas.RNG_ALGORITHM = 'mulberry32';
 SimRocas.Rock = Rock;
 SimRocas.PhysicsEngine = PhysicsEngine;

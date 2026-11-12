@@ -11,6 +11,10 @@
  *   { type: 'start', terrainJSON, simParams, physicsParams, barriers, startArgs }
  *     - terrainJSON:    string — Terrain.toJSON() del hilo principal
  *     - simParams:      objeto params de getSimulationParams (para sim.configure)
+ *                       P0.5: `simParams.seed` (entero en [0, 2^32 - 1],
+ *                       opcional) es la semilla de la corrida; llega a
+ *                       Simulation por sim.configure. Una semilla inválida
+ *                       lanza un error; sin ella se usa Math.random.
  *     - physicsParams:  copia de las propiedades primitivas del PhysicsEngine
  *                       del hilo principal (calcMethod, kn/kt, energyModel...)
  *     - barriers:       array de barreras {x1,y1,x2,y2,...} o []
@@ -61,6 +65,8 @@ function runWorkerSimulation(msg) {
 
     const physics = new SimRocas.PhysicsEngine();
     const sim = new SimRocas.Simulation(terrain, physics);
+    // P0.5: configure valida y guarda `simParams.seed`; sim.start crea con
+    // ella el generador de la corrida, igual que en el modo normal.
     sim.configure(msg.simParams);
     Object.assign(physics, msg.physicsParams);
     sim.barriers = msg.barriers || [];

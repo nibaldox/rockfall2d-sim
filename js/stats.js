@@ -17,6 +17,12 @@ const DISCARDED_FRACTION_WARNING = 0.01;
 // Máximos por árbol que hereda la fila envolvente (CONTRATO_P04 §B.1).
 const ENVELOPE_MAX_FIELDS = ['maxKineticEnergy', 'maxBounceHeight', 'maxImpactVelocity', 'maxFlightHeight',
     'maxImpactNormalSpeed', 'maxImpactSpeed', 'maxImpactContactSpeed', 'maxImpactEnergy'];
+// P0.5 (ítem 27): métricas cuyos valores no finitos se descartan, en su orden de publicación.
+const NON_FINITE_NAMES = { finalRunout: 'alcance final', verticalDrop: 'descenso vertical', reachAngle: 'ángulo de alcance',
+    finalX: 'X final', kineticEnergy: 'energía cinética máxima', bounceHeight: 'altura de rebote',
+    impactVelocity: 'velocidad máxima de trayectoria', bounceCount: 'contactos detectados', flightHeight: 'altura de vuelo',
+    impactNormalSpeed: 'velocidad normal de impacto', impactSpeed: 'rapidez de impacto', impactEnergy: 'energía de impacto',
+    impactCount: 'impactos por roca', impactEnergies: 'energías de impacto', impactEvents: 'eventos de impacto' };
 
 // Único escapado CSV del módulo: lo comparten generateCSV y generateImpactCSV.
 function csvQuote(value) {
@@ -58,6 +64,14 @@ class Stats {
         };
         // Extremos del perfil: todos los tramos con geometría válida (RVBa-3a).
         const profileExtent = this.segmentsExtent(readField('segments'));
+        // X3 (P0.5): registro de la corrida; un campo ausente o inválido no se publica.
+        const rawSeed = readField('seed'), rawRng = readField('rngAlgorithm');
+        const rawEngine = readField('engineVersion'), rawCorrelated = readField('correlatedParams');
+        const registry = {};
+        if (Number.isInteger(rawSeed) && rawSeed >= 0) registry.seed = rawSeed;
+        if (typeof rawRng === 'string' && rawRng !== '') registry.rngAlgorithm = rawRng;
+        if (Number.isFinite(rawEngine)) registry.engineVersion = rawEngine;
+        if (typeof rawCorrelated === 'boolean') registry.correlatedParams = rawCorrelated;
         // P0.4 B: con fragmentación la población principal son filas envolventes, una por
         // primaria; sin fragmentación se usan las rocas tal cual (I4).
         const fragmented = entities.some(r => r && (r.stopReason === 'fragmented' || r.isCore || r.generation > 0));
@@ -105,10 +119,10 @@ class Stats {
             (byReason.cancelled || byReason.safetyLimit || rocks.status === 'safetyLimit' || entities.some(unpublishable)) ? 'censuraNoPublicable' :
             !(entities.every(valid) && (input === entities || input.every(valid))) ? 'esquemaInvalido' : null;
         const result = {
-            contractVersion: 'P0.4', status: blockedReason ? 'bloqueado' : (censored || !directionResolved ? 'parcial' : 'completo'),
+            contractVersion: 'P0.5', status: blockedReason ? 'bloqueado' : (censored || !directionResolved ? 'parcial' : 'completo'),
             blockedReason, warnings, totalRocks: input.length, population, restRocks: [],
             runInfo: { timeStep: effective.timeStep, calcMethod: effective.calcMethod,
-                cnVariability: effective.cnVariability, ctVariability: effective.ctVariability, segments: effective.segments },
+                cnVariability: effective.cnVariability, ctVariability: effective.ctVariability, segments: effective.segments, ...registry },
             derived: { finalRunout: [], verticalDrop: [], reachAngle: [] },
             finalRunout: null, verticalDrop: null, reachAngle: null, reachAngleExcluded: null, finalX: null,
             kineticEnergy: null, bounceHeight: null, impactVelocity: null, bounceCount: null,
@@ -135,31 +149,40 @@ class Stats {
         }
         const rest = input.filter(r => r.stopReason === 'rest');
         result.restRocks = rest;
+        // Ítem 27: se cuenta cada número no finito descartado; un campo ausente no cuenta.
+        const nonFinite = {};
+        const tally = (key, value) => {
+            if (typeof value === 'number' && !Number.isFinite(value)) nonFinite[key] = (nonFinite[key] || 0) + 1;
+            return value;
+        };
         const finite = value => Number.isFinite(value) ? value : null;
         const derived = result.derived;
-        derived.finalRunout = rest.map(r => directionResolved ? finite(r.downhillSign * (r.finalX - r.releaseX)) : null);
-        derived.verticalDrop = rest.map(r => finite(r.releaseY - r.finalY));
+        derived.finalRunout = rest.map(r => directionResolved ? finite(tally('finalRunout', r.downhillSign * (r.finalX - r.releaseX))) : null);
+        derived.verticalDrop = rest.map(r => finite(tally('verticalDrop', r.releaseY - r.finalY)));
         derived.reachAngle = rest.map((r, i) => {
             const l = derived.finalRunout[i], h = derived.verticalDrop[i];
-            return l !== null && h !== null && l > 0 && h >= 0 ? finite(Math.atan2(h, l) * 180 / Math.PI) : null;
+            return l !== null && h !== null && l > 0 && h >= 0 ? finite(tally('reachAngle', Math.atan2(h, l) * 180 / Math.PI)) : null;
         });
-        const block = values => this.statsForArray(values.filter(Number.isFinite));
+        const block = (values, key) => {
+            if (key) values.forEach(value => tally(key, value));
+            return this.statsForArray(values.filter(Number.isFinite));
+        };
         result.finalRunout = directionResolved ? block(derived.finalRunout) : null;
         result.verticalDrop = block(derived.verticalDrop);
         result.reachAngle = directionResolved ? block(derived.reachAngle) : null;
         result.reachAngleExcluded = rest.length - derived.reachAngle.filter(Number.isFinite).length;
         if (result.reachAngle) result.reachAngle.excluded = result.reachAngleExcluded;
-        result.finalX = block(rest.map(r => r.finalX));
-        result.kineticEnergy = block(rest.map(r => Number.isFinite(r.maxKineticEnergy) ? r.maxKineticEnergy / 1000 : null));
-        result.bounceHeight = block(rest.map(r => r.maxBounceHeight));
-        result.impactVelocity = block(rest.map(r => r.maxImpactVelocity));
-        result.bounceCount = block(rest.map(r => r.bounces));
-        result.flightHeight = block(rest.map(r => r.maxFlightHeight));
-        result.impactNormalSpeed = block(rest.map(r => r.maxImpactNormalSpeed));
-        result.impactSpeed = block(rest.map(r => r.maxImpactSpeed));
-        result.impactEnergy = block(rest.map(r => Number.isFinite(r.maxImpactEnergy) ? r.maxImpactEnergy / 1000 : null));
-        result.impactCount = block(rest.map(r => r.impactCount));
-        result.impactEnergies = rest.flatMap(r => Array.isArray(r.impactEnergies) ? r.impactEnergies.filter(Number.isFinite) : []);
+        result.finalX = block(rest.map(r => r.finalX), 'finalX');
+        result.kineticEnergy = block(rest.map(r => Number.isFinite(tally('kineticEnergy', r.maxKineticEnergy)) ? r.maxKineticEnergy / 1000 : null));
+        result.bounceHeight = block(rest.map(r => r.maxBounceHeight), 'bounceHeight');
+        result.impactVelocity = block(rest.map(r => r.maxImpactVelocity), 'impactVelocity');
+        result.bounceCount = block(rest.map(r => r.bounces), 'bounceCount');
+        result.flightHeight = block(rest.map(r => r.maxFlightHeight), 'flightHeight');
+        result.impactNormalSpeed = block(rest.map(r => r.maxImpactNormalSpeed), 'impactNormalSpeed');
+        result.impactSpeed = block(rest.map(r => r.maxImpactSpeed), 'impactSpeed');
+        result.impactEnergy = block(rest.map(r => Number.isFinite(tally('impactEnergy', r.maxImpactEnergy)) ? r.maxImpactEnergy / 1000 : null));
+        result.impactCount = block(rest.map(r => r.impactCount), 'impactCount');
+        result.impactEnergies = rest.flatMap(r => Array.isArray(r.impactEnergies) ? r.impactEnergies.filter(value => Number.isFinite(tally('impactEnergies', value))) : []);
         if (directionResolved) {
             const observed = input.map(r => r.maxDownhillAdvance).sort((a, b) => a - b);
             const exactValues = rest.map(r => r.maxDownhillAdvance).sort((a, b) => a - b);
@@ -194,7 +217,7 @@ class Stats {
                 if (events.length >= IMPACT_ROW_CAP) { capped = true; break; }
                 const item = list[i];
                 if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-                const finite = value => Number.isFinite(value) ? value : null;
+                const finite = value => Number.isFinite(tally('impactEvents', value)) ? value : null;
                 const entry = {
                     rockId, stopReason: r.stopReason,
                     t: finite(item.t), x: finite(item.x), y: finite(item.y),
@@ -224,6 +247,13 @@ class Stats {
                     'Hay impactos sobre la prolongación horizontal del perfil, más allá de sus extremos; en masa concentrada se usan Kn/Kt globales.' :
                     'Hay impactos sobre la prolongación horizontal del perfil, más allá de sus extremos; se usa el material del tramo extremo.');
             }
+        }
+        // Ítem 27: si no se descartó ningún valor no finito, el resultado no cambia.
+        const counts = {};
+        for (const key of Object.keys(NON_FINITE_NAMES)) if (nonFinite[key]) counts[key] = nonFinite[key];
+        if (Object.keys(counts).length) {
+            warnings.push({ code: 'metricasNoFinitas', counts,
+                message: `Se descartaron valores no finitos de las métricas (${Object.entries(counts).map(([key, count]) => `${NON_FINITE_NAMES[key]}: ${count}`).join('; ')}); revise la corrida.` });
         }
         return result;
     }
@@ -522,6 +552,11 @@ class Stats {
         if (r.runInfo?.timeStep !== null && r.runInfo?.timeStep !== undefined) rows.push(['Paso de tiempo efectivo (s)', r.runInfo.timeStep]);
         if (r.runInfo?.calcMethod !== null && r.runInfo?.calcMethod !== undefined) rows.push(['Método de cálculo', methodName[r.runInfo.calcMethod]]);
         rows.push(['Versión del contrato de resultados', r.contractVersion]);
+        // X3 (P0.5): cuatro filas fijas de 2 elementos; un campo ausente va vacío.
+        const info = r.runInfo || {};
+        rows.push(['Semilla', info.seed ?? ''], ['Generador pseudoaleatorio', info.rngAlgorithm ?? ''],
+            ['Versión del motor', info.engineVersion ?? ''],
+            ['Parámetros correlacionados', info.correlatedParams === true ? 'Sí' : info.correlatedParams === false ? 'No' : '']);
         const lumped = r.runInfo?.calcMethod === 'lumped-mass';
         const variability = [r.runInfo?.cnVariability, r.runInfo?.ctVariability].map(value => Number.isFinite(value) ? value : '—');
         if (variability.some(value => value !== '—')) {
@@ -537,6 +572,13 @@ class Stats {
         rows.push(['Tope de eventos de impacto por roca', IMPACT_ROCK_CAP]);
         rows.push(['Convenciones', 'W = 10 m; umbral = 0.5 m; referencia al centro efectivo; alcance máximo muestreado por subpaso.']);
         if (r.lineage) rows.push(...this.lineageRows(r.lineage));
+        // Ítem 27: conteos por métrica, al final; solo existen si hubo descartes.
+        const nonFinite = r.warnings.find(w => w.code === 'metricasNoFinitas');
+        if (nonFinite && nonFinite.counts) {
+            for (const [key, count] of Object.entries(nonFinite.counts)) {
+                rows.push([`Valores no finitos descartados: ${NON_FINITE_NAMES[key] ?? key} (N)`, count]);
+            }
+        }
         return rows;
     }
 

@@ -70,7 +70,7 @@ test('I4: sin fragmentación, results, CSV e impactos son los de 8bd08df2 salvo 
         const now = stats(), old = baseStats();
         const a = now.compute(rocks, { x: 10, y: 51 }, info), b = old.compute(rocks, { x: 10, y: 51 }, info);
         assert.notEqual(b.status, 'bloqueado', tag);
-        assert.equal(a.contractVersion, 'P0.4', tag);
+        assert.equal(a.contractVersion, 'P0.5', tag);
         assert.equal(Object.hasOwn(a, 'lineage'), false, `${tag}: la clave lineage no existe`);
         // X2 (arbitraje WB-B3): de cada evento exportable se excluyen SOLO rootId y fragmentKind.
         const strip = r => JSON.stringify({ ...r, contractVersion: undefined,
@@ -83,14 +83,19 @@ test('I4: sin fragmentación, results, CSV e impactos son los de 8bd08df2 salvo 
         assert.equal(strip(a), strip(b), `${tag}: results`);
         assert.deepEqual(Object.keys(a).filter(k => k !== 'contractVersion'), Object.keys(b).filter(k => k !== 'contractVersion'));
         // X1: solo cambia la fila de versión.
-        const csvA = now.generateCSV().split('\n'), csvB = old.generateCSV().split('\n');
+        const csvFull = now.generateCSV().split('\n'), csvB = old.generateCSV().split('\n');
+        // X3: se excluyen exactamente sus 4 filas, que van justo después de la versión del contrato.
+        const iVer = csvFull.findIndex(line => line.startsWith('Versión del contrato de resultados,'));
+        assert.deepEqual(csvFull.slice(iVer + 1, iVer + 5).map(line => line.split(',')[0]), ['Semilla', 'Generador pseudoaleatorio', 'Versión del motor', 'Parámetros correlacionados'], `${tag}: filas X3 tras la versión`);
+        const csvA = csvFull.filter(line => !/^(?:Semilla|Generador pseudoaleatorio|Versión del motor|Parámetros correlacionados),/.test(line));
+        assert.equal(csvFull.length - csvA.length, 4, `${tag}: exactamente 4 filas X3`);
         assert.equal(csvA.length, csvB.length, tag);
         const diff = csvA.map((line, i) => line === csvB[i] ? null : i).filter(i => i !== null);
         assert.equal(diff.length, 1, `${tag}: una sola fila distinta`);
         assert.equal(csvB[diff[0]], 'Versión del contrato de resultados,P0.2-beta' + ','.repeat(13));
-        assert.equal(csvA[diff[0]], 'Versión del contrato de resultados,P0.4' + ','.repeat(13));
+        assert.equal(csvA[diff[0]], 'Versión del contrato de resultados,P0.5' + ','.repeat(13));
         const repA = now.generateReport().split('\n'), repB = old.generateReport().split('\n');
-        assert.deepEqual(repA.filter((line, i) => line !== repB[i]), ['Versión del contrato de resultados: P0.4'], tag);
+        assert.deepEqual(repA.filter(line => !/^(?:Semilla|Generador pseudoaleatorio|Versión del motor|Parámetros correlacionados): /.test(line)).filter((line, i) => line !== repB[i]), ['Versión del contrato de resultados: P0.5'], tag);
         // X2: las 14 columnas anteriores quedan igual; se agregan 2 al final.
         const impA = now.generateImpactCSV().trimEnd().split('\n'), impB = old.generateImpactCSV().trimEnd().split('\n');
         assert.equal(impA.length, impB.length, tag);
@@ -142,7 +147,7 @@ function checkFragmented(rocks, tag) {
     const expected = oracle(rocks);
     assert.equal(r.blockedReason, null, `${tag}: no hay bloqueo`);
     assert.notEqual(r.status, 'bloqueado', tag);
-    assert.equal(r.contractVersion, 'P0.4');
+    assert.equal(r.contractVersion, 'P0.5');
     assert.equal(r.totalRocks, expected.length, `${tag}: N = primarias`);
     assert.equal(r.population.released, expected.length);
     assert.equal(r.population.byReason.fragmented, 0, `${tag}: ninguna fila envolvente es fragmented`);
