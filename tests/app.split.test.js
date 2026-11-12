@@ -59,7 +59,7 @@ const EXPECTED = [
     'showResultsDashboard', 'hideResultsDashboard', 'exportDashboardPNG',
     'updateBarrierList', 'setupCanvasInteraction', 'setupResize',
     'generateRandomTerrain', 'loadDefaultTerrain', 'updateReleasePoint',
-    'updateTerrainInfo', 'getSimulationParams', 'runSimulation',
+    'updateTerrainInfo', 'getSimulationParams', '_invalidateResults', '_completeRun', 'runSimulation',
     'runSimulationWithWorker', '_workerRockShapeVertices',
     '_renderWorkerFrame', 'animate', '_animateChunked', 'stopSimulation',
     'resetSimulation', '_buildContours', 'setupStlControls', 'render',

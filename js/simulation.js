@@ -10,7 +10,8 @@ class Simulation {
         this.totalRocks = 100;
         this.simulatedCount = 0;
         this.animationSpeed = 50;
-        this.maxStepsPerRock = 5000;
+        this._maxStepsPerRock = 5000;
+        this._maxStepsExplicit = false;
         this.maxDuration = 30;
         this.ignoreResting = false;
         this.onUpdate = null;
@@ -24,6 +25,15 @@ class Simulation {
         this.barriers = [];
     }
 
+    get maxStepsPerRock() {
+        return this._maxStepsPerRock;
+    }
+
+    set maxStepsPerRock(value) {
+        this._maxStepsPerRock = value;
+        this._maxStepsExplicit = true;
+    }
+
     configure(params) {
         this.totalRocks = params.numRocks || 100;
         this.animationSpeed = params.animationSpeed || 50;
@@ -35,7 +45,8 @@ class Simulation {
         this.physics.cnVariability = params.cnVariability || 10;
         this.physics.ctVariability = params.ctVariability || 10;
         this.maxDuration = params.maxDuration || 30;
-        this.maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
+        this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
+        this._maxStepsExplicit = false;
         this.ignoreResting = !!params.ignoreResting;
 
         // Sync fragmentation properties
@@ -52,6 +63,10 @@ class Simulation {
         this.isRunning = true;
         this.isPaused = false;
         this.maxDuration = maxDuration || this.maxDuration;
+        // Only assignments after configure are independent consumer overrides.
+        if (!this._maxStepsExplicit) {
+            this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
+        }
         this.ignoreResting = !!ignoreResting;
         this.frames = [];
 
@@ -128,16 +143,14 @@ class Simulation {
                     rockChildren = rockChildren || [];
                     rockChildren.push(...spawned);
                 }
-                rock.stepsTaken++;
-                rock.elapsedTime += this.physics.dt;
-
                 if (rock.isResting) break;
-                if (rock.stepsTaken >= this.maxStepsPerRock) {
-                    rock.isResting = true;
+                // Fixed absolute margin required by the duration contract.
+                if (this.maxDuration - rock.elapsedTime <= 1e-9) {
+                    rock.finish('maxTime');
                     break;
                 }
-                if (rock.elapsedTime >= this.maxDuration) {
-                    rock.isResting = true;
+                if (rock.stepsTaken >= this.maxStepsPerRock) {
+                    rock.finish('maxSteps');
                     break;
                 }
             }
@@ -215,11 +228,10 @@ class Simulation {
         return this.frames.length;
     }
 
-    stop() {
+    stop(reason = 'cancelled') {
         this.isRunning = false;
         for (const rock of this.activeRocks) {
-            rock.isResting = true;
-            this.finishedRocks.push(rock);
+            if (rock.finish(reason)) this.finishedRocks.push(rock);
         }
         this.activeRocks = [];
         this.simulatedCount = this.finishedRocks.length;

@@ -28,6 +28,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadScripts, createContext, runScript } = require('./helpers/load');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 
 const SEED = 1234;
 const TOL = 1e-9;
@@ -134,7 +137,7 @@ function runMainThread({ calcMethod, terrainJSON, physicsOverrides = {} }) {
 
 // Contexto B: worker sandbox. Las excepciones del handler quedan registradas
 // como { type: 'error' } (análogo a worker.onerror) para poder asertarlas.
-function runWorker(startMsg) {
+function runWorker(startMsg, limit = null) {
     const msgs = [];
     let ctx;
     ctx = createContext({
@@ -145,7 +148,15 @@ function runWorker(startMsg) {
             importScripts: (...files) => files.forEach(f => runScript(ctx, 'js/' + f))
         }
     });
-    runScript(ctx, 'js/worker.js');
+    if (limit === null) {
+        runScript(ctx, 'js/worker.js');
+    } else {
+        // Límite reducido solo en el harness; no cambia el mensaje público.
+        const source = fs.readFileSync(path.join(__dirname, '../js/worker.js'), 'utf8');
+        const replaced = source.replace('const MAX_ITERATIONS_SIMULATED = 100000;', `const MAX_ITERATIONS_SIMULATED = ${limit};`);
+        assert.notEqual(replaced, source);
+        vm.runInContext(replaced, ctx, { filename: 'js/worker.js' });
+    }
     try {
         ctx.onmessage({ data: startMsg });
     } catch (err) {
@@ -187,7 +198,9 @@ for (const calcMethod of ['rigid-body', 'lumped-mass', 'nonsmooth']) {
         assert.ok(msgs.some(m => m.type === 'progress'), `${calcMethod}: mensajes 'progress'`);
         assert.ok(msgs.some(m => m.type === 'frame'), `${calcMethod}: mensajes 'frame'`);
 
+        assert.equal(complete.status, 'completed');
         const workerRocks = complete.rocks;
+        assert.ok(workerRocks.some(r => r.stopReason === 'fragmented'));
         assert.equal(workerRocks.length, main.rocks.length,
             `${calcMethod}: mismo número de rocas (incluidos fragmentos)`);
 
@@ -195,10 +208,11 @@ for (const calcMethod of ['rigid-body', 'lumped-mass', 'nonsmooth']) {
             const a = main.rocks[i];
             const b = workerRocks[i];
             const msg = `${calcMethod}: roca[${i}] id=${a.id}`;
-            assert.ok(Math.abs(a.finalX - b.finalX) <= TOL,
-                `${msg}: finalX idéntico (${a.finalX} vs ${b.finalX})`);
-            assert.ok(Math.abs(a.finalY - b.finalY) <= TOL,
-                `${msg}: finalY idéntico (${a.finalY} vs ${b.finalY})`);
+            assert.equal(b.stopReason, a.stopReason);
+            assert.equal(b.stepsTaken, a.stepsTaken);
+            assert.equal(b.elapsedTime, a.elapsedTime);
+            assert.equal(b.finalX, a.finalX, `${msg}: finalX exacto`);
+            assert.equal(b.finalY, a.finalY, `${msg}: finalY exacto`);
         }
 
         // Modelo progresivo: hijos hasta generation <= 3.
@@ -208,6 +222,46 @@ for (const calcMethod of ['rigid-body', 'lumped-mass', 'nonsmooth']) {
         }
     });
 }
+
+test('censura maxTime se transmite sin pérdida desde simulación al worker', () => {
+    const terrainJSON = buildTerrainJSON();
+    const ctx = loadScripts(['js/terrain.js', 'js/physics.js', 'js/simulation.js'], { env: 'browser', seed: SEED });
+    const terrain = new ctx.SimRocas.Terrain();
+    terrain.fromJSON(terrainJSON);
+    const physics = new ctx.SimRocas.PhysicsEngine();
+    const params = { numRocks: 1, animationSpeed: 1, timeStep: 0.005, maxDuration: 0.005, fragmentationEnabled: false };
+    const args = [10, 130, 0.8, 2700, 2, 30, 0.005, true, 'sphere', 0.6, 'freefall', null];
+    const sim = new ctx.SimRocas.Simulation(terrain, physics);
+    sim.configure(params);
+    sim.start(...args);
+    while (sim.isRunning) sim.step();
+    const complete = findComplete(runWorker({ type: 'start', terrainJSON, simParams: params, physicsParams: {}, barriers: [], startArgs: args }), 'censura');
+    assert.equal(complete.status, 'completed');
+    assert.equal(sim.rocks[0].stopReason, 'maxTime');
+    assert.equal(complete.rocks.length, 1);
+    for (const key of ['stopReason', 'finalX', 'finalY', 'stepsTaken', 'elapsedTime']) {
+        assert.equal(complete.rocks[0][key], sim.rocks[0][key], key);
+    }
+});
+
+test('guardia worker termina activos y distingue fin natural en última iteración', () => {
+    const params = { numRocks: 1, animationSpeed: 1, timeStep: 0.005, maxDuration: 30, fragmentationEnabled: false };
+    const message = {
+        type: 'start', terrainJSON: buildTerrainJSON(), simParams: params,
+        physicsParams: {}, barriers: [],
+        startArgs: [10, 130, 0.8, 2700, 2, 30, 30, true, 'sphere', 0.6, 'freefall', null]
+    };
+    const limited = findComplete(runWorker(message, 1), 'guardia');
+    assert.equal(limited.status, 'safetyLimit');
+    assert.equal(limited.rocks[0].stopReason, 'safetyLimit');
+    assert.equal(limited.rocks[0].finalX, limited.rocks[0].x);
+    assert.equal(limited.rocks[0].finalY, limited.rocks[0].y);
+    const natural = { ...message, simParams: { ...params, maxDuration: 0.005 },
+        startArgs: [10, 130, 0.8, 2700, 2, 30, 0.005, true, 'sphere', 0.6, 'freefall', null] };
+    const complete = findComplete(runWorker(natural, 1), 'natural');
+    assert.equal(complete.status, 'completed');
+    assert.equal(complete.rocks[0].stopReason, 'maxTime');
+});
 
 // --- Cambio de protocolo: el formato legado ya no se acepta ------------------
 

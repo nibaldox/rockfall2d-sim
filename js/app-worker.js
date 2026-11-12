@@ -5,7 +5,7 @@
 
 // Cache-busting del worker: al cambiar el protocolo o los scripts cargados
 // por js/worker.js, subir este número y el ?v= de los <script> de index.html.
-const WORKER_VERSION = 3;
+const WORKER_VERSION = 6;
 
 Object.assign(SimRocas.App.prototype, {
     runSimulationWithWorker(diameter, density, initVel, angle, shapeType, aspectRatio, params, multiPoints) {
@@ -15,6 +15,8 @@ Object.assign(SimRocas.App.prototype, {
 
         this._worker = new Worker('js/worker.js?v=' + WORKER_VERSION);
         this._workerActive = true;
+        const worker = this._worker;
+        const runEpoch = this._runEpoch;
 
         // Los mismos argumentos, en el mismo orden, que la llamada a
         // this.simulation.start del modo normal (runSimulation). El worker
@@ -48,7 +50,8 @@ Object.assign(SimRocas.App.prototype, {
             }
         }
 
-        this._worker.onmessage = (e) => {
+        worker.onmessage = (e) => {
+            if (this._worker !== worker || !this._workerActive || this._runEpoch !== runEpoch) return;
             const msg = e.data;
 
             if (msg.type === 'progress') {
@@ -76,56 +79,29 @@ Object.assign(SimRocas.App.prototype, {
 
             if (msg.type === 'complete') {
                 this._workerActive = false;
-                // Reconstruct full rocks for stats. Se reatacha el único
-                // método que js/renderer.js (drawRocks) espera de un Rock;
-                // el resto son datos serializados por el worker.
-                const rocks = msg.rocks;
-                for (const r of rocks) {
-                    if (typeof r.getShapeVertices !== 'function') {
-                        r.getShapeVertices = this._workerRockShapeVertices;
-                    }
-                }
-                this.simulation.rocks = rocks;
-                this.simulation.finishedRocks = rocks.filter(r => r.isResting);
-                this.simulation.simulatedCount = rocks.length;
                 this.simulation.isRunning = false;
-
-                this.stats.compute(rocks, this.releasePoint);
-                this.stats.updateUI();
-                this.renderer.renderHistogram(this.histogramCanvas, rocks);
-
-                // Probability map
-                const rd = this.stats.results.runoutDistance;
-                const sorted = [...rocks.filter(r => r.isResting).map(r => r.finalX)].sort((a, b) => a - b);
-                if (sorted.length > 0) {
-                    const p = (arr, pct) => {
-                        const idx = (pct / 100) * (arr.length - 1);
-                        const lo = Math.floor(idx);
-                        const hi = Math.ceil(idx);
-                        const f = idx - lo;
-                        return arr[lo] * (1 - f) + arr[hi] * f;
-                    };
-                    this.renderer.probabilityPercentiles = {
-                        p10: p(sorted, 10), p50: p(sorted, 50),
-                        p83: p(sorted, 83), p95: p(sorted, 95), mean: rd.mean
-                    };
-                }
-
-                document.getElementById('simulation-status').textContent =
-                    `Completado (${rocks.length} rocas, Worker)`;
-                document.getElementById('btn-run').disabled = false;
-                document.getElementById('btn-stop').disabled = true;
-                this.activateTimeline();
+                this._completeRun(msg.rocks, msg.status, true);
                 this.render();
             }
         };
 
-        this._worker.onerror = (err) => {
+        worker.onerror = (err) => {
+            if (this._worker !== worker || !this._workerActive || this._runEpoch !== runEpoch) return;
             console.error('Worker error:', err);
             alert('Error en Web Worker. Revisa la consola.');
             this._workerActive = false;
+            this._worker = null;
+            worker.terminate();
+            this._runEpoch = (this._runEpoch || 0) + 1;
+            this._workerRocks = null;
+            this.simulation.reset();
+            this._invalidateResults();
+            document.getElementById('simulation-status').textContent = 'Error en Web Worker; corrida invalidada';
             document.getElementById('btn-run').disabled = false;
             document.getElementById('btn-stop').disabled = true;
+            const fab = document.getElementById('fab-run');
+            if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
+            this.render();
         };
 
         this._worker.postMessage({

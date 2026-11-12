@@ -67,13 +67,15 @@ function runWorkerSimulation(msg) {
 
     const totalRocks = sim.totalRocks;
     let iterations = 0;
+    let status = 'completed';
 
     while (sim.isRunning) {
         sim.step();
         iterations++;
 
-        if (iterations > MAX_ITERATIONS_SIMULATED) {
-            sim.stop();
+        if (sim.isRunning && iterations >= MAX_ITERATIONS_SIMULATED) {
+            sim.stop('safetyLimit');
+            status = 'safetyLimit';
         }
 
         if (iterations % FRAME_EVERY === 0) {
@@ -90,7 +92,7 @@ function runWorkerSimulation(msg) {
         });
     }
 
-    self.postMessage({ type: 'complete', rocks: serializeRocks(sim.rocks) });
+    self.postMessage({ type: 'complete', status, rocks: serializeRocks(sim.rocks) });
 }
 
 // Snapshot indexado igual que Simulation.recordFrame: frame[i] <-> rocks[i].
@@ -148,6 +150,7 @@ function serializeRocks(rocks) {
         finalX: r.finalX,
         finalY: r.finalY,
         isResting: r.isResting,
+        stopReason: r.stopReason,
         totalEnergyDissipated: r.totalEnergyDissipated,
         stepsTaken: r.stepsTaken,
         elapsedTime: r.elapsedTime,

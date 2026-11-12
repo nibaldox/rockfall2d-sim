@@ -97,6 +97,7 @@ class Rock {
         this.finalX = x;
         this.finalY = y;
         this.isResting = false;
+        this.stopReason = null;
         this.restThreshold = 0.08;
         // Normal-velocity threshold separating a real IMPACT from sustained
         // contact (sliding/rolling) in the lumped-mass method. Below it the
@@ -110,6 +111,7 @@ class Rock {
         this._restCheckCount = 0;
         this.ignoreResting = false;
         this.elapsedTime = 0;
+        this._elapsedTimeCompensation = 0;
         this.totalEnergyDissipated = 0;
         this.stepsTaken = 0;
 
@@ -465,6 +467,15 @@ class Rock {
      * @param {{nx: number, ny: number}} normal - Surface normal at impact
      * @returns {boolean} true if rock is resting
      */
+    finish(reason) {
+        if (this.stopReason !== null) return false;
+        this.stopReason = reason;
+        this.isResting = true;
+        this.finalX = this.x;
+        this.finalY = this.y;
+        return true;
+    }
+
     _checkResting(normal) {
         this._restCheckCount++;
         if (this._restCheckCount < 3) return false;
@@ -476,12 +487,10 @@ class Rock {
 
         if (this.speed < adjustedThreshold && Math.abs(this.angularVelocity) < 0.5 &&
             (this.bounces > 2 || this._sustainedContact)) {
-            this.isResting = true;
+            this.finish('rest');
             this.vx = 0;
             this.vy = 0;
             this.angularVelocity = 0;
-            this.finalX = this.x;
-            this.finalY = this.y;
             return true;
         }
         return false;
@@ -508,7 +517,6 @@ class Rock {
         this.y += this.vy * dt;
         this.rotation += this.angularVelocity * dt;
         this._verticesDirty = true;
-        this.stepsTaken++;
 
         const ke = 0.5 * this.mass * (this.vx * this.vx + this.vy * this.vy)
                  + 0.5 * this.momentOfInertia * this.angularVelocity * this.angularVelocity;
@@ -1248,8 +1256,12 @@ class PhysicsEngine {
      * @param {number} dt - Time step (s)
      */
     simulateStep(rock, terrain, dt, barriers) {
+        if (rock.isResting) return null;
+        rock.stepsTaken++;
         const subSteps = this.subStepsFor(rock, dt);
         const subDt = dt / subSteps;
+        const elapsedBeforeStep = rock.elapsedTime;
+        const compensationBeforeStep = rock._elapsedTimeCompensation;
         let spawnedChildren = null;
 
         const cn = this.randomVariation(this.cn, this.cnVariability, 'cn');
@@ -1270,6 +1282,13 @@ class PhysicsEngine {
             rock._lastCollision = null;
 
             rock.update(subDt, this.gravity);
+            // Sum a whole dt exactly once, with compensation; an interrupted
+            // step retains only the substeps actually integrated.
+            const integrated = i + 1 === subSteps ? dt : subDt * (i + 1);
+            const correctedDt = integrated - compensationBeforeStep;
+            const elapsed = elapsedBeforeStep + correctedDt;
+            rock._elapsedTimeCompensation = (elapsed - elapsedBeforeStep) - correctedDt;
+            rock.elapsedTime = elapsed;
             rock.handleCollision(terrain, cn, ct, this.energyModel, this.energyRatio, this.calcMethod, kn, kt);
 
             // Barrier collision (independent of terrain)
@@ -1278,7 +1297,7 @@ class PhysicsEngine {
             }
 
             // Check for fragmentation after collision
-            if (this.fragmentationEnabled && rock._lastCollision) {
+            if (!rock.isResting && this.fragmentationEnabled && rock._lastCollision) {
                 const { normal, vn } = rock._lastCollision;
                 const impactEnergy = 0.5 * rock.mass * vn * vn;
                 const minDiameter = 0.10;
@@ -1296,11 +1315,11 @@ class PhysicsEngine {
                             // Core survives — replace rock properties in-place
                             spawnedChildren.push(result.core);
                             rock.isFragmented = true;
-                            rock.isResting = true;
+                            rock.finish('fragmented');
                         } else {
                             // Full breakup — rock is destroyed
                             rock.isFragmented = true;
-                            rock.isResting = true;
+                            rock.finish('fragmented');
                         }
                         break;
                     }
@@ -1312,7 +1331,7 @@ class PhysicsEngine {
             if (rock.isResting) break;
 
             if (rock.x < cullMinX || rock.x > cullMaxX || rock.y < cullMinY) {
-                rock.isResting = true;
+                rock.finish('culled');
                 break;
             }
         }

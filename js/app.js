@@ -122,8 +122,7 @@ class App {
         document.querySelector('[data-tab="results"]').classList.add('active');
         document.getElementById('tab-results').classList.add('active');
 
-        const hasResults = this.simulation.rocks.length > 0 &&
-            this.simulation.rocks.some(r => r.isResting);
+        const hasResults = this._resultsValid === true;
 
         const placeholder = document.getElementById('results-placeholder-msg');
         const content = document.getElementById('results-sidebar-content');
@@ -927,6 +926,7 @@ class App {
 
         const csvBtn = document.getElementById('btn-export-csv');
         if (csvBtn) csvBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const csv = this.stats.generateCSV();
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -939,6 +939,7 @@ class App {
 
         const reportBtn = document.getElementById('btn-export-report');
         if (reportBtn) reportBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const report = this.stats.generateReport();
             const blob = new Blob([report], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
@@ -1080,6 +1081,7 @@ class App {
         });
 
         document.getElementById('btn-dashboard-csv').addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const csv = this.stats.generateCSV();
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -1091,6 +1093,7 @@ class App {
         });
 
         document.getElementById('btn-dashboard-report').addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const report = this.stats.generateReport();
             const blob = new Blob([report], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
@@ -1103,8 +1106,7 @@ class App {
     }
 
     showResultsDashboard() {
-        const hasResults = this.simulation.rocks.length > 0 &&
-            this.simulation.rocks.some(r => r.isResting);
+        const hasResults = this._resultsValid === true;
 
         if (!hasResults) {
             alert('Ejecuta una simulación para ver resultados.');
@@ -1128,7 +1130,9 @@ class App {
         }
 
         // Render charts after a frame so the DOM has updated dimensions
+        const resultEpoch = this._runEpoch;
         requestAnimationFrame(() => {
+            if (!this._resultsValid || resultEpoch !== this._runEpoch) return;
             this.renderer.renderResultsDashboard(
                 this.simulation.rocks,
                 this.terrain,
@@ -1144,6 +1148,7 @@ class App {
     }
 
     exportDashboardPNG() {
+        if (!this._resultsValid) return;
         const dashboard = document.getElementById('results-dashboard');
         // Create a temporary canvas combining all chart canvases
         const charts = dashboard.querySelectorAll('.chart-panel canvas');
@@ -1555,13 +1560,122 @@ class App {
         };
     }
 
+    // _invalidateResults(): runSimulation, stopSimulation, resetSimulation,
+    // _completeRun (censura) y onerror de runSimulationWithWorker.
+    _invalidateResults() {
+        this._resultsValid = false;
+        this.stats.results = null;
+        this.renderer.probabilityPercentiles = null;
+        const ids = ['stat-max-ke', 'stat-mean-ke', 'stat-max-bounce', 'stat-max-runout',
+            'stat-max-velocity', 'stat-max-bounces', 'stat-savigny-angle', 'dash-stat-total',
+            'dash-stat-max-ke', 'dash-stat-max-bounce', 'dash-stat-max-runout',
+            'dash-stat-max-vel', 'dash-stat-savigny', 'dash-stat-p95'];
+        ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '-'; });
+        const dashboard = document.getElementById('results-dashboard');
+        if (dashboard) {
+            dashboard.classList.add('hidden');
+            dashboard.querySelectorAll('.chart-panel canvas').forEach(canvas => {
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+            });
+        }
+        const placeholder = document.getElementById('results-placeholder-msg');
+        const content = document.getElementById('results-sidebar-content');
+        if (placeholder) placeholder.style.display = 'block';
+        if (content) content.style.display = 'none';
+        ['btn-export-csv', 'btn-export-report', 'btn-dashboard-csv', 'btn-dashboard-report',
+            'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.disabled = true;
+        });
+        const ctx = this.histogramCanvas.getContext('2d');
+        ctx.fillStyle = '#1e2a4a';
+        ctx.fillRect(0, 0, this.histogramCanvas.width, this.histogramCanvas.height);
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('Sin datos', this.histogramCanvas.width / 2 - 20, this.histogramCanvas.height / 2);
+    }
+
+    // _completeRun(rocks, status, worker): onComplete normal y mensaje complete del worker.
+    _completeRun(rocks, status, worker) {
+        // Barrera común para los consumidores Stats y renderer.
+        const isCompatibleResultRock = rock => {
+            if (!rock || typeof rock !== 'object' || (!worker && typeof rock.getShapeVertices !== 'function')) return false;
+            const numbers = ['x', 'y', 'finalX', 'finalY', 'rotation', 'radius', 'stepsTaken',
+                'elapsedTime', 'bounces', 'maxKineticEnergy', 'maxBounceHeight', 'maxImpactVelocity'];
+            if (!numbers.every(key => Number.isFinite(rock[key])) || rock.isResting !== true) return false;
+            const finiteArray = array => Array.isArray(array) && Array.from(array).every(Number.isFinite);
+            if (!finiteArray(rock.trajectory) || rock.trajectory.length % 3 !== 0 ||
+                !finiteArray(rock.impactEnergies) || !Array.isArray(rock.bouncePoints) ||
+                !Array.from(rock.bouncePoints).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.energy)) ||
+                !Array.isArray(rock.shape) || !Array.from(rock.shape).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))) return false;
+            if (!rock.color || !['r', 'g', 'b'].every(key => Number.isFinite(rock.color[key]))) return false;
+            return ['_colorActive', '_colorResting', '_colorStroke'].every(key => typeof rock[key] === 'string');
+        };
+        const allowed = ['rest', 'culled', 'maxTime', 'maxSteps', 'fragmented', 'cancelled', 'safetyLimit'];
+        const counts = {};
+        let incompatible = !Array.isArray(rocks) || rocks.length === 0 || !['completed', 'safetyLimit'].includes(status);
+        const hasRockList = Array.isArray(rocks);
+        if (!hasRockList) rocks = [];
+        const safeRocks = rocks.filter(r => isCompatibleResultRock(r));
+        if (!hasRockList || safeRocks.length !== rocks.length) {
+            incompatible = true;
+            // Los frames se indexan por roca: no deben apuntar a un subconjunto distinto.
+            this.simulation.frames = [];
+        }
+        if (worker) safeRocks.forEach(r => { r.getShapeVertices = this._workerRockShapeVertices; });
+        this.simulation.rocks = safeRocks;
+        this.simulation.finishedRocks = safeRocks.filter(r => r.isResting);
+        this.simulation.simulatedCount = safeRocks.length;
+        rocks.forEach(r => {
+            const reason = r && r.stopReason;
+            if (!allowed.includes(reason)) incompatible = true;
+            const key = allowed.includes(reason) ? reason : 'desconocido';
+            counts[key] = (counts[key] || 0) + 1;
+        });
+        const censored = status === 'safetyLimit' || incompatible ||
+            rocks.some(r => r && ['culled', 'maxTime', 'maxSteps', 'cancelled', 'safetyLimit'].includes(r.stopReason));
+        if (!censored) {
+            this.stats.compute(rocks, this.releasePoint);
+            this.stats.updateUI();
+            this.renderer.renderHistogram(this.histogramCanvas, rocks);
+            const sorted = rocks.filter(r => r.isResting).map(r => r.finalX).sort((a, b) => a - b);
+            if (sorted.length) {
+                const p = pct => {
+                    const idx = pct / 100 * (sorted.length - 1);
+                    const lo = Math.floor(idx), hi = Math.ceil(idx), f = idx - lo;
+                    return sorted[lo] * (1 - f) + sorted[hi] * f;
+                };
+                this.renderer.probabilityPercentiles = { p10: p(10), p50: p(50), p83: p(83), p95: p(95), mean: this.stats.results.runoutDistance.mean };
+            }
+            this._resultsValid = true;
+            const placeholder = document.getElementById('results-placeholder-msg');
+            const content = document.getElementById('results-sidebar-content');
+            if (placeholder) placeholder.style.display = 'none';
+            if (content) content.style.display = 'block';
+            ['btn-export-csv', 'btn-export-report', 'btn-dashboard-csv', 'btn-dashboard-report',
+                'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
+                const el = document.getElementById(id); if (el) el.disabled = false;
+            });
+        } else {
+            this._invalidateResults();
+        }
+        const summary = Object.entries(counts).map(([reason, count]) => `${reason}: ${count}`).join(', ');
+        document.getElementById('simulation-status').textContent = censored
+            ? `Corrida incompleta/censurada${incompatible ? ' (protocolo incompatible)' : ''}: ${summary || 'sin datos'}${status === 'safetyLimit' ? ' (límite de seguridad)' : ''}`
+            : `Completado (${rocks.length} rocas${worker ? ', Worker' : ''})`;
+        document.getElementById('btn-run').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+        const fab = document.getElementById('fab-run');
+        if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
+        const count = document.getElementById('rock-count-display');
+        if (count) count.textContent = `Rocas: ${rocks.length}`;
+        if (this.simulation.frameCount > 0) this.activateTimeline();
+    }
+
     runSimulation() {
         if (this.terrain.points.length < 2) {
             alert('Define al menos 2 puntos del perfil del terreno.');
             return;
         }
-
-        this.hideTimeline();
 
         const diameter = clamp(document.getElementById('rock-diameter').value, 0.1, 20, 0.5);
         const density = clamp(document.getElementById('rock-density').value, 1000, 5000, 2700);
@@ -1611,10 +1725,21 @@ class App {
             });
         }
 
+        this._runEpoch = (this._runEpoch || 0) + 1;
+        const runEpoch = this._runEpoch;
+        if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
+        if (this._worker) this._worker.terminate();
+        this._worker = null;
+        this._workerActive = false;
+        this._workerRocks = null;
+        this._invalidateResults();
+        this.hideTimeline();
+
         const params = this.getSimulationParams();
         this.simulation.configure(params);
 
         this.simulation.onUpdate = (data) => {
+            if (runEpoch !== this._runEpoch) return;
             this.render();
             const progress = Math.round(data.progress * 100);
             document.getElementById('simulation-status').textContent =
@@ -1630,42 +1755,8 @@ class App {
         };
 
         this.simulation.onComplete = (rocks) => {
-            this.stats.compute(rocks, this.releasePoint);
-            this.stats.updateUI();
-            this.renderer.renderHistogram(this.histogramCanvas, rocks);
-
-            // Compute probability map percentiles
-            const rd = this.stats.results.runoutDistance;
-            const sorted = [...rocks.filter(r => r.isResting).map(r => r.finalX)].sort((a, b) => a - b);
-            if (sorted.length > 0) {
-                const p = (arr, pct) => {
-                    const idx = (pct / 100) * (arr.length - 1);
-                    const lo = Math.floor(idx);
-                    const hi = Math.ceil(idx);
-                    const f = idx - lo;
-                    return arr[lo] * (1 - f) + arr[hi] * f;
-                };
-                this.renderer.probabilityPercentiles = {
-                    p10: p(sorted, 10),
-                    p50: p(sorted, 50),
-                    p83: p(sorted, 83),
-                    p95: p(sorted, 95),
-                    mean: rd.mean
-                };
-            }
-
-            document.getElementById('simulation-status').textContent =
-                `Completado (${rocks.length} rocas)`;
-            document.getElementById('btn-run').disabled = false;
-            document.getElementById('btn-stop').disabled = true;
-            const fabDone = document.getElementById('fab-run');
-            if (fabDone) {
-                fabDone.classList.remove('running');
-                fabDone.textContent = '▶';
-            }
-            const rockCountEl = document.getElementById('rock-count-display');
-            if (rockCountEl) rockCountEl.textContent = `Rocas: ${rocks.length}`;
-            this.activateTimeline();
+            if (runEpoch !== this._runEpoch) return;
+            this._completeRun(rocks, 'completed', false);
         };
 
         this.simulation.start(
@@ -1705,7 +1796,10 @@ class App {
 
         this.simulation.step();
         this._doRender();
-        this.animationId = requestAnimationFrame(() => this.animate());
+        const runEpoch = this._runEpoch;
+        this.animationId = requestAnimationFrame(() => {
+            if (runEpoch === this._runEpoch) this.animate();
+        });
     }
 
     /**
@@ -1723,29 +1817,49 @@ class App {
         }
 
         if (this.simulation.isRunning) {
-            setTimeout(() => this._animateChunked(), 0);
+            const runEpoch = this._runEpoch;
+            setTimeout(() => {
+                if (runEpoch === this._runEpoch) this._animateChunked();
+            }, 0);
         }
     }
 
     stopSimulation() {
+        this._runEpoch = (this._runEpoch || 0) + 1;
+        if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
+        const workerRun = this._workerActive;
         if (this._worker && this._workerActive) {
             this._worker.terminate();
             this._workerActive = false;
         }
 
+        this._worker = null;
+        this._workerRocks = null;
         this.simulation.stop();
+        if (workerRun) {
+            this.simulation.rocks = [];
+            this.simulation.finishedRocks = [];
+            this.simulation.frames = [];
+        }
+        this._invalidateResults();
         document.getElementById('btn-run').disabled = false;
         document.getElementById('btn-stop').disabled = true;
-        document.getElementById('simulation-status').textContent = 'Detenido por usuario';
+        const counts = {};
+        if (!workerRun) {
+            this.simulation.rocks.forEach(rock => {
+                const reason = rock.stopReason || 'desconocido';
+                counts[reason] = (counts[reason] || 0) + 1;
+            });
+        }
+        const summary = Object.entries(counts).map(([reason, count]) => `${reason}: ${count}`).join(', ');
+        document.getElementById('simulation-status').textContent = workerRun
+            ? 'Corrida incompleta: cancelada por usuario (Worker; resultados descartados)'
+            : `Corrida incompleta: cancelada por usuario${summary ? ` — ${summary}` : ''}`;
         const fabStop = document.getElementById('fab-run');
         if (fabStop) {
             fabStop.classList.remove('running');
             fabStop.textContent = '▶';
         }
-
-        this.stats.compute(this.simulation.rocks, this.releasePoint);
-        this.stats.updateUI();
-        this.renderer.renderHistogram(this.histogramCanvas, this.simulation.rocks);
 
         if (this.simulation.frameCount > 1) {
             this.activateTimeline();
@@ -1755,27 +1869,22 @@ class App {
     }
 
     resetSimulation() {
+        this._runEpoch = (this._runEpoch || 0) + 1;
+        if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
+        this._invalidateResults();
+        this._workerRocks = null;
         this.hideTimeline();
         if (this._worker && this._workerActive) {
             this._worker.terminate();
             this._workerActive = false;
         }
+        this._worker = null;
         this.simulation.reset();
         document.getElementById('btn-run').disabled = false;
         document.getElementById('btn-stop').disabled = true;
         document.getElementById('simulation-status').textContent = 'Listo';
-
-        ['stat-max-ke', 'stat-mean-ke', 'stat-max-bounce', 'stat-max-runout',
-          'stat-max-velocity', 'stat-max-bounces', 'stat-savigny-angle'].forEach(id => {
-            document.getElementById(id).textContent = '-';
-        });
-
-        const ctx = this.histogramCanvas.getContext('2d');
-        ctx.fillStyle = '#1e2a4a';
-        ctx.fillRect(0, 0, this.histogramCanvas.width, this.histogramCanvas.height);
-        ctx.fillStyle = 'rgba(255,255,255,0.3)';
-        ctx.font = '12px sans-serif';
-        ctx.fillText('Sin datos', this.histogramCanvas.width / 2 - 20, this.histogramCanvas.height / 2);
+        const fab = document.getElementById('fab-run');
+        if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
 
         this.render();
     }
