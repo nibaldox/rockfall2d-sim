@@ -1,3 +1,13 @@
+// Valor efectivo de un parámetro numérico: se conserva si es finito y cumple
+// el dominio (negativo admitido o solo positivo; entero cuando se exige) y, si
+// no, se usa el defecto. Los ceros válidos no se sustituyen.
+function effectiveNumber(value, fallback, allowZero, requireInteger) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    if (requireInteger && !Number.isInteger(value)) return fallback;
+    if (allowZero ? value < 0 : value <= 0) return fallback;
+    return value;
+}
+
 class Simulation {
     constructor(terrain, physics) {
         this.terrain = terrain;
@@ -36,25 +46,25 @@ class Simulation {
     }
 
     configure(params) {
-        this.totalRocks = params.numRocks || 100;
-        this.animationSpeed = params.animationSpeed || 50;
-        this.physics.gravity = params.gravity || 9.81;
-        this.physics.dt = params.timeStep || 0.005;
-        this.physics.cn = params.cn || 0.6;
-        this.physics.ct = params.ct || 0.4;
-        this.physics.rollingFriction = params.rollingFriction || 0.15;
-        this.physics.cnVariability = params.cnVariability || 10;
-        this.physics.ctVariability = params.ctVariability || 10;
-        this.maxDuration = params.maxDuration || 30;
+        this.totalRocks = effectiveNumber(params.numRocks, 100, false, true);
+        this.animationSpeed = effectiveNumber(params.animationSpeed, 50, false, false);
+        this.physics.gravity = effectiveNumber(params.gravity, 9.81, false, false);
+        this.physics.dt = effectiveNumber(params.timeStep, 0.005, false, false);
+        this.physics.cn = effectiveNumber(params.cn, 0.6, true, false);
+        this.physics.ct = effectiveNumber(params.ct, 0.4, true, false);
+        this.physics.rollingFriction = effectiveNumber(params.rollingFriction, 0.15, true, false);
+        this.physics.cnVariability = effectiveNumber(params.cnVariability, 10, true, false);
+        this.physics.ctVariability = effectiveNumber(params.ctVariability, 10, true, false);
+        this.maxDuration = effectiveNumber(params.maxDuration, 30, false, false);
         this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
         this._maxStepsExplicit = false;
         this.ignoreResting = !!params.ignoreResting;
         this.downhillMode = params.downhillMode === '+x' || params.downhillMode === '-x' ? params.downhillMode : 'auto';
 
         // Sync fragmentation properties
-        this.physics.fragmentationEnabled = params.fragmentationEnabled !== undefined ? params.fragmentationEnabled : true;
-        this.physics.fractureEnergy = params.fractureEnergy !== undefined ? params.fractureEnergy : 25000;
-        this.physics.fractureDissipation = params.fractureDissipation !== undefined ? params.fractureDissipation : 0.4;
+        this.physics.fragmentationEnabled = typeof params.fragmentationEnabled === 'boolean' ? params.fragmentationEnabled : true;
+        this.physics.fractureEnergy = effectiveNumber(params.fractureEnergy, 25000, false, false);
+        this.physics.fractureDissipation = effectiveNumber(params.fractureDissipation, 0.4, true, false);
     }
 
     start(releaseX, releaseY, diameter, density, initialVelocity, angle, maxDuration, ignoreResting, shapeType, aspectRatio, releaseMode, multiReleasePoints) {
@@ -64,7 +74,7 @@ class Simulation {
         this.simulatedCount = 0;
         this.isRunning = true;
         this.isPaused = false;
-        this.maxDuration = maxDuration || this.maxDuration;
+        this.maxDuration = effectiveNumber(maxDuration, this.maxDuration, false, false);
         // Only assignments after configure are independent consumer overrides.
         if (!this._maxStepsExplicit) {
             this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);

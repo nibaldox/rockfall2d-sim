@@ -29,8 +29,10 @@ Pruebas headless con el runner nativo `node:test` (requiere Node >= 20). Sin dep
 
 Correcciones de física (todas verificadas en `js/physics.js`):
 
-- **Reposo alcanzable**: el contador de comprobaciones de reposo ya no se reinicia, por lo que el estado de reposo ahora se alcanza en todos los métodos de cálculo (`_checkResting`, sin reinicio de `_restCheckCount` en los casos de colisión).
-- **Criterio de reposo con |ω|**: la velocidad angular absoluta participa del criterio (`|ω| < 0.5`), evitando rocas "detenidas" que siguen girando (`physics.js`, `_checkResting`).
+- **Criterio de reposo**: el reposo exige al menos 3 comprobaciones acumuladas (el contador no se reinicia en las colisiones), velocidad por debajo de 0.08 m/s escalada por la pendiente local como `max(0.1, 1 − 2·|pendiente|)`, `|ω| < 0.5 rad/s` y, además, más de 2 contactos detectados o contacto sostenido. El contacto sostenido solo existe en Lumped Mass (|vn| < 0.5 m/s) y `ignoreResting` desactiva la comprobación (`_checkResting`). Que el reposo se detecte depende del método, del contacto y del paso de tiempo; no se documenta como garantía.
+- **Contactos detectados**: `bounces` es un conteo interno de contactos —sube en cada penetración detectada en cuerpo rígido y nonsmooth, y también en barreras e impactos de Lumped Mass—, no una cuenta de impactos; la interfaz y las exportaciones lo rotulan «Contactos detectados».
+- **Paso de tiempo grueso**: con dt > 0.02 s en cuerpo rígido o nonsmooth el reposo puede no detectarse (en las muestras de S1b hubo 100/100 reposos con dt ≤ 0.02 y fallas con dt = 0.05). Desde P0.3 se muestra la advertencia no bloqueante `dtGrueso` en el estado, el reporte y el CSV; esa advertencia no sustituye un estudio de convergencia en dt.
+- **Ceros finitos**: desde P0.3 los ceros finitos válidos de los parámetros (por ejemplo Cn, Ct, rodadura y variabilidades) se respetan; los valores no finitos o fuera de dominio usan el valor por defecto.
 - **Fricción de Nonsmooth**: se corrigió el signo del impulso de fricción — antes la fricción agregaba energía en lugar de disiparla.
 - **Corrección de posición energéticamente neutra** (`Rock._penetrationCorrection`): la penetración se resuelve sin fugar energía por posicionamiento; antes se fijaba el centro a 1 cm del suelo.
 - **Contacto sostenido en Lumped Mass (tipo RocFall "minimum velocity")**: cuando la velocidad normal es baja (|vn| < 0.5 m/s, `Rock.slideVelocityThreshold`), el contacto se trata como deslizamiento/rodadura y no como impulso de impacto en cada sub-paso. El contacto se evalúa con el cuerpo de la roca (centro − radio), no con el punto de masa.
@@ -126,7 +128,7 @@ Características del motor:
 - Altura máxima de rebote
 - Distancia de runout máxima
 - Velocidad máxima de impacto
-- Cantidad de rebotes
+- Contactos detectados
 - Percentiles P50, P83, P95
 - Ángulo de energía de Savigny (H/L)
 - Histograma de distribución de energía

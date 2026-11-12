@@ -5,7 +5,7 @@
 
 // Cache-busting del worker: al cambiar el protocolo o los scripts cargados
 // por js/worker.js, subir este número y el ?v= de los <script> de index.html.
-const WORKER_VERSION = 7;
+const WORKER_VERSION = 8;
 
 Object.assign(SimRocas.App.prototype, {
     runSimulationWithWorker(diameter, density, initVel, angle, shapeType, aspectRatio, params, multiPoints) {

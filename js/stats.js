@@ -3,8 +3,20 @@ class Stats {
         this.results = null;
     }
 
-    compute(rocks, releasePoint = null) {
+    compute(rocks, releasePoint = null, runInfo = null) {
         const input = Array.isArray(rocks) ? rocks : [];
+        const calcMethods = ['rigid-body', 'lumped-mass', 'nonsmooth'];
+        let source = null;
+        try {
+            source = runInfo && typeof runInfo === 'object' && !Array.isArray(runInfo) ? runInfo : null;
+        } catch (error) {
+            source = null;
+        }
+        const rawTimeStep = source ? source.timeStep : null, rawCalcMethod = source ? source.calcMethod : null;
+        const effective = {
+            timeStep: Number.isFinite(rawTimeStep) && rawTimeStep > 0 ? rawTimeStep : null,
+            calcMethod: calcMethods.includes(rawCalcMethod) ? rawCalcMethod : null
+        };
         const reasons = ['rest', 'culled', 'maxTime', 'maxSteps', 'fragmented', 'cancelled', 'safetyLimit'];
         const byReason = Object.fromEntries(reasons.map(reason => [reason, 0]));
         for (const rock of input) {
@@ -26,6 +38,9 @@ class Stats {
         if (fragmented) warn('fragmentacion', 'La fragmentación impide publicar agregados hasta P0.4.');
         if (!byReason.rest && input.length) warn('sinReposo', 'No hay rocas en reposo para calcular distribuciones finales.');
         if (sources.length > 1) warn('variasFuentes', 'Hay varias fuentes; las métricas usan el origen efectivo de cada roca.');
+        if (effective.timeStep > 0.02 && (effective.calcMethod === 'rigid-body' || effective.calcMethod === 'nonsmooth')) {
+            warn('dtGrueso', 'Con dt > 0.02 s en cuerpo rígido o nonsmooth, algunas rocas pueden no alcanzar el reposo; use dt ≤ 0.02 s y revise el porcentaje censurado.');
+        }
         const valid = r => r && Number.isFinite(r.releaseX) && Number.isFinite(r.releaseY) &&
             Number.isFinite(r.finalX) && Number.isFinite(r.finalY) &&
             Number.isInteger(r.sourceIndex) && r.sourceIndex >= 0 &&
@@ -39,6 +54,7 @@ class Stats {
         const result = {
             contractVersion: 'P0.2-alfa', status: blockedReason ? 'bloqueado' : (censored || !directionResolved ? 'parcial' : 'completo'),
             blockedReason, warnings, totalRocks: input.length, population, restRocks: [],
+            runInfo: { timeStep: effective.timeStep, calcMethod: effective.calcMethod },
             derived: { finalRunout: [], verticalDrop: [], reachAngle: [] },
             finalRunout: null, verticalDrop: null, reachAngle: null, reachAngleExcluded: null, finalX: null,
             kineticEnergy: null, bounceHeight: null, impactVelocity: null, bounceCount: null,
@@ -161,6 +177,9 @@ class Stats {
                 r.reachBounds?.n, null, null, null, null, null, null, null, null, b?.lower, b?.upper, b?.exact]);
         }
         for (const w of r.warnings) rows.push([`Advertencia ${w.code}`, w.message]);
+        const methodName = { 'rigid-body': 'Cuerpo rígido', 'lumped-mass': 'Lumped Mass (2DLM)', 'nonsmooth': 'Nonsmooth Dynamics (NSD)' };
+        if (r.runInfo?.timeStep !== null && r.runInfo?.timeStep !== undefined) rows.push(['Paso de tiempo efectivo (s)', r.runInfo.timeStep]);
+        if (r.runInfo?.calcMethod !== null && r.runInfo?.calcMethod !== undefined) rows.push(['Método de cálculo', methodName[r.runInfo.calcMethod]]);
         rows.push(['Convenciones', 'W = 10 m; umbral = 0.5 m; referencia al centro efectivo; alcance máximo muestreado por subpaso.']);
         return rows;
     }

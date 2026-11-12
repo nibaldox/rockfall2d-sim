@@ -63,7 +63,10 @@ JS files are loaded in order by `<script>` tags in `index.html`. Each file defin
 - Coordinate system: Y grows UP (topographic convention)
 - Physics uses 3 sub-steps per time step for stability
 - Rocks are convex random polygons (5-9 vertices), never concave
-- Resting condition: velocity < 0.08 m/s, angular velocity < 0.5 rad/s, bounces > 2
+- Resting condition (`Rock._checkResting`): at least 3 accumulated checks (the counter is not reset on collisions), speed below 0.08 m/s scaled by the local slope as `max(0.1, 1 - 2 * |slope|)`, `|ω| < 0.5 rad/s`, and more than 2 detected contacts or sustained contact. Sustained contact exists only in Lumped Mass, with `|vn| < 0.5 m/s`; `ignoreResting` skips the check
+- `bounces` is an internal contact counter: it increases on every detected penetration in rigid-body and nonsmooth, and also on barriers and Lumped Mass impacts. It is not an impact count; the UI and exports label it "Contactos detectados"
+- Coarse time step: with dt > 0.02 s in rigid-body or nonsmooth, resting may go undetected. From P0.3 a non-blocking `dtGrueso` warning is shown in the status, report and CSV; it does not replace a time-step convergence study
+- Finite zeros: from P0.3, valid finite zeros of the parameters (e.g. Cn, Ct, rolling and variabilities) are preserved; non-finite or out-of-domain values fall back to the default
 - Boundary culling: rocks outside [-50, 500] X or below -100 Y are terminated
 - Max steps per rock: 5,000
 

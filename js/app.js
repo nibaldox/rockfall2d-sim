@@ -1649,7 +1649,11 @@ class App {
             this._invalidateResults();
             message = `Corrida incompleta/censurada${incompatible ? ' (protocolo incompatible)' : ''}: ${summary || 'sin datos'}${status === 'safetyLimit' ? ' (límite de seguridad)' : ''}`;
         } else {
-            this.stats.compute(rocks, this.releasePoint);
+            // Misma regla de época que _runSources: solo la corrida vigente aporta
+            // sus valores efectivos, copiados como primitivas.
+            const info = this._runInfo && this._runInfo.epoch === this._runEpoch ?
+                { timeStep: this._runInfo.timeStep, calcMethod: this._runInfo.calcMethod } : null;
+            this.stats.compute(rocks, this.releasePoint, info);
             const result = this.stats.results;
             if (result.status === 'bloqueado') {
                 const reason = result.blockedReason;
@@ -1810,6 +1814,15 @@ class App {
             this.releaseMode,
             multiPoints
         );
+
+        // Captura por época de los valores efectivos de esta corrida. Se toma del
+        // motor de la simulación (en producción this.physics === this.simulation.physics);
+        // son primitivas copiadas y no se releen los controles al exportar.
+        this._runInfo = {
+            epoch: runEpoch,
+            timeStep: this.simulation.physics.dt,
+            calcMethod: this.simulation.physics.calcMethod
+        };
 
         document.getElementById('btn-run').disabled = true;
         document.getElementById('btn-stop').disabled = false;
