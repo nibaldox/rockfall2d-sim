@@ -10,7 +10,7 @@ function stats(document) {
 function compute(rocks, runInfo) { return stats().compute(rocks, null, runInfo); }
 const plain = x => JSON.parse(JSON.stringify(x));
 
-const IMPACT_HEADER = 'Roca,Motivo de término,Tiempo (s),X centro (m),Y centro (m),Superficie,Tramo o barrera,Velocidad normal (m/s),Rapidez (m/s),Rapidez del punto de contacto (m/s),Energía total (kJ),Coef. normal efectivo,Coef. tangencial efectivo,Altura de vuelo previa (m)';
+const IMPACT_HEADER = 'Roca,Motivo de término,Tiempo (s),X centro (m),Y centro (m),Superficie,Tramo o barrera,Velocidad normal (m/s),Rapidez (m/s),Rapidez del punto de contacto (m/s),Energía total (kJ),Coef. normal efectivo,Coef. tangencial efectivo,Altura de vuelo previa (m),Roca original,Tipo de pieza';
 const TRUNCATED = 'Se alcanzó el tope de eventos de impacto exportables (200 por roca, 100 000 en total); los máximos y conteos por roca incluyen todos los eventos.';
 
 function event(overrides = {}) {
@@ -89,7 +89,7 @@ test('impactEvents: filas planas de rest, culled, maxTime y maxSteps con rockId 
     assert.equal(r.impactEvents.length, 4);
     assert.deepEqual(plain(r.impactEvents.map(e => [e.rockId, e.stopReason])), [[7, 'rest'], [8, 'culled'], [9, 'maxTime'], [10, 'maxSteps']]);
     assert.deepEqual(Object.keys(r.impactEvents[0]).sort(), ['cnEff', 'contactSpeed', 'ctEff', 'energy', 'flightHeightBefore',
-        'index', 'rockId', 'speed', 'stopReason', 'surface', 't', 'vn', 'x', 'y']);
+        'fragmentKind', 'index', 'rockId', 'rootId', 'speed', 'stopReason', 'surface', 't', 'vn', 'x', 'y']);
     for (const e of r.impactEvents) for (const v of Object.values(e)) {
         if (typeof v === 'number') assert.ok(Number.isFinite(v));
     }
@@ -182,10 +182,10 @@ test('generateImpactCSV: encabezado exacto, superficie en español y energía en
     assert.equal(lines[0], IMPACT_HEADER);
     assert.equal(s.generateImpactCSV().endsWith('\n'), true);
     const terrain = lines[1].split(',');
-    assert.equal(terrain.length, 14);
-    assert.deepEqual(terrain, ['5', 'reposo', '1.5', '22', '18', 'Terreno', '3', '3.2', '4.1', '4.4', '1.5', '0.4', '0.7', '1.25']);
+    assert.equal(terrain.length, 16);
+    assert.deepEqual(terrain.slice(0, 14), ['5', 'reposo', '1.5', '22', '18', 'Terreno', '3', '3.2', '4.1', '4.4', '1.5', '0.4', '0.7', '1.25']);
     const barrier = lines[2].split(',');
-    assert.equal(barrier.length, 14);
+    assert.equal(barrier.length, 16);
     assert.equal(barrier[5], 'Barrera');
     assert.equal(barrier[9], '');
     assert.equal(barrier[10], '0.25');
@@ -253,14 +253,14 @@ test('sin runInfo no aparecen filas de tramo ni de variabilidad', () => {
 test('versión del contrato P0.2-beta y sin fila de altura al contacto', () => {
     const s = stats();
     s.compute([rock()]);
-    assert.equal(s.results.contractVersion, 'P0.2-beta');
+    assert.equal(s.results.contractVersion, 'P0.4');
     const rows = s.exportRows();
     assert.deepEqual(plain(rows.find(row => row[0] === 'Versión del contrato de resultados').slice(0, 2)),
-        ['Versión del contrato de resultados', 'P0.2-beta']);
+        ['Versión del contrato de resultados', 'P0.4']);
     assert.equal(rows.some(row => row[0] === 'Altura del centro al contacto (m)'), false);
     const csv = s.generateCSV();
     assert.doesNotMatch(csv, /Altura del centro al contacto/);
-    assert.match(csv, /Versión del contrato de resultados,P0\.2-beta/);
+    assert.match(csv, /Versión del contrato de resultados,P0\.4,/);
     assert.doesNotMatch(s.generateReport(), /Altura del centro al contacto/);
 });
 

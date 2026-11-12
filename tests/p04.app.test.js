@@ -223,7 +223,7 @@ test('renderer (línea de tiempo): tres núcleos sucesivos se unen a su padre po
 });
 
 // --- Versionado (§5, E1.1) ---
-const head = file => execFileSync('git', ['show', `HEAD:${file}`], { cwd: ROOT, encoding: 'utf8',
+const head = file => execFileSync('git', ['show', `18e4a1c3:${file}`], { cwd: ROOT, encoding: 'utf8',
     env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' }, maxBuffer: 64 * 1024 * 1024 });
 const versions = html => Object.fromEntries([...html.matchAll(/(?:src|href)="([^"?]+)\?v=(\d+)"/g)].map(m => [m[1], Number(m[2])]));
 
@@ -232,13 +232,16 @@ test('versionado E1.1: suben solo los ?v= del §5 y WORKER_VERSION pasa de 9 a 1
     const htmlNow = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
     const now = versions(htmlNow);
     const rendererChanged = head('js/renderer.js') !== fs.readFileSync(path.join(ROOT, 'js/renderer.js'), 'utf8');
-    const expected = { ...before, 'js/physics.js': 13, 'js/simulation.js': 12, 'js/app-worker.js': 9, 'js/app.js': 16,
+    const expected = { ...before, 'js/physics.js': 13, 'js/simulation.js': 12, 'js/app-worker.js': 9, 'js/app.js': 17, 'js/stats.js': 10,
         'js/renderer.js': rendererChanged ? 8 : 7 };
     assert.deepEqual(before['js/physics.js'], 12);
     assert.deepEqual(now, expected);
-    // index.html solo cambia en los ?v=.
+    // index.html solo cambia en los ?v= y en el bloque nuevo «Piezas finales» (P0.4 parte B).
     const strip = html => html.replace(/\?v=\d+/g, '?v=N');
-    assert.equal(strip(htmlNow), strip(head('index.html')));
+    const block = /^ {12}<div id="lineage-block" style="display:none;">\n[\s\S]*?\n {12}<\/div>\n/m;
+    assert.match(htmlNow, block);
+    assert.match(block.exec(htmlNow)[0], /Piezas finales/);
+    assert.equal(strip(htmlNow.replace(block, '')), strip(head('index.html')));
     const workerVersion = source => Number(/const WORKER_VERSION = (\d+);/.exec(source)[1]);
     assert.equal(workerVersion(head('js/app-worker.js')), 9);
     assert.equal(workerVersion(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8')), 10);

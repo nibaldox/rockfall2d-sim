@@ -31,7 +31,7 @@ const { fixture } = new Function('require', '__dirname', fixtureSource + '\nretu
 
 const IMPACT_HEADER = 'Roca,Motivo de término,Tiempo (s),X centro (m),Y centro (m),Superficie,Tramo o barrera,' +
     'Velocidad normal (m/s),Rapidez (m/s),Rapidez del punto de contacto (m/s),Energía total (kJ),' +
-    'Coef. normal efectivo,Coef. tangencial efectivo,Altura de vuelo previa (m)';
+    'Coef. normal efectivo,Coef. tangencial efectivo,Altura de vuelo previa (m),Roca original,Tipo de pieza';
 const EVENT_KEYS = ['t', 'x', 'y', 'surface', 'index', 'vn', 'speed', 'contactSpeed', 'energy', 'cnEff', 'ctEff', 'flightHeightBefore'];
 const chartIds = ['chart-energy-hist', 'chart-energy-distance', 'chart-accumulation',
     'chart-bounce-distance', 'chart-velocity-distance', 'chart-runout-dist'];
@@ -165,7 +165,7 @@ for (const method of METHODS) {
         assert.ok(results, 'Stats publica');
         assert.doesNotMatch(f.element('simulation-status').textContent, /incompatible/);
         assert.notEqual(results.status, 'bloqueado');
-        assert.equal(results.contractVersion, 'P0.2-beta');
+        assert.equal(results.contractVersion, 'P0.4');
         assert.equal(f.element('btn-export-impacts').disabled, false);
 
         // Agregados β sobre la población en reposo.
@@ -196,7 +196,7 @@ for (const method of METHODS) {
             'Impactos por roca (vn ≥ 0.5 m/s)']) assert.ok(labels.includes(label), label);
         assert.equal(labels.includes('Altura del centro al contacto (m)'), false);
         const csv = f.app.stats.generateCSV();
-        assert.match(csv, /Versión del contrato de resultados,P0\.2-beta/);
+        assert.match(csv, /Versión del contrato de resultados,P0\.4,/);
         assert.doesNotMatch(csv + f.app.stats.generateReport(), /NaN|Infinity|undefined/);
 
         // CSV de impactos: una fila por evento guardado, columnas exactas.
@@ -206,7 +206,7 @@ for (const method of METHODS) {
         assert.equal(body.length, rocks.reduce((sum, r) => sum + r.impactEvents.length, 0));
         const perRock = new Map();
         for (const cells of body) {
-            assert.equal(cells.length, 14, cells.join(','));
+            assert.equal(cells.length, 16, cells.join(','));
             assert.ok(['Terreno', 'Barrera'].includes(cells[5]));
             perRock.set(cells[0], (perRock.get(cells[0]) || 0) + 1);
         }

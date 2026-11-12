@@ -328,13 +328,13 @@ test('versionado del §4 coincide y ningún otro ?v= cambia', () => {
     const versions = source => Object.fromEntries([...source.matchAll(/(js\/[\w.\-]+\.js)\?v=(\d+)/g)]
         .map(m => [m[1], Number(m[2])]));
     const current = versions(fs.readFileSync(indexPath, 'utf8'));
-    const head = versions(execFileSync('git', ['show', 'HEAD:index.html'],
+    const head = versions(execFileSync('git', ['show', '67b34e52:index.html'],
         { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' } }));
     assert.equal(current['js/physics.js'], 13);
     assert.equal(current['js/simulation.js'], 12);
-    assert.equal(current['js/stats.js'], 9);
+    assert.equal(current['js/stats.js'], 10);
     assert.equal(current['js/renderer.js'], 7);
-    assert.equal(current['js/app.js'], 16);
+    assert.equal(current['js/app.js'], 17);
     assert.equal(current['js/app-worker.js'], 9);
     const changed = ['js/physics.js', 'js/simulation.js', 'js/stats.js', 'js/renderer.js', 'js/app.js', 'js/app-worker.js'];
     assert.equal(Object.keys(current).length, Object.keys(head).length);

@@ -218,7 +218,7 @@ test('sin runInfo no se agregan filas de parámetros efectivos', () => {
 const BETA_LABELS = ['Altura de vuelo del centro, máx. por roca (m)', 'Velocidad normal de impacto, máx. por roca (m/s)',
     'Rapidez de impacto, máx. por roca (m/s)', 'Energía de impacto (traslación + rotación), máx. por roca (kJ)',
     'Impactos por roca (vn ≥ 0.5 m/s)'];
-const BETA_TAIL = [['Versión del contrato de resultados', 'P0.2-beta'], ['Tope de eventos de impacto por roca', '200']];
+const BETA_TAIL = [['Versión del contrato de resultados', 'P0.4'], ['Tope de eventos de impacto por roca', '200']];
 const NO_DATA = ['N', 'mínimo', 'media', 'máximo', 'desviación', 'P10', 'P50', 'P83', 'P95'].map(k => `${k}=No disponible`).join('; ');
 const csvCell = label => (label.includes(',') ? `"${label}"` : label);
 const BETA_FORMAT = {

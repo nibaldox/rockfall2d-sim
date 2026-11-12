@@ -2,13 +2,21 @@
 const IMPACT_ROW_CAP = 100000;
 const IMPACT_ROCK_CAP = 200;
 const IMPACT_SURFACES = ['terrain', 'barrier'];
-const IMPACT_REASONS = ['rest', 'culled', 'maxTime', 'maxSteps'];
+// P0.4 B: con fragmentación también se exportan los eventos de los padres `fragmented`.
+const IMPACT_REASONS = ['rest', 'culled', 'maxTime', 'maxSteps', 'fragmented'];
 const IMPACT_HEADER = ['Roca', 'Motivo de término', 'Tiempo (s)', 'X centro (m)', 'Y centro (m)', 'Superficie',
     'Tramo o barrera', 'Velocidad normal (m/s)', 'Rapidez (m/s)', 'Rapidez del punto de contacto (m/s)',
-    'Energía total (kJ)', 'Coef. normal efectivo', 'Coef. tangencial efectivo', 'Altura de vuelo previa (m)'];
+    'Energía total (kJ)', 'Coef. normal efectivo', 'Coef. tangencial efectivo', 'Altura de vuelo previa (m)',
+    'Roca original', 'Tipo de pieza'];
 const IMPACT_TRUNCATED_MESSAGE = 'Se alcanzó el tope de eventos de impacto exportables (200 por roca, 100 000 en total); los máximos y conteos por roca incluyen todos los eventos.';
 const REASON_NAMES = { rest: 'reposo', culled: 'salida del dominio', maxTime: 'tiempo máximo', maxSteps: 'pasos máximos', fragmented: 'fragmentación', cancelled: 'cancelación', safetyLimit: 'límite de seguridad' };
 const SURFACE_NAMES = { terrain: 'Terreno', barrier: 'Barrera' };
+const KIND_NAMES = { primary: 'primaria', core: 'núcleo', major: 'principal', spall: 'esquirla' };
+const LINEAGE_MASS_TOLERANCE = 1e-9;
+const DISCARDED_FRACTION_WARNING = 0.01;
+// Máximos por árbol que hereda la fila envolvente (CONTRATO_P04 §B.1).
+const ENVELOPE_MAX_FIELDS = ['maxKineticEnergy', 'maxBounceHeight', 'maxImpactVelocity', 'maxFlightHeight',
+    'maxImpactNormalSpeed', 'maxImpactSpeed', 'maxImpactContactSpeed', 'maxImpactEnergy'];
 
 // Único escapado CSV del módulo: lo comparten generateCSV y generateImpactCSV.
 function csvQuote(value) {
@@ -23,7 +31,7 @@ class Stats {
     }
 
     compute(rocks, releasePoint = null, runInfo = null) {
-        const input = Array.isArray(rocks) ? rocks : [];
+        const entities = Array.isArray(rocks) ? rocks : [];
         const calcMethods = ['rigid-body', 'lumped-mass', 'nonsmooth'];
         let source = null;
         try {
@@ -50,6 +58,11 @@ class Stats {
         };
         // Extremos del perfil: todos los tramos con geometría válida (RVBa-3a).
         const profileExtent = this.segmentsExtent(readField('segments'));
+        // P0.4 B: con fragmentación la población principal son filas envolventes, una por
+        // primaria; sin fragmentación se usan las rocas tal cual (I4).
+        const fragmented = entities.some(r => r && (r.stopReason === 'fragmented' || r.isCore || r.generation > 0));
+        const tree = fragmented ? this.buildLineage(entities) : null;
+        const input = tree && tree.valid ? tree.rows : entities;
         const reasons = ['rest', 'culled', 'maxTime', 'maxSteps', 'fragmented', 'cancelled', 'safetyLimit'];
         const byReason = Object.fromEntries(reasons.map(reason => [reason, 0]));
         for (const rock of input) {
@@ -65,10 +78,16 @@ class Stats {
         };
         const warnings = [];
         const warn = (code, message) => warnings.push({ code, message });
-        const fragmented = input.some(r => r && (r.stopReason === 'fragmented' || r.isCore || r.generation > 0));
         if (censored) warn('censura', 'Hay rocas censuradas; las distribuciones finales son condicionales al reposo y el alcance máximo es una cota.');
         if (!directionResolved && input.length) warn('direccionAmbigua', 'El sentido de descenso no está resuelto para todas las rocas.');
-        if (fragmented) warn('fragmentacion', 'La fragmentación impide publicar agregados hasta P0.4.');
+        if (tree && tree.valid) {
+            warn('fragmentacion', 'Corrida con fragmentación: estadísticas por roca original (envolvente); ver bloque de piezas finales');
+            if (tree.lineage.discardedByTree.some(item => item.fraction > DISCARDED_FRACTION_WARNING)) {
+                warn('masaDescartada', 'Algún árbol descartó más del 1 % de la masa original en esquirlas menores de 0.05 m no simuladas.');
+            }
+        } else if (tree) {
+            warn('linajeInvalido', 'El linaje de fragmentos es incoherente o no conserva la masa; no se publican agregados.');
+        }
         if (!byReason.rest && input.length) warn('sinReposo', 'No hay rocas en reposo para calcular distribuciones finales.');
         if (sources.length > 1) warn('variasFuentes', 'Hay varias fuentes; las métricas usan el origen efectivo de cada roca.');
         if (effective.timeStep > 0.02 && (effective.calcMethod === 'rigid-body' || effective.calcMethod === 'nonsmooth')) {
@@ -81,11 +100,12 @@ class Stats {
             (r.downhillSign === null ? r.maxDownhillAdvance === null : Number.isFinite(r.maxDownhillAdvance)) &&
             (r.stopReason === 'culled' ? ['minX', 'maxX', 'minY', 'maxY'].includes(r.cullBoundary) : r.cullBoundary === null) &&
             reasons.includes(r.stopReason);
-        let blockedReason = !input.length ? 'sinRocas' : fragmented ? 'fragmentacion' :
-            (byReason.cancelled || byReason.safetyLimit || rocks.status === 'safetyLimit' || input.some(r => r && r.status === 'safetyLimit')) ? 'censuraNoPublicable' :
-            !input.every(valid) ? 'esquemaInvalido' : null;
+        const unpublishable = r => r && (r.status === 'safetyLimit' || r.stopReason === 'cancelled' || r.stopReason === 'safetyLimit');
+        let blockedReason = !input.length ? 'sinRocas' : tree && !tree.valid ? 'linajeInvalido' :
+            (byReason.cancelled || byReason.safetyLimit || rocks.status === 'safetyLimit' || entities.some(unpublishable)) ? 'censuraNoPublicable' :
+            !(entities.every(valid) && (input === entities || input.every(valid))) ? 'esquemaInvalido' : null;
         const result = {
-            contractVersion: 'P0.2-beta', status: blockedReason ? 'bloqueado' : (censored || !directionResolved ? 'parcial' : 'completo'),
+            contractVersion: 'P0.4', status: blockedReason ? 'bloqueado' : (censored || !directionResolved ? 'parcial' : 'completo'),
             blockedReason, warnings, totalRocks: input.length, population, restRocks: [],
             runInfo: { timeStep: effective.timeStep, calcMethod: effective.calcMethod,
                 cnVariability: effective.cnVariability, ctVariability: effective.ctVariability, segments: effective.segments },
@@ -98,6 +118,10 @@ class Stats {
         };
         this.results = result;
         if (blockedReason) return result;
+        if (tree) {
+            result.lineage = tree.lineage;
+            if (!directionResolved) result.lineage.finalRunout = null;
+        }
         if (directionResolved) {
             const boundaries = { downhill: 0, uphill: 0, below: 0, other: 0 };
             for (const r of input.filter(r => r.stopReason === 'culled')) {
@@ -153,7 +177,7 @@ class Stats {
         }
         const events = [];
         let truncatedRocks = 0, capped = false;
-        input.forEach((r, position) => {
+        entities.forEach((r, position) => {
             if (!r || !IMPACT_REASONS.includes(r.stopReason)) return;
             let list = [];
             try {
@@ -171,15 +195,19 @@ class Stats {
                 const item = list[i];
                 if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
                 const finite = value => Number.isFinite(value) ? value : null;
-                events.push({
+                const entry = {
                     rockId, stopReason: r.stopReason,
                     t: finite(item.t), x: finite(item.x), y: finite(item.y),
                     surface: IMPACT_SURFACES.includes(item.surface) ? item.surface : null,
                     index: Number.isInteger(item.index) && item.index >= 0 ? item.index : null,
                     vn: finite(item.vn), speed: finite(item.speed), contactSpeed: finite(item.contactSpeed),
                     energy: finite(item.energy), cnEff: finite(item.cnEff), ctEff: finite(item.ctEff),
-                    flightHeightBefore: finite(item.flightHeightBefore)
-                });
+                    flightHeightBefore: finite(item.flightHeightBefore),
+                    // X2: campos enumerables normales, al final de cada evento.
+                    rootId: Number.isInteger(r.rootId) && r.rootId >= 0 ? r.rootId : rockId,
+                    fragmentKind: Object.hasOwn(KIND_NAMES, r.fragmentKind) ? r.fragmentKind : (fragmented ? null : 'primary')
+                };
+                events.push(entry);
             }
         });
         result.impactEvents = events;
@@ -188,7 +216,7 @@ class Stats {
         // E2.2: impactos de terreno más allá de los extremos del perfil de la corrida.
         if (profileExtent) {
             const minX = profileExtent.minX, maxX = profileExtent.maxX;
-            const outside = input.some(r =>
+            const outside = entities.some(r =>
                 Array.isArray(r.impactEvents) && r.impactEvents.some(e => e && e.surface === 'terrain' &&
                     Number.isFinite(e.x) && (e.x < minX || e.x > maxX)));
             if (outside) {
@@ -198,6 +226,153 @@ class Stats {
             }
         }
         return result;
+    }
+
+    /**
+     * Arma y valida los árboles de linaje (CONTRATO_P04 §B.1–B.3).
+     *
+     * @param {Array} entities - todas las entidades de la corrida (primarias y descendientes)
+     * @returns {{valid: boolean, rows: Array, lineage: Object|null}} filas envolventes, una por
+     *     primaria en su orden de entrada, y la población secundaria de piezas finales
+     */
+    buildLineage(entities) {
+        const invalid = { valid: false, rows: [], lineage: null };
+        const byId = new Map(), childCount = new Map(), groups = new Map();
+        for (const r of entities) {
+            if (!r || !Number.isInteger(r.id) || byId.has(r.id)) return invalid;
+            byId.set(r.id, r);
+        }
+        for (const r of entities) {
+            const root = byId.get(r.rootId);
+            if (!root || root.rootId !== root.id || root.parentId !== null) return invalid;
+            if (r !== root) {
+                const parent = byId.get(r.parentId);
+                if (!parent || parent === r || parent.rootId !== r.rootId || parent.stopReason !== 'fragmented') return invalid;
+                childCount.set(parent.id, (childCount.get(parent.id) || 0) + 1);
+            }
+            if (!groups.has(root.id)) groups.set(root.id, []);
+            groups.get(root.id).push(r);
+        }
+        const rows = [];
+        const lineage = { primaries: 0, entities: entities.length, leaves: 0, maxGeneration: 0, byKind: {}, byReason: {},
+            mass: { original: 0, rest: 0, culled: 0, censored: 0, discarded: 0, maxRelativeError: 0 },
+            finalRunout: null, discardedByTree: [] };
+        const runouts = [];
+        for (const root of entities) {
+            if (root.id !== root.rootId) continue;
+            const list = groups.get(root.id);
+            // Sin ciclos: subiendo por `parentId` toda entidad llega a la raíz.
+            for (const r of list) {
+                let node = r, hops = 0;
+                while (node !== root && hops++ <= list.length) node = byId.get(node.parentId);
+                if (node !== root) return invalid;
+            }
+            if (list.some(r => r.stopReason === 'fragmented' && !childCount.get(r.id))) return invalid;
+            const leaves = list.filter(r => r.stopReason !== 'fragmented');
+            if (!leaves.length || !Number.isFinite(root.mass) || !(root.mass > 0) ||
+                leaves.some(r => !Number.isFinite(r.mass) || r.mass < 0) ||
+                list.some(r => !Number.isFinite(r.discardedMass) || r.discardedMass < 0)) return invalid;
+            const discarded = list.reduce((sum, r) => sum + r.discardedMass, 0);
+            const leafMass = leaves.reduce((sum, r) => sum + r.mass, 0);
+            const relativeError = Math.abs(leafMass + discarded - root.mass) / root.mass;
+            if (!(relativeError <= LINEAGE_MASS_TOLERANCE)) return invalid;
+            const advance = r => Number.isFinite(r.maxDownhillAdvance) ? r.maxDownhillAdvance : -Infinity;
+            let representative = leaves[0];
+            for (const leaf of leaves) {
+                const delta = advance(leaf) - advance(representative);
+                if (delta > 0 || (!(delta < 0) && leaf.id < representative.id)) representative = leaf;
+            }
+            // Censura conservadora: una hoja en tiempo o pasos máximos convierte la cota en «≥».
+            const late = leaves.filter(r => r.stopReason === 'maxTime' || r.stopReason === 'maxSteps')
+                .reduce((first, r) => first === null || r.id < first.id ? r : first, null);
+            const stopReason = representative.stopReason === 'rest' && late ? late.stopReason : representative.stopReason;
+            const max = key => list.reduce((best, r) => Number.isFinite(r[key]) && (best === null || r[key] > best) ? r[key] : best, null);
+            const sum = key => list.reduce((total, r) => total + (Number.isFinite(r[key]) ? r[key] : 0), 0);
+            const row = { ...root, finalX: representative.finalX, finalY: representative.finalY, stopReason,
+                cullBoundary: representative.cullBoundary, isResting: stopReason === 'rest',
+                maxDownhillAdvance: max('maxDownhillAdvance'), bounces: sum('bounces'), impactCount: sum('impactCount'),
+                droppedImpactEvents: sum('droppedImpactEvents'),
+                impactEnergies: list.flatMap(r => Array.isArray(r.impactEnergies) ? r.impactEnergies : []),
+                representativeId: representative.id, representativeMass: representative.mass,
+                treeSize: list.length, leafCount: leaves.length };
+            for (const key of ENVELOPE_MAX_FIELDS) {
+                const value = max(key);
+                if (value !== null) row[key] = value;
+            }
+            rows.push(row);
+            lineage.primaries++;
+            lineage.leaves += leaves.length;
+            lineage.mass.original += root.mass;
+            lineage.mass.discarded += discarded;
+            lineage.mass.maxRelativeError = Math.max(lineage.mass.maxRelativeError, relativeError);
+            lineage.discardedByTree.push({ rootId: root.id, discarded, fraction: discarded / root.mass });
+            for (const r of list) {
+                if (Number.isFinite(r.generation) && r.generation > lineage.maxGeneration) lineage.maxGeneration = r.generation;
+            }
+            for (const leaf of leaves) {
+                lineage.byKind[leaf.fragmentKind] = (lineage.byKind[leaf.fragmentKind] || 0) + 1;
+                lineage.byReason[leaf.stopReason] = (lineage.byReason[leaf.stopReason] || 0) + 1;
+                if (leaf.stopReason === 'rest') {
+                    lineage.mass.rest += leaf.mass;
+                    const runout = leaf.downhillSign * (leaf.finalX - leaf.releaseX);
+                    if ((leaf.downhillSign === 1 || leaf.downhillSign === -1) && Number.isFinite(runout)) runouts.push([runout, leaf.mass]);
+                } else if (leaf.stopReason === 'culled') {
+                    lineage.mass.culled += leaf.mass;
+                } else {
+                    lineage.mass.censored += leaf.mass;
+                }
+            }
+        }
+        if (rows.length !== groups.size) return invalid;
+        if (runouts.length) {
+            runouts.sort((a, b) => a[0] - b[0]);
+            const block = { n: runouts.length, massTotal: runouts.reduce((total, pair) => total + pair[1], 0) };
+            for (const p of [10, 50, 83, 95]) block[`p${p}`] = this.weightedPercentile(runouts, p);
+            block.max = runouts[runouts.length - 1][0];
+            lineage.finalRunout = block;
+        }
+        return { valid: true, rows, lineage };
+    }
+
+    /**
+     * Percentil ponderado: el menor x tal que el peso acumulado hasta x es ≥ p·W.
+     *
+     * @param {Array<[number, number]>} pairs - pares [valor, peso] ordenados por valor
+     * @param {number} p - percentil en 0–100
+     * @returns {number|null}
+     */
+    weightedPercentile(pairs, p) {
+        if (!pairs.length) return null;
+        const target = p / 100 * pairs.reduce((total, pair) => total + pair[1], 0);
+        let accumulated = 0;
+        for (const [value, weight] of pairs) {
+            accumulated += weight;
+            if (accumulated >= target) return value;
+        }
+        return pairs[pairs.length - 1][0];
+    }
+
+    // Filas de linaje del CSV general y del reporte: siempre de 2 elementos (nunca 14 ni 15).
+    lineageRows(lineage) {
+        const rows = [['Piezas finales', 'hojas no fragmentadas de todos los árboles; alcance ponderado por masa'],
+            ['Piezas finales: rocas originales (N)', lineage.primaries], ['Piezas finales: entidades simuladas (N)', lineage.entities],
+            ['Piezas finales: piezas (N)', lineage.leaves], ['Piezas finales: generación máxima', lineage.maxGeneration]];
+        for (const [kind, count] of Object.entries(lineage.byKind)) rows.push([`Piezas finales de tipo ${KIND_NAMES[kind] ?? kind} (N)`, count]);
+        for (const [reason, count] of Object.entries(lineage.byReason)) rows.push([`Piezas finales con motivo ${REASON_NAMES[reason] ?? reason} (N)`, count]);
+        const m = lineage.mass;
+        rows.push(['Piezas finales: masa original (kg)', m.original], ['Piezas finales: masa en reposo (kg)', m.rest],
+            ['Piezas finales: masa que sale del dominio (kg)', m.culled], ['Piezas finales: masa censurada por tiempo o pasos (kg)', m.censored],
+            ['Piezas finales: masa descartada sin simular (kg)', m.discarded],
+            ['Piezas finales: error relativo máximo de conservación de masa por árbol', m.maxRelativeError],
+            ['Piezas finales: árboles con más del 1 % de masa descartada (N)',
+                lineage.discardedByTree.filter(item => item.fraction > DISCARDED_FRACTION_WARNING).length]);
+        const f = lineage.finalRunout;
+        rows.push(['Piezas finales: alcance final en reposo (N)', f ? f.n : null], ['Piezas finales: masa en reposo con alcance (kg)', f ? f.massTotal : null]);
+        for (const key of ['p10', 'p50', 'p83', 'p95', 'max']) {
+            rows.push([`Piezas finales: alcance final ponderado por masa ${key.toUpperCase()} (m)`, f ? f[key] : null]);
+        }
+        rows.push(['Piezas finales: tiempo de los impactos', 't medido desde la liberación de la roca original']);
+        return rows;
     }
 
     sanitizeSegments(raw) {
@@ -361,6 +536,7 @@ class Stats {
         }
         rows.push(['Tope de eventos de impacto por roca', IMPACT_ROCK_CAP]);
         rows.push(['Convenciones', 'W = 10 m; umbral = 0.5 m; referencia al centro efectivo; alcance máximo muestreado por subpaso.']);
+        if (r.lineage) rows.push(...this.lineageRows(r.lineage));
         return rows;
     }
 
@@ -377,7 +553,8 @@ class Stats {
         for (const event of r.impactEvents) {
             rows.push([event.rockId, REASON_NAMES[event.stopReason] ?? event.stopReason, event.t, event.x, event.y,
                 SURFACE_NAMES[event.surface] ?? null, event.index, event.vn, event.speed, event.contactSpeed,
-                Number.isFinite(event.energy) ? event.energy / 1000 : null, event.cnEff, event.ctEff, event.flightHeightBefore]);
+                Number.isFinite(event.energy) ? event.energy / 1000 : null, event.cnEff, event.ctEff, event.flightHeightBefore,
+                event.rootId, KIND_NAMES[event.fragmentKind] ?? null]);
         }
         return rows.map(row => row.map(csvQuote).join(',')).join('\n') + '\n';
     }

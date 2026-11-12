@@ -92,7 +92,7 @@ test('sentido ambiguo conserva descenso y bloquea alcance', () => {
 });
 test('fragmentación bloquea sin excepción', () => {
     const r = compute([rock({ stopReason: 'fragmented' })]);
-    assert.equal(r.status, 'bloqueado'); assert.equal(r.blockedReason, 'fragmentacion'); assert.equal(r.finalRunout, null);
+    assert.equal(r.status, 'bloqueado'); assert.equal(r.blockedReason, 'linajeInvalido'); assert.equal(r.finalRunout, null);
 });
 test('cero es un valor válido', () => {
     const r = compute([rock({ finalX: 10, finalY: 40, maxDownhillAdvance: 0, maxKineticEnergy: 0, bounces: 0 })]);

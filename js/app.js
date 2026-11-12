@@ -49,6 +49,33 @@ function syncVariabilityLabels() {
     if (ctLabel) ctLabel.textContent = `Variabilidad Ct (%)${suffix}`;
 }
 
+// Bloque «Piezas finales (fragmentación)»: visible solo si Stats publica results.lineage.
+function updateLineageBlock(result) {
+    const lineage = result && result.lineage ? result.lineage : null;
+    const block = document.getElementById('lineage-block');
+    if (block) block.style.display = lineage ? 'block' : 'none';
+    const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+    const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
+    const list = (counts, labels) => Object.keys(labels).filter(key => counts && counts[key] > 0)
+        .map(key => `${labels[key]}: ${counts[key]}`).join(' · ') || '—';
+    const mass = lineage && lineage.mass ? lineage.mass : {};
+    const runout = lineage && lineage.finalRunout ? lineage.finalRunout : {};
+    set('lineage-primaries', lineage ? String(lineage.primaries) : '—');
+    set('lineage-leaves', lineage ? String(lineage.leaves) : '—');
+    set('lineage-by-kind', lineage ? list(lineage.byKind, {
+        primary: 'Roca original intacta', core: 'Núcleo de abrasión', major: 'Fragmento principal', spall: 'Esquirla'
+    }) : '—');
+    set('lineage-by-reason', lineage ? list(lineage.byReason, {
+        rest: 'En reposo', culled: 'Fuera del perfil', maxTime: 'Tiempo máximo', maxSteps: 'Pasos máximos'
+    }) : '—');
+    ['original', 'rest', 'culled', 'censored', 'discarded'].forEach(key => set(`lineage-mass-${key}`, format(mass[key])));
+    ['p50', 'p83', 'p95'].forEach(key => set(`lineage-runout-${key}`, format(runout[key])));
+    const warning = lineage && Array.isArray(result.warnings) ? result.warnings.find(w => w && w.code === 'masaDescartada') : null;
+    const exceeded = lineage && Array.isArray(lineage.discardedByTree) ? lineage.discardedByTree.filter(t => t && t.fraction > 0.01).length : 0;
+    set('lineage-warning', warning ? warning.message :
+        exceeded ? `Masa descartada superior al 1 % en ${exceeded} roca(s) original(es).` : '');
+}
+
 class App {
     constructor() {
         this.terrain = new SimRocas.Terrain();
@@ -1636,6 +1663,7 @@ class App {
         });
         const warnings = document.getElementById('stats-warnings');
         if (warnings) warnings.textContent = '';
+        updateLineageBlock(null);
         const dashboard = document.getElementById('results-dashboard');
         if (dashboard) {
             dashboard.classList.add('hidden');
@@ -1788,6 +1816,8 @@ class App {
             rocks.some(r => r && ['cancelled', 'safetyLimit'].includes(r.stopReason));
         const summary = Object.entries(counts).map(([reason, count]) => `${reason}: ${count}`).join(', ');
         let message;
+        // Con fragmentación (results.lineage) el conteo visible es por roca original, no por entidad.
+        let publishedCount = rocks.length;
         if (invalid) {
             this._invalidateResults();
             message = `Corrida incompleta/censurada${incompatible ? ' (protocolo incompatible)' : ''}: ${summary || 'sin datos'}${status === 'safetyLimit' ? ' (límite de seguridad)' : ''}`;
@@ -1808,6 +1838,7 @@ class App {
                 message = `Resultados bloqueados (${reason}): ${summary || 'sin datos'}`;
             } else {
                 this.stats.updateUI();
+                updateLineageBlock(result);
                 this.renderer.renderHistogram(this.histogramCanvas, result);
                 const population = result.population;
                 const sign = rocks[0].downhillSign;
@@ -1842,7 +1873,13 @@ class App {
                         !result.reachBounds ? 'cotas de alcance no disponibles' : 'origen nominal no disponible';
                     mapReason = ` Mapa no disponible: ${cause}.`;
                 }
-                message = `${result.status === 'parcial' ? 'Resultado parcial' : 'Completado'} (${rocks.length} rocas${worker ? ', Worker' : ''}): ${summary}. ${warnings}${mapReason}`;
+                const lineage = result.lineage;
+                const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
+                if (lineage) publishedCount = lineage.primaries;
+                const subject = lineage ? `${lineage.primaries} rocas originales` : `${rocks.length} rocas`;
+                const detail = lineage ?
+                    `${lineage.leaves} piezas finales, masa en reposo ${format(lineage.mass && lineage.mass.rest)} kg (entidades: ${summary})` : summary;
+                message = `${result.status === 'parcial' ? 'Resultado parcial' : 'Completado'} (${subject}${worker ? ', Worker' : ''}): ${detail}. ${warnings}${mapReason}`;
             }
         }
         document.getElementById('simulation-status').textContent = message;
@@ -1851,7 +1888,7 @@ class App {
         const fab = document.getElementById('fab-run');
         if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
         const count = document.getElementById('rock-count-display');
-        if (count && this._resultsValid) count.textContent = `Rocas: ${rocks.length}`;
+        if (count && this._resultsValid) count.textContent = `Rocas: ${publishedCount}`;
         if (this.simulation.frameCount > 0) this.activateTimeline();
     }
 

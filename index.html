@@ -888,6 +888,24 @@
                 <div class="dash-stat-badge"><span class="dash-stat-label">Alcance máximo P95 (m)</span><span class="dash-stat-val" id="stat-reach-p95">—</span></div>
             </div>
             <div id="stats-warnings" role="status"></div>
+            <div id="lineage-block" style="display:none;">
+                <h4 style="color:var(--text-secondary);margin:8px 0;">Piezas finales (fragmentación)</h4>
+                <div class="dashboard-stats">
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Rocas originales</span><span class="dash-stat-val" id="lineage-primaries">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Piezas finales</span><span class="dash-stat-val" id="lineage-leaves">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Piezas por tipo</span><span class="dash-stat-val" id="lineage-by-kind">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Piezas por motivo</span><span class="dash-stat-val" id="lineage-by-reason">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa original (kg)</span><span class="dash-stat-val" id="lineage-mass-original">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa en reposo (kg)</span><span class="dash-stat-val" id="lineage-mass-rest">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa fuera del perfil (kg)</span><span class="dash-stat-val" id="lineage-mass-culled">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa censurada (kg)</span><span class="dash-stat-val" id="lineage-mass-censored">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa descartada (kg)</span><span class="dash-stat-val" id="lineage-mass-discarded">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final ponderado por masa, P50 (m)</span><span class="dash-stat-val" id="lineage-runout-p50">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final ponderado por masa, P83 (m)</span><span class="dash-stat-val" id="lineage-runout-p83">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final ponderado por masa, P95 (m)</span><span class="dash-stat-val" id="lineage-runout-p95">—</span></div>
+                </div>
+                <div id="lineage-warning" role="status" style="color:var(--warning);"></div>
+            </div>
             <div class="dashboard-grid">
                 <div class="chart-panel">
                     <h4>Energía cinética máx. por roca</h4>
@@ -932,7 +950,7 @@
     <script src="js/physics.js?v=13"></script>
     <script src="js/simulation.js?v=12"></script>
     <script src="js/renderer.js?v=7"></script>
-    <script src="js/stats.js?v=9"></script>
+    <script src="js/stats.js?v=10"></script>
     <script src="js/math3d.js?v=1"></script>
     <script src="js/physics3d.js?v=1"></script>
     <script src="js/source-zones.js?v=1"></script>
@@ -940,7 +958,7 @@
     <script src="js/sim3d-pool.js?v=1"></script>
     <script src="js/results3d.js?v=1"></script>
     <script src="js/view3d-trajectories.js?v=1"></script>
-    <script src="js/app.js?v=16"></script>
+    <script src="js/app.js?v=17"></script>
     <script src="js/app-stl.js?v=2"></script>
     <script src="js/app-worker.js?v=9"></script>
     <script src="js/app-modes.js?v=2"></script>

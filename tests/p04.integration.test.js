@@ -161,11 +161,13 @@ for (const calcMethod of METHODS) {
                 const b = outputs(publish(old, worker));
                 assert.equal(a.valid, true, `${label}: publica`);
                 assert.equal(b.valid, true, `${label}: β publica`);
-                assert.equal(a.results, b.results, `${label}: resultados de Stats`);
-                assert.equal(a.lineage, 4 * JSON.parse(a.results).restRocks.length, `${label}: solo linaje en restRocks`);
+                // X1: solo cambia la versión del contrato. X2: cada evento suma rootId y fragmentKind (2 columnas al final).
+                const x1 = (text, mark) => { assert.equal(text.split(mark).length, 2, `${label}: X1 una sola vez`); return text.replace(mark, mark.replace('P0.4', 'P0.2-beta')); };
+                assert.equal(x1(a.results, '"contractVersion":"P0.4"'), b.results, `${label}: resultados de Stats`);
+                assert.equal(a.lineage, 4 * JSON.parse(a.results).restRocks.length + 2 * JSON.parse(a.results).impactEvents.length, `${label}: solo linaje en restRocks y en eventos`);
                 assert.equal(b.lineage, 0, `${label}: β sin linaje`);
-                assert.equal(a.csv, b.csv, `${label}: CSV general`);
-                assert.equal(a.impacts, b.impacts, `${label}: CSV de impactos`);
+                assert.equal(x1(a.csv, 'Versión del contrato de resultados,P0.4,'), b.csv, `${label}: CSV general`);
+                assert.equal(a.impacts, b.impacts.split('\n').map((line, i) => !line ? line : line + (i ? `,${line.split(',')[0]},primaria` : ',Roca original,Tipo de pieza')).join('\n'), `${label}: CSV de impactos`);
                 // No vacuo: hay estadística publicada y eventos de impacto exportados.
                 assert.notEqual(JSON.parse(a.results).blockedReason, 'fragmentacion');
                 assert.equal(JSON.parse(a.results).totalRocks, ROCKS);
@@ -206,18 +208,18 @@ for (const calcMethod of ['rigid-body', 'lumped-mass']) {
                 assert.ok(error <= 1e-9, `${label}: masa del árbol ${b.root.id}, error ${error}`);
             }
 
-            // D5: Stats sigue bloqueando por fragmentación (parte B pendiente).
+            // D5 levantado (parte B): Stats publica por roca original y agrega `lineage`.
             const results = f.app.stats.results;
-            assert.equal(f.app._resultsValid, false, `${label}: no publica`);
-            if (results) {
-                assert.equal(results.status, 'bloqueado', label);
-                assert.equal(results.blockedReason, 'fragmentacion', label);
-            }
-            const blocked = new f.Stats();
-            blocked.compute(source);
-            assert.equal(blocked.results.status, 'bloqueado', label);
-            assert.equal(blocked.results.blockedReason, 'fragmentacion', label);
-            assert.equal(blocked.generateImpactCSV(), null, `${label}: sin CSV de impactos`);
+            assert.equal(f.app._resultsValid, true, `${label}: publica`);
+            assert.notEqual(results.status, 'bloqueado', label);
+            assert.equal(results.blockedReason, null, label);
+            assert.equal(results.lineage.primaries, FRAG_ROCKS, label);
+            const direct = new f.Stats();
+            direct.compute(source);
+            assert.notEqual(direct.results.status, 'bloqueado', label);
+            assert.equal(direct.results.blockedReason, null, label);
+            assert.equal(direct.results.lineage.entities, source.length, label);
+            assert.equal(typeof direct.generateImpactCSV(), 'string', `${label}: con CSV de impactos`);
         }
     });
 }

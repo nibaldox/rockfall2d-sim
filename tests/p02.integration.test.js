@@ -147,13 +147,13 @@ test('3 plano ambiguo publica parcial sin mapa', () => {
     assert.match(f.element('simulation-status').textContent, /mapa.*sentido ambiguo/i);
 });
 
-test('4 fragmentación real bloquea exportación con conteos', () => {
+test('4 fragmentación real publica por roca original con linaje (D5 levantado)', () => {
     const d = run(cap, { y: 60, fragmentation: true, count: 1 });
     assert.ok(d.complete.rocks.some(r => r.stopReason === 'fragmented'));
     assert.ok(d.complete.rocks.some(r => r.generation > 0));
-    const f = setup(d); assert.equal(f.app._resultsValid, false); enabled(f, false);
-    assert.equal(f.app.stats.results, null);
-    assert.match(f.element('simulation-status').textContent, /bloqueados.*fragmentacion.*fragmented: [1-9]/i);
+    const f = setup(d); assert.equal(f.app._resultsValid, true); enabled(f, true);
+    assert.equal(f.app.stats.results.lineage.primaries, 1);
+    assert.match(f.element('simulation-status').textContent, /1 rocas originales.*piezas finales.*fragmented: [1-9]/i);
 });
 
 test('5 perfil reflejado auto y -x: signo y alcance positivo', () => {
