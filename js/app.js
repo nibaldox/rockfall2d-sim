@@ -1703,18 +1703,75 @@ class App {
                 (rock.downhillSign === null ? rock.maxDownhillAdvance !== null : !Number.isFinite(rock.maxDownhillAdvance)) ||
                 !['minX', 'maxX', 'minY', 'maxY', null].includes(rock.cullBoundary) ||
                 (rock.stopReason !== 'culled' && rock.cullBoundary !== null)) return false;
+            // Linaje P0.4 (§2): tipos por roca y coherencia de las primarias.
+            const nonNegative = value => Number.isFinite(value) && value >= 0;
+            const isRockId = value => Number.isInteger(value) && value >= 1;
+            if (!isRockId(rock.id) || !(rock.parentId === null || isRockId(rock.parentId)) ||
+                !isRockId(rock.rootId) || !['primary', 'core', 'major', 'spall'].includes(rock.fragmentKind) ||
+                !nonNegative(rock.bornAt) || !nonNegative(rock.discardedMass) ||
+                (rock.parentId === null) !== (rock.fragmentKind === 'primary') ||
+                (rock.parentId === null && rock.rootId !== rock.id)) return false;
             if (!rock.color || !['r', 'g', 'b'].every(key => Number.isFinite(rock.color[key]))) return false;
             return ['_colorActive', '_colorResting', '_colorStroke'].every(key => typeof rock[key] === 'string');
+        };
+        // Validación de conjunto del linaje (§3); supone rocas ya validadas una a una.
+        const isValidLineageSet = list => {
+            const byId = new Map();
+            for (const rock of list) {
+                if (byId.has(rock.id)) return false;
+                byId.set(rock.id, rock);
+            }
+            // E1.3: `fragmentKind` coherente con `isCore` y `generation` (physics.js: primaria,
+            // constructor de Rock; `core` conserva la generación; `major` y `spall` suman 1).
+            const generationOf = rock => rock.parentId === null && rock.generation === undefined ? 0 : rock.generation;
+            const parents = new Set();
+            for (const rock of list) {
+                if (!byId.has(rock.rootId)) return false;
+                if (rock.parentId === null) {
+                    if (rock.isCore === true || generationOf(rock) !== 0) return false;
+                    continue;
+                }
+                const parent = byId.get(rock.parentId);
+                if (!parent || parent.stopReason !== 'fragmented' || parent.rootId !== rock.rootId) return false;
+                // E1.3: el hijo nace en el `elapsedTime` final del padre.
+                if (!(Math.abs(rock.bornAt - parent.elapsedTime) <= 1e-9)) return false;
+                const step = rock.fragmentKind === 'core' ? 0 : 1;
+                if (!Number.isInteger(rock.generation) || rock.generation !== generationOf(parent) + step ||
+                    rock.isCore !== (rock.fragmentKind !== 'spall')) return false;
+                parents.add(rock.parentId);
+            }
+            // E1.3: toda entidad `fragmented` tiene al menos un hijo en el conjunto.
+            for (const rock of list) {
+                if (rock.stopReason === 'fragmented' && !parents.has(rock.id)) return false;
+            }
+            // Sin ciclos: toda cadena de parentId termina en una primaria.
+            const rooted = new Set();
+            for (const rock of list) {
+                const path = new Set();
+                let current = rock;
+                while (current.parentId !== null && !rooted.has(current.id)) {
+                    if (path.has(current.id)) return false;
+                    path.add(current.id);
+                    current = byId.get(current.parentId);
+                }
+                path.forEach(id => rooted.add(id));
+            }
+            return true;
         };
         const allowed = ['rest', 'culled', 'maxTime', 'maxSteps', 'fragmented', 'cancelled', 'safetyLimit'];
         const counts = {};
         let incompatible = !Array.isArray(rocks) || rocks.length === 0 || !['completed', 'safetyLimit'].includes(status);
         const hasRockList = Array.isArray(rocks);
         if (!hasRockList) rocks = [];
-        const safeRocks = rocks.filter(r => isCompatibleResultRock(r));
+        let safeRocks = rocks.filter(r => isCompatibleResultRock(r));
         if (!hasRockList || safeRocks.length !== rocks.length) {
             incompatible = true;
             // Los frames se indexan por roca: no deben apuntar a un subconjunto distinto.
+            this.simulation.frames = [];
+        } else if (!isValidLineageSet(safeRocks)) {
+            // Linaje incoherente: se rechaza la corrida entera, sin rocas ni frames.
+            incompatible = true;
+            safeRocks = [];
             this.simulation.frames = [];
         }
         if (worker) safeRocks.forEach(r => { r.getShapeVertices = this._workerRockShapeVertices; });

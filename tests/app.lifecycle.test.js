@@ -50,7 +50,7 @@ const rock = reason => ({ stopReason: reason, releaseX: 0, releaseY: 1, sourceIn
     impactCount: 0, maxImpactNormalSpeed: null, maxImpactSpeed: null, maxImpactContactSpeed: null,
     maxImpactEnergy: null, maxFlightHeight: null, impactEvents: [], droppedImpactEvents: 0,
     impactEnergies: [], trajectory: [], bouncePoints: [], shape: [{ x: 0, y: 0 }],
-    parentId: null, id: 1, color: { r: 1, g: 2, b: 3 },
+    parentId: null, id: 1, rootId: 1, fragmentKind: 'primary', bornAt: 0, discardedMass: 0, color: { r: 1, g: 2, b: 3 },
     getShapeVertices() { return this.shape; },
     _colorActive: '#ffffff', _colorResting: '#ffffff', _colorStroke: '#ffffff' });
 
@@ -123,7 +123,7 @@ test('cancelación normal conserva motivo sin agregados y callbacks previos se i
 test('fin normal censurado conserva roca y publica resultados', () => {
     const { app, element } = fixture(false);
     app.runSimulation();
-    const rocks = [rock('maxSteps'), rock('rest')];
+    const rocks = [rock('maxSteps'), { ...rock('rest'), id: 2, rootId: 2 }];
     app.simulation.rocks = rocks;
     app.simulation.onComplete(rocks);
     assert.equal(app.stats.calls, 1);

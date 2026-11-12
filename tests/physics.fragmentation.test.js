@@ -95,8 +95,9 @@ test('abrasión ratio 1.2: una esquirla, núcleo sobrevive, masa y energía cons
 
         const core = result.core;
         assert.equal(core.generation, parent.generation, `${label}: el núcleo conserva la generation del padre`);
-        assert.equal(core.parentId, parent.parentId, `${label}: el núcleo hereda el parentId del padre`);
-        assert.equal(core.id, parent.id, `${label}: el núcleo conserva el id del padre (continuidad de trayectoria)`);
+        assert.equal(core.parentId, parent.id, `${label}: el núcleo es hijo del padre fragmentado (P0.4)`);
+        assert.notEqual(core.id, parent.id, `${label}: el núcleo tiene id propio (P0.4, id único por corrida)`);
+        assert.equal(core.rootId, parent.rootId, `${label}: el núcleo conserva el rootId del padre (P0.4)`);
         assert.equal(core.isCore, true, `${label}: core.isCore === true`);
         assert.ok(core.mass < parent.mass, `${label}: el núcleo pierde masa (${core.mass} < ${parent.mass})`);
 

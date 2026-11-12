@@ -56,6 +56,9 @@ function runWorkerSimulation(msg) {
     const terrain = new SimRocas.Terrain();
     terrain.fromJSON(msg.terrainJSON);
 
+    // P0.4: cada corrida numera sus rocas desde 1 (también lo hace sim.start).
+    SimRocas.nextRockId = 1;
+
     const physics = new SimRocas.PhysicsEngine();
     const sim = new SimRocas.Simulation(terrain, physics);
     sim.configure(msg.simParams);
@@ -146,6 +149,7 @@ function copyImpactEvents(events) {
  *   - js/renderer.js renderTimelineFrame(): shape, color ({r,g,b}), radius
  *   - fragmentación: generation, parentId, isFragmented, isCore,
  *     massLossRatio, originalDiameter
+ *   - P0.4 (linaje): rootId, fragmentKind, bornAt, discardedMass
  *   - P0.2-β: impactCount, maxImpactNormalSpeed, maxImpactSpeed,
  *     maxImpactContactSpeed, maxImpactEnergy, maxFlightHeight, impactEvents,
  *     droppedImpactEvents
@@ -155,6 +159,10 @@ function serializeRocks(rocks) {
         id: r.id,
         generation: r.generation,
         parentId: r.parentId,
+        rootId: r.rootId,
+        fragmentKind: r.fragmentKind,
+        bornAt: r.bornAt,
+        discardedMass: r.discardedMass,
         isFragmented: r.isFragmented,
         isCore: r.isCore,
         massLossRatio: r.massLossRatio,

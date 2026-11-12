@@ -68,6 +68,9 @@ class Simulation {
     }
 
     start(releaseX, releaseY, diameter, density, initialVelocity, angle, maxDuration, ignoreResting, shapeType, aspectRatio, releaseMode, multiReleasePoints) {
+        // P0.4: contador de `id` por corrida, sin sorteos. El modo normal y el
+        // Worker asignan así los mismos `id`.
+        globalThis.SimRocas.nextRockId = 1;
         this.rocks = [];
         this.activeRocks = [];
         this.finishedRocks = [];
@@ -193,8 +196,17 @@ class Simulation {
         // Push new child rocks to activeRocks and total list
         if (allNewChildren.length > 0) {
             for (const child of allNewChildren) {
-                this.activeRocks.push(child);
                 this.rocks.push(child);
+                // P0.4 E1.2: un hijo nacido con el reloj o los pasos heredados ya
+                // agotados termina al nacer, sin integrar ningún paso.
+                const bornAtLimit = this.maxDuration - child.elapsedTime <= 1e-9 ? 'maxTime' :
+                    (child.stepsTaken >= this.maxStepsPerRock ? 'maxSteps' : null);
+                if (bornAtLimit !== null && child.finish(bornAtLimit)) {
+                    this.finishedRocks.push(child);
+                    this.simulatedCount++;
+                } else {
+                    this.activeRocks.push(child);
+                }
             }
         }
 

@@ -39,24 +39,27 @@ test('barrera recibe roca worker real y rechaza cada campo α inválido', () => 
     for (const mutate of mutations) { const x = setup(); const bad = rest(); mutate(bad); complete(x, [bad]); assert.equal(x.app._resultsValid, false); assert.match(x.element('simulation-status').textContent, /incompatible/); }
 });
 test('parcial con censura publica cotas, conteos y exportaciones', () => {
-    const f = setup(); const a = rest(), b = rest(); b.stopReason = 'culled'; b.cullBoundary = 'maxX'; complete(f, [a, b]);
+    const f = setup(); const a = rest(), b = rest(); b.id = 2; b.rootId = 2; b.stopReason = 'culled'; b.cullBoundary = 'maxX'; complete(f, [a, b]);
     assert.equal(f.app.stats.results.status, 'parcial'); assert.equal(f.app._resultsValid, true); assert.equal(f.element('btn-export-csv').disabled, false);
     assert.match(f.element('simulation-status').textContent, /culled: 1/); assert.match(f.element('simulation-status').textContent, /censur/i);
     const map = f.app.renderer.probabilityPercentiles; assert.equal(map.originX, 0); assert.equal(map.sign, 1); assert.equal(map.bands.length, 4); assert.equal(map.bands[3].exact, false);
     f.app.showResultsDashboard(); assert.match(f.element('dash-stat-p95').textContent, /≥/);
 });
 test('fragmentación bloquea; cancelled y safetyLimit invalidan', () => {
-    for (const reason of ['fragmented', 'cancelled', 'safetyLimit']) { const f = setup(), r = rest(); r.stopReason = reason; complete(f, [r]); assert.equal(f.app._resultsValid, false); assert.equal(f.element('btn-export-csv').disabled, true); assert.match(f.element('simulation-status').textContent, new RegExp(reason === 'fragmented' ? 'fragmentaci' : reason, 'i')); }
+    for (const reason of ['fragmented', 'cancelled', 'safetyLimit']) { const f = setup(), r = rest(); r.stopReason = reason; const rocks = [r];
+        // P0.4 E1.3: un `fragmented` publicado lleva al menos un hijo coherente (physics.js: `major` es núcleo y suma 1 generación).
+        if (reason === 'fragmented') { const kid = rest(); kid.id = r.id + 1; kid.parentId = r.id; kid.rootId = r.rootId; kid.fragmentKind = 'major'; kid.isCore = true; kid.generation = 1; kid.bornAt = r.elapsedTime; kid.discardedMass = 0; rocks.push(kid); }
+        complete(f, rocks); assert.equal(f.app._resultsValid, false); assert.equal(f.element('btn-export-csv').disabled, true); assert.match(f.element('simulation-status').textContent, new RegExp(reason === 'fragmented' ? 'fragmentaci' : reason, 'i')); }
 });
 test('mapa ausente para varias fuentes o dirección ambigua, dashboard null', () => {
-    for (const multiple of [true, false]) { const f = setup(); const a = rest(), b = rest(); if (multiple) b.sourceIndex = 1; else { a.downhillSign = null; a.maxDownhillAdvance = null; b.downhillSign = null; b.maxDownhillAdvance = null; } complete(f, [a, b]); assert.equal(f.app._resultsValid, true); assert.equal(f.app.renderer.probabilityPercentiles, null); assert.match(f.element('simulation-status').textContent, /mapa/i); if (!multiple) { f.app.showResultsDashboard(); assert.equal(f.element('dash-stat-max-runout').textContent, '—'); assert.equal(f.element('dash-stat-p95').textContent, '—'); } }
+    for (const multiple of [true, false]) { const f = setup(); const a = rest(), b = rest(); b.id = 2; b.rootId = 2; if (multiple) b.sourceIndex = 1; else { a.downhillSign = null; a.maxDownhillAdvance = null; b.downhillSign = null; b.maxDownhillAdvance = null; } complete(f, [a, b]); assert.equal(f.app._resultsValid, true); assert.equal(f.app.renderer.probabilityPercentiles, null); assert.match(f.element('simulation-status').textContent, /mapa/i); if (!multiple) { f.app.showResultsDashboard(); assert.equal(f.element('dash-stat-max-runout').textContent, '—'); assert.equal(f.element('dash-stat-p95').textContent, '—'); } }
 });
 test('contador se reinicia y progresa en worker', () => {
     const f = setup(); assert.equal(f.element('rock-count-display').textContent, 'Rocas: 0'); f.workers[0].onmessage({ data: { type: 'progress', data: { progress: 0.5, simulatedCount: 3, totalRocks: 6 } } }); assert.equal(f.element('rock-count-display').textContent, 'Rocas: 3'); f.app.stopSimulation(); assert.equal(f.element('rock-count-display').textContent, 'Rocas: 0');
 });
 
 test('invalidar limpia los campos α y advertencias anteriores', () => {
-    const f = setup(); const a = rest(), b = rest(); b.stopReason = 'culled'; b.cullBoundary = 'maxX'; complete(f, [a, b]);
+    const f = setup(); const a = rest(), b = rest(); b.id = 2; b.rootId = 2; b.stopReason = 'culled'; b.cullBoundary = 'maxX'; complete(f, [a, b]);
     assert.notEqual(f.element('stat-n-rest').textContent, ''); assert.notEqual(f.element('stats-warnings').textContent, '');
     f.app._invalidateResults();
     for (const id of ['stat-n-rest', 'stat-pct-leaving', 'stat-reach-p95']) assert.equal(f.element(id).textContent, '—');
@@ -91,7 +94,7 @@ test('mapa usa origen nominal de una fuente única multifuente', () => {
 
 test('estado explica el motivo concreto de mapa no disponible', () => {
     for (const multiple of [true, false]) {
-        const f = setup(), a = rest(), b = rest();
+        const f = setup(), a = rest(), b = rest(); b.id = 2; b.rootId = 2;
         if (multiple) b.sourceIndex = 1; else { a.downhillSign = b.downhillSign = null; a.maxDownhillAdvance = b.maxDownhillAdvance = null; }
         complete(f, [a, b]); assert.match(f.element('simulation-status').textContent, multiple ? /mapa[^.]*varias fuentes/i : /mapa[^.]*sentido ambiguo/i);
     }

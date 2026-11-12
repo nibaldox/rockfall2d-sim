@@ -155,6 +155,12 @@ class Rock {
         this.id = globalThis.SimRocas.nextRockId++;
         this.generation = 0;
         this.parentId = null;
+        // P0.4: linaje. `id` es único por corrida (el contador se reinicia en
+        // Simulation.start); `rootId` es el `id` de la primaria raíz.
+        this.rootId = this.id;
+        this.fragmentKind = 'primary'; // 'primary' | 'core' | 'major' | 'spall'
+        this.bornAt = 0;               // elapsedTime del padre al nacer
+        this.discardedMass = 0;        // kg de esquirlas < 0.05 m no simuladas
         this.isFragmented = false;
         this._lastCollision = null;
         this.isCore = false;          // true if this rock is a surviving core
@@ -1620,6 +1626,8 @@ class PhysicsEngine {
                     const result = this._fragmentRockProgressive(rock, normal, energyRatio);
 
                     if (result && result.children && result.children.length > 0) {
+                        // P0.4: masa de las esquirlas descartadas por este evento.
+                        rock.discardedMass = result.discardedMass;
                         spawnedChildren = spawnedChildren || [];
                         spawnedChildren.push(...result.children);
 
@@ -1677,6 +1685,7 @@ class PhysicsEngine {
 
         const children = [];
         let core = null;
+        let discardedMass = 0;
 
         if (energyRatio < 3.0) {
             // ========================================
@@ -1719,7 +1728,10 @@ class PhysicsEngine {
                 // T0.10 (espesor (4/3)·r).
                 const childDiameter = Rock.diameterFromMass(sm, rock.density);
 
-                if (childDiameter < 0.05) continue; // skip dust-sized fragments
+                if (childDiameter < 0.05) { // skip dust-sized fragments
+                    discardedMass += sm;
+                    continue;
+                }
 
                 // Spalls fly off at ±20-45° from the impact normal
                 const ejectAngle = ((Math.random() * 2 - 1) * (20 + Math.random() * 25)) * Math.PI / 180;
@@ -1751,6 +1763,7 @@ class PhysicsEngine {
                 spall.momentOfInertia = spall.computeMomentOfInertia();
                 spall.generation = rock.generation + 1;
                 spall.parentId = rock.id;
+                spall.fragmentKind = 'spall';
 
                 children.push(spall);
             }
@@ -1773,14 +1786,15 @@ class PhysicsEngine {
             core.mass = coreMass;
             core.momentOfInertia = core.computeMomentOfInertia();
             core.generation = rock.generation; // same generation — it's a surviving core
-            core.parentId = rock.parentId;
+            // P0.4: el núcleo es una entidad nueva, hija del padre fragmentado.
+            core.parentId = rock.id;
+            core.fragmentKind = 'core';
             core.isCore = true;
             // Fraction of mass lost, in the same units as the rupture branch:
             // divided by the parent's mass at fragmentation time, not by the
             // original diameter in metres (kg/m summed into a ratio, T0.7 fix 7).
             core.massLossRatio = rock.massLossRatio + totalSpallMass / parentMass;
             core.originalDiameter = rock.originalDiameter;
-            core.id = rock.id; // keep same ID for trajectory continuity
 
         } else {
             // ========================================
@@ -1810,7 +1824,10 @@ class PhysicsEngine {
                 const sm = spallMasses[i];
                 // Esfera equivalente por masa (T0.12).
                 const childDiameter = Rock.diameterFromMass(sm, rock.density);
-                if (childDiameter < 0.05) continue;
+                if (childDiameter < 0.05) {
+                    discardedMass += sm;
+                    continue;
+                }
 
                 const ejectAngle = ((Math.random() * 2 - 1) * 30) * Math.PI / 180;
                 const cosE = Math.cos(ejectAngle);
@@ -1833,6 +1850,7 @@ class PhysicsEngine {
                 spall.momentOfInertia = spall.computeMomentOfInertia();
                 spall.generation = rock.generation + 1;
                 spall.parentId = rock.id;
+                spall.fragmentKind = 'spall';
 
                 children.push(spall);
             }
@@ -1876,6 +1894,7 @@ class PhysicsEngine {
                 child.momentOfInertia = child.computeMomentOfInertia();
                 child.generation = rock.generation + 1;
                 child.parentId = rock.id;
+                child.fragmentKind = 'major';
                 child.isCore = true;
                 child.originalDiameter = rock.originalDiameter;
                 child.massLossRatio = rock.massLossRatio + totalSpallMass / parentMass;
@@ -1889,10 +1908,18 @@ class PhysicsEngine {
             fragment.releaseY = rock.releaseY;
             fragment.sourceIndex = rock.sourceIndex;
             fragment.downhillSign = rock.downhillSign;
+            // P0.4: el alcance, el reloj y la raíz se heredan del padre, así
+            // maxTime y maxSteps cuentan desde la liberación de la primaria.
             fragment.maxDownhillAdvance = fragment.downhillSign === null ? null :
-                fragment.downhillSign * (fragment.x - fragment.releaseX);
+                Math.max(rock.maxDownhillAdvance === null ? -Infinity : rock.maxDownhillAdvance,
+                    fragment.downhillSign * (fragment.x - fragment.releaseX));
+            fragment.rootId = rock.rootId;
+            fragment.bornAt = rock.elapsedTime;
+            fragment.elapsedTime = rock.elapsedTime;
+            fragment._elapsedTimeCompensation = rock._elapsedTimeCompensation;
+            fragment.stepsTaken = rock.stepsTaken;
         }
-        return { children, core };
+        return { children, core, discardedMass };
     }
 
     /**
