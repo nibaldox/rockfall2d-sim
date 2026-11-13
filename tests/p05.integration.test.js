@@ -124,7 +124,7 @@ test('las filas X3 del CSV traen la semilla usada, también cuando se sortea', (
         assert.equal(row(typed.csv, 'Semilla'), '4242');
         assert.equal(typed.results.runInfo.seed, 4242);
         assert.equal(row(typed.csv, 'Generador pseudoaleatorio'), 'mulberry32');
-        assert.equal(row(typed.csv, 'Versión del motor'), '11');
+        assert.equal(row(typed.csv, 'Versión del motor'), '12'); // P1.1 X4: WORKER_VERSION 11→12
         assert.equal(row(typed.csv, 'Parámetros correlacionados'), 'No');
         assert.equal(typed.results.runInfo.correlatedParams, false);
         assert.equal(row(typed.csv, 'Versión del contrato de resultados'), 'P0.5');

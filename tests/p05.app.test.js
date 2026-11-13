@@ -146,7 +146,7 @@ for (const worker of [false, true]) {
         for (const info of [a.app._runInfo, a.app.stats.info]) {
             assert.equal(info.seed, 7);
             assert.equal(info.rngAlgorithm, 'mulberry32');
-            assert.equal(info.engineVersion, 11);
+            assert.equal(info.engineVersion, 12); // P1.1: WORKER_VERSION 11→12
             assert.equal(info.correlatedParams, false);
             assert.equal(typeof info.timeStep, 'number');
         }
@@ -200,11 +200,11 @@ test('versionado P0.5 y campo «Semilla» en index.html', () => {
     const versions = Object.fromEntries([...html.matchAll(/js\/([\w-]+)\.js\?v=(\d+)/g)].map(m => [m[1], Number(m[2])]));
     assert.deepEqual({ physics: versions.physics, simulation: versions.simulation, stats: versions.stats,
         app: versions.app, 'app-worker': versions['app-worker'] },
-    { physics: 14, simulation: 13, stats: 11, app: 18, 'app-worker': 10 });
+    { physics: 14, simulation: 13, stats: 11, app: 19, 'app-worker': 11 }); // P1.1: app 18→19 y app-worker 10→11 (WORKER_VERSION 12)
     assert.deepEqual({ terrain: versions.terrain, renderer: versions.renderer, stl: versions.stl,
         'app-stl': versions['app-stl'], 'app-modes': versions['app-modes'], 'app-import': versions['app-import'] },
-    { terrain: 8, renderer: 7, stl: 7, 'app-stl': 2, 'app-modes': 2, 'app-import': 4 });
-    assert.match(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8'), /^const WORKER_VERSION = 11;$/m);
+    { terrain: 9, renderer: 7, stl: 7, 'app-stl': 3, 'app-modes': 2, 'app-import': 4 }); // P1.1: terrain 8→9 y app-stl 2→3
+    assert.match(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8'), /^const WORKER_VERSION = 12;$/m); // P1.1: el Worker carga terrain.js con su ?v=
     assert.match(html, /<label[^>]*>Semilla:<\/label>\s*<input type="text" id="sim-seed"/);
     assert.match(html, /id="seed-used"[^>]*>Vacía = aleatoria; se muestra la usada</);
 });

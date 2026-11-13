@@ -252,7 +252,9 @@ Object.assign(SimRocas.App.prototype, {
                     }
                     
                     // Set the new points to active terrain!
-                    this.terrain.setPoints(points2D);
+                    if (SimRocas.ProfileEdit.blocked(this)) return;
+                    this.terrain.setPoints(SimRocas.Terrain.normalizeAutoPoints(points2D));
+                    SimRocas.ProfileEdit.changed(this);
                     
                     // Clear current simulation state/rocks
                     this.resetSimulation();

@@ -87,6 +87,25 @@
                             <button id="btn-copy-coords" class="btn btn-small" data-tooltip="Copia todas las coordenadas del perfil al portapapeles en formato tabular (pegar directo en Excel).">📋 Copiar Coord.</button>
                             <button id="btn-paste-coords" class="btn btn-small" data-tooltip="Pega coordenadas desde Excel (formato X tab Y, una fila por punto).">📋 Pegar Coord.</button>
                         </div>
+                        <div class="control-group" id="bench-generator">
+                            <label data-tooltip="Genera un perfil de bancos y bermas con descenso hacia +X. Reemplaza el perfil actual.">Generar banco–berma:</label>
+                            <label for="bench-count">N.º de bancos:</label>
+                            <input type="number" id="bench-count" min="1" max="50" step="1" value="3" title="N.º de bancos" data-tooltip="N.º de bancos (entero de 1 a 50).">
+                            <label for="bench-height">Altura de banco (m):</label>
+                            <input type="number" id="bench-height" min="0.1" step="0.5" value="10" title="Altura de banco (m)" data-tooltip="Altura de banco (m), mayor que 0.">
+                            <label for="bench-face-angle">Ángulo de cara (°):</label>
+                            <input type="number" id="bench-face-angle" min="1" max="89" step="1" value="70" title="Ángulo de cara (°)" data-tooltip="Ángulo de cara (°), entre 0 y 90 sin incluirlos.">
+                            <label for="bench-berm-width">Ancho de berma (m):</label>
+                            <input type="number" id="bench-berm-width" min="0" step="0.5" value="6" title="Ancho de berma (m)" data-tooltip="Ancho de berma (m), mayor o igual que 0.">
+                            <label for="bench-base-elevation">Cota base (m):</label>
+                            <input type="number" id="bench-base-elevation" step="1" value="0" title="Cota base (m)" data-tooltip="Cota base (m): elevación del piso.">
+                            <label for="bench-top-platform">Plataforma superior (m):</label>
+                            <input type="number" id="bench-top-platform" min="0" step="1" value="20" title="Plataforma superior (m)" data-tooltip="Plataforma superior (m): largo antes de la primera cresta.">
+                            <label for="bench-floor-length">Piso (m):</label>
+                            <input type="number" id="bench-floor-length" min="0" step="1" value="30" title="Piso (m)" data-tooltip="Piso (m): largo después de la última pata.">
+                            <button id="btn-bench-generate" class="btn btn-small" data-tooltip="Reemplaza el perfil por el banco–berma generado, asigna materiales por tramo y fija el sentido de descenso en +X.">Generar</button>
+                            <table id="bench-meta-table" class="help-text" style="display:none; width:100%; font-size:11px;"></table>
+                        </div>
                         <input type="file" id="file-input" accept=".json,.csv" style="display:none">
                     </div>
 
@@ -945,7 +964,8 @@
         <canvas id="histogram-canvas" width="380" height="200"></canvas>
     </div>
 
-    <script src="js/terrain.js?v=8"></script>
+    <script src="js/terrain.js?v=9"></script>
+    <script src="js/bench-profile.js?v=1"></script>
     <script src="js/dem.js?v=1"></script>
     <script src="js/view3d-profile.js?v=1"></script>
     <script src="js/view3d-plan.js?v=1"></script>
@@ -963,12 +983,12 @@
     <script src="js/sim3d-pool.js?v=1"></script>
     <script src="js/results3d.js?v=1"></script>
     <script src="js/view3d-trajectories.js?v=1"></script>
-    <script src="js/app.js?v=18"></script>
-    <script src="js/app-stl.js?v=2"></script>
-    <script src="js/app-worker.js?v=10"></script>
+    <script src="js/app.js?v=19"></script>
+    <script src="js/app-stl.js?v=3"></script>
+    <script src="js/app-worker.js?v=11"></script>
     <script src="js/app-modes.js?v=2"></script>
     <script src="js/app-import.js?v=4"></script>
-    <script src="js/app-profile3d.js?v=2"></script>
+    <script src="js/app-profile3d.js?v=3"></script>
     <script src="js/app-sim3d.js?v=1"></script>
 </body>
 </html>

@@ -47,6 +47,150 @@ function showSeedUsed(seed) {
  * extremos en X, tipo, etiqueta del preset, cn, ct y rugosidad. Son primitivas
  * copiadas, así que editar el perfil después no altera lo ya publicado.
  */
+// P1.1: material por rol del perfil banco–berma. Los presets de terrain.js no
+// tienen «roca» ni «grava» genéricas: cara = 'roca-dura'; berma y plataforma =
+// 'relleno' (el preset granular suelto, lo más cercano a grava); piso = 'suelo'.
+const BENCH_ROLE_MATERIAL = { face: 'roca-dura', berm: 'relleno', platform: 'relleno', floor: 'suelo' };
+
+// --- P1.1: perfil banco–berma, invalidación 6c y bloqueo en corrida ---
+
+// true si hay una corrida en curso: la edición del perfil se ignora y se
+// avisa en el estado.
+function profileEditBlocked(app) {
+    if (!(app.simulation && app.simulation.isRunning) && !app._workerActive) return false;
+    const status = document.getElementById('simulation-status');
+    if (status) status.textContent = 'Edición del perfil bloqueada durante la corrida; detén la simulación para editar';
+    return true;
+}
+
+// Toda mutación del perfil (puntos, tramos o materiales) invalida los
+// resultados y anula los metadatos banco–berma y su deshacer.
+function profileChanged(app) {
+    app._benchProfile = null;
+    app._benchUndo = null;
+    renderBenchMeta(null);
+    app._invalidateResults();
+}
+
+function renderBenchMeta(benchMeta) {
+    const table = document.getElementById('bench-meta-table');
+    if (!table) return;
+    if (!benchMeta || benchMeta.length === 0) {
+        table.innerHTML = '';
+        table.style.display = 'none';
+        return;
+    }
+    const n = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
+    const rows = benchMeta.map(b => `<tr><td>${b.index}</td><td>${n(b.crestX)}; ${n(b.crestY)}</td>` +
+        `<td>${n(b.toeX)}; ${n(b.toeY)}</td><td>${n(b.height)}</td><td>${n(b.faceAngleDeg, 1)}</td>` +
+        `<td>${n(b.effectiveWidth)}</td></tr>`).join('');
+    table.innerHTML = '<thead><tr><th>Banco</th><th>Cresta X; Y (m)</th><th>Pata X; Y (m)</th>' +
+        `<th>Altura (m)</th><th>Ángulo (°)</th><th>Berma (m)</th></tr></thead><tbody>${rows}</tbody>`;
+    table.style.display = '';
+}
+
+// Deshace «Generar»: restaura el perfil, la fuente y el sentido previos.
+function undoBenchProfile(app) {
+    const undo = app._benchUndo;
+    if (!undo) return false;
+    app.terrain.clear();
+    for (const p of undo.points) app.terrain.addPoint(p.x, p.y, app.selectedPresetType);
+    app.terrain.segments = undo.segments.map(s => ({ ...s }));
+    app.releasePoint.x = undo.release.x;
+    app.releasePoint.y = undo.release.y;
+    document.getElementById('release-x').value = undo.releaseX;
+    document.getElementById('release-y').value = undo.releaseY;
+    const mode = document.getElementById('downhill-mode');
+    if (mode) mode.value = undo.downhillMode;
+    profileChanged(app);
+    app.updateTerrainInfo();
+    app.updateSegmentsList();
+    app.renderer.autoScale();
+    app.updateZoomInfo();
+    app.render();
+    document.getElementById('simulation-status').textContent = 'Perfil banco–berma deshecho; se restauró el perfil anterior';
+    return true;
+}
+
+function generateBenchProfile(app) {
+    if (profileEditBlocked(app)) return;
+    const fail = reason => alert('No se pudo generar el perfil banco–berma: ' + reason);
+    const num = id => Number(String(document.getElementById(id).value).trim() || NaN);
+    const params = {
+        benches: num('bench-count'), benchHeight: num('bench-height'), faceAngleDeg: num('bench-face-angle'),
+        bermWidth: num('bench-berm-width'), baseElevation: num('bench-base-elevation'),
+        topPlatform: num('bench-top-platform'), floorLength: num('bench-floor-length')
+    };
+    let out;
+    try {
+        if (!SimRocas.BenchProfile) throw new Error('el generador no está disponible');
+        out = SimRocas.BenchProfile.generate(params);
+    } catch (err) {
+        fail(err.message);
+        return;
+    }
+    if (!out || out.ok !== true) {
+        fail((out && out.error) || 'error desconocido');
+        return;
+    }
+    // I-D e I-E: nunca un perfil parcial; X finita y estrictamente creciente.
+    const points = Array.isArray(out.points) ? out.points : [];
+    const roles = Array.isArray(out.roles) ? out.roles : [];
+    let valid = points.length >= 2 && roles.length === points.length - 1 &&
+        roles.every(role => Object.prototype.hasOwnProperty.call(BENCH_ROLE_MATERIAL, role));
+    for (let i = 0; valid && i < points.length; i++) {
+        valid = Number.isFinite(points[i].x) && Number.isFinite(points[i].y) && (i === 0 || points[i].x - points[i - 1].x >= 1e-9);
+    }
+    if (!valid) {
+        fail('el generador devolvió un perfil inválido');
+        return;
+    }
+    const mode = document.getElementById('downhill-mode');
+    const undo = {
+        points: app.terrain.points.map(p => ({ x: p.x, y: p.y })),
+        segments: app.terrain.segments.map(s => ({ ...s })),
+        release: { x: app.releasePoint.x, y: app.releasePoint.y },
+        releaseX: document.getElementById('release-x').value,
+        releaseY: document.getElementById('release-y').value,
+        downhillMode: mode ? mode.value : 'auto'
+    };
+    try {
+        app.terrain.setPoints(points.map(p => ({ x: p.x, y: p.y })));
+        if (app.terrain.points.length !== points.length) throw new Error('el perfil no se pudo cargar completo');
+    } catch (err) {
+        app.terrain.clear();
+        for (const p of undo.points) app.terrain.addPoint(p.x, p.y, app.selectedPresetType);
+        app.terrain.segments = undo.segments.map(s => ({ ...s }));
+        fail(err.message);
+        return;
+    }
+    roles.forEach((role, i) => app.terrain.applyPresetToRange(BENCH_ROLE_MATERIAL[role], i, i));
+    profileChanged(app);
+    app._benchUndo = undo;
+    app._benchProfile = { params: out.params, benchMeta: out.benchMeta, pointsKey: JSON.stringify(app.terrain.points) };
+    renderBenchMeta(out.benchMeta);
+    // Fuente sobre la plataforma superior, 1 m antes de la primera cresta
+    // (o a media plataforma si mide menos de 2 m).
+    const first = app.terrain.points[0].x;
+    const crest = roles[0] === 'platform' ? app.terrain.points[1].x : first;
+    app.releasePoint.x = crest - Math.min(1, (crest - first) / 2);
+    const terrainY = app.terrain.getHeightAt(app.releasePoint.x);
+    app.releasePoint.y = app.releaseMode === 'detachment' ? terrainY : terrainY + 7;
+    document.getElementById('release-x').value = app.releasePoint.x.toFixed(1);
+    document.getElementById('release-y').value = app.releasePoint.y.toFixed(1);
+    if (mode) mode.value = '+x';
+    app.updateTerrainInfo();
+    app.updateSegmentsList();
+    app.renderer.autoScale();
+    app.updateZoomInfo();
+    app.render();
+    document.getElementById('simulation-status').textContent =
+        `Perfil banco–berma generado (${out.benchMeta ? out.benchMeta.length : 0} bancos); sentido de descenso fijado en +X`;
+}
+
+// Para los mixins app-stl.js y app-profile3d.js (funciones de módulo: App.prototype no gana métodos).
+SimRocas.ProfileEdit = { blocked: profileEditBlocked, changed: profileChanged };
+
 function copyRunSegments(terrain) {
     const points = Array.isArray(terrain?.points) ? terrain.points : [];
     const segments = Array.isArray(terrain?.segments) ? terrain.segments : [];
@@ -291,11 +435,16 @@ class App {
     }
 
     setupTerrainControls() {
+        // P1.1: generador paramétrico banco–berma.
+        document.getElementById('btn-bench-generate').addEventListener('click', () => generateBenchProfile(this));
+
         document.getElementById('btn-add-point').addEventListener('click', () => {
             const x = parseFloat(document.getElementById('input-x').value);
             const y = parseFloat(document.getElementById('input-y').value);
             if (!isNaN(x) && !isNaN(y)) {
+                if (profileEditBlocked(this)) return;
                 this.terrain.addPoint(x, y, this.selectedPresetType);
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -303,8 +452,10 @@ class App {
         });
 
         document.getElementById('btn-clear-terrain').addEventListener('click', () => {
+            if (profileEditBlocked(this)) return;
             if (confirm('¿Limpiar todo el perfil?')) {
                 this.terrain.clear();
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -340,8 +491,10 @@ class App {
         document.getElementById('file-input').addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            if (profileEditBlocked(this)) return;
             const reader = new FileReader();
             reader.onload = (ev) => {
+                if (profileEditBlocked(this)) return;
                 try {
                     const ext = file.name.split('.').pop().toLowerCase();
                     if (ext === 'csv') {
@@ -349,6 +502,7 @@ class App {
                     } else {
                         this.terrain.fromJSON(ev.target.result);
                     }
+                    profileChanged(this);
                     this.terrain.canvas = this.canvas;
                     this.renderer.autoScale();
                     this.updateTerrainInfo();
@@ -387,7 +541,9 @@ class App {
 
         // Pegar coordenadas desde Excel (X(tab/coma)Y, una por línea)
         document.getElementById('btn-paste-coords').addEventListener('click', () => {
+            if (profileEditBlocked(this)) return;
             navigator.clipboard.readText().then((text) => {
+                if (profileEditBlocked(this)) return;
                 const lines = text.trim().split(/\r?\n/);
                 let added = 0;
                 for (const line of lines) {
@@ -402,6 +558,7 @@ class App {
                     }
                 }
                 if (added > 0) {
+                    profileChanged(this);
                     this.renderer.autoScale();
                     this.updateTerrainInfo();
                     this.updateSegmentsList();
@@ -436,7 +593,9 @@ class App {
         applyBtn.addEventListener('click', () => {
             const from = parseInt(this.segFrom.value) || 0;
             const to = parseInt(this.segTo.value) !== 0 ? parseInt(this.segTo.value) : this.terrain.segmentCount - 1;
+            if (profileEditBlocked(this)) return;
             this.terrain.applyPresetToRange(this.selectedPresetType, from, to);
+            profileChanged(this);
             this.updateSegmentsList();
             this.render();
         });
@@ -447,10 +606,26 @@ class App {
         if (roughnessSlider && roughnessVal) {
             const handleInput = () => {
                 const val = parseInt(roughnessSlider.value) || 0;
-                roughnessVal.textContent = `${val}°`;
                 if (this.selectedSegmentIndex >= 0 && this.terrain.segments[this.selectedSegmentIndex]) {
-                    this.terrain.segments[this.selectedSegmentIndex].roughness = val;
+                    if (profileEditBlocked(this)) {
+                        roughnessVal.textContent = `${val}°`;
+                        return;
+                    }
+                    if (this.terrain.segments[this.selectedSegmentIndex].roughness !== val) {
+                        // P1.1 (4b): la rugosidad pasa por la validación de Terrain; fuera de rango no cambia nada.
+                        try {
+                            this.terrain.setSegmentProperties(this.selectedSegmentIndex, { roughness: val });
+                        } catch (err) {
+                            alert('Error al editar el tramo: ' + err.message);
+                            const current = this.terrain.segments[this.selectedSegmentIndex].roughness || 0;
+                            roughnessSlider.value = current;
+                            roughnessVal.textContent = `${current}°`;
+                            return;
+                        }
+                        profileChanged(this);
+                    }
                 }
+                roughnessVal.textContent = `${val}°`;
             };
             roughnessSlider.addEventListener('input', handleInput);
             roughnessSlider.addEventListener('change', () => {
@@ -966,9 +1141,11 @@ class App {
 
         // Undo
         document.getElementById('tool-undo').addEventListener('click', () => {
-            if (this.simulation.isRunning) return;
+            if (profileEditBlocked(this)) return;
+            if (undoBenchProfile(this)) return;
             if (this.terrain.points.length > 0) {
                 this.terrain.removePoint(this.terrain.points.length - 1);
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -977,9 +1154,10 @@ class App {
 
         // Random terrain
         document.getElementById('tool-random').addEventListener('click', () => {
-            if (this.simulation.isRunning) return;
+            if (profileEditBlocked(this)) return;
             this.terrain.points = [];
             this.terrain.segments = [];
+            profileChanged(this);
             const pts = this.generateRandomTerrain();
             for (const p of pts) {
                 this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
@@ -1090,8 +1268,11 @@ class App {
             // Ctrl+Z — deshacer último punto del terreno
             if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
                 e.preventDefault();
+                if (profileEditBlocked(this)) return;
+                if (undoBenchProfile(this)) return;
                 if (this.terrain.points.length > 0) {
                     this.terrain.removePoint(this.terrain.points.length - 1);
+                    profileChanged(this);
                     this.updateTerrainInfo();
                     this.updateSegmentsList();
                     this.render();
@@ -1119,9 +1300,10 @@ class App {
 
             // T — regenerar terreno aleatorio
             if (e.key === 't' || e.key === 'T') {
-                if (!this.simulation.isRunning) {
+                if (!profileEditBlocked(this)) {
                     this.terrain.points = [];
                     this.terrain.segments = [];
+                    profileChanged(this);
                     const defaultPoints = this.generateRandomTerrain();
                     for (const p of defaultPoints) {
                         this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
@@ -1340,16 +1522,19 @@ class App {
             const world = this.terrain.canvasToWorld(cx, cy);
 
             if (document.getElementById('tab-terrain').classList.contains('active')) {
+                if (profileEditBlocked(this)) return;
                 if (this.activeTool === 'tool-delete') {
                     const idx = this.terrain.findNearestPoint(cx, cy);
                     if (idx >= 0) {
                         this.terrain.removePoint(idx);
+                        profileChanged(this);
                         this.updateTerrainInfo();
                         this.updateSegmentsList();
                     }
                 } else {
                     // crosshair (add) or pan — add point when not panning
                     this.terrain.addPoint(world.wx, world.wy, this.selectedPresetType);
+                    profileChanged(this);
                     this.updateTerrainInfo();
                     this.updateSegmentsList();
                 }
@@ -1379,7 +1564,9 @@ class App {
 
             const idx = this.terrain.findNearestPoint(cx, cy);
             if (idx >= 0) {
+                if (profileEditBlocked(this)) return;
                 this.terrain.removePoint(idx);
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();

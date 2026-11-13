@@ -263,7 +263,15 @@
                 }
             }
 
-            this.terrain.setPoints(reduced);
+            if (SimRocas.ProfileEdit.blocked(this)) return;
+            // P1.1 (4a): setPoints valida antes de mutar; si rechaza, el perfil no cambia.
+            try {
+                this.terrain.setPoints(SimRocas.Terrain.normalizeAutoPoints(reduced));
+                SimRocas.ProfileEdit.changed(this);
+            } catch (err) {
+                alert('Error al generar el perfil: ' + err.message);
+                return;
+            }
             this.resetSimulation();
 
             // Corrección T3.5/T4.6: el punto de liberación debe quedar sobre

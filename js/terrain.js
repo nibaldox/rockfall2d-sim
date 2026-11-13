@@ -157,11 +157,153 @@ class Terrain {
      * @param {string} segmentType - Terrain segment type to use (default: first preset)
      */
     setPoints(pointsArray, segmentType = 'roca-suave') {
+        // Solo geometría (P1.1 §4): se valida antes de tocar el perfil vigente.
+        const input = Array.isArray(pointsArray) ? pointsArray : [];
+        const order = input.map((p, i) => i);
+        if (input.every(p => p && Number.isFinite(p.x))) {
+            order.sort((i, j) => input[i].x - input[j].x);
+        }
+        Terrain._assertValidProfile({
+            points: order.map(i => input[i]),
+            rows: order.map(i => i + 1)
+        });
         this.clear();
-        if (!pointsArray || pointsArray.length === 0) return;
         for (const p of pointsArray) {
             this.addPoint(p.x, p.y, segmentType);
         }
+    }
+
+    /**
+     * Normalizes points from automatic sources (STL slice, DEM section) with
+     * the semantics addPoint had in 1fc23718: points are inserted in arrival
+     * order, kept sorted by X, and a point whose X is within 1e-9 of an
+     * already kept neighbour is dropped (the first one wins).
+     * Does not mutate the input. If any point lacks a finite X, the input is
+     * returned as is so that setPoints rejects it with its message.
+     * @param {Array<{x: number, y: number}>} pointsArray
+     * @returns {Array<{x: number, y: number}>}
+     */
+    static normalizeAutoPoints(pointsArray) {
+        if (!Array.isArray(pointsArray)) return pointsArray;
+        if (!pointsArray.every(p => p && typeof p.x === 'number' && Number.isFinite(p.x))) {
+            return pointsArray;
+        }
+        const kept = [];
+        for (const p of pointsArray) {
+            let lo = 0;
+            let hi = kept.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (kept[mid].x < p.x) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            if (lo > 0 && Math.abs(kept[lo - 1].x - p.x) < 1e-9) continue;
+            if (lo < kept.length && Math.abs(kept[lo].x - p.x) < 1e-9) continue;
+            kept.splice(lo, 0, p);
+        }
+        return kept;
+    }
+
+    /**
+     * Validates profile data before it replaces the current profile (P1.1 §4).
+     * Points must already be in profile order (strictly increasing X).
+     * @param {{ points: Array, segments?: Array, rows?: Array<number> }} data
+     *   rows: optional source row number of each point (CSV line, input index),
+     *   used in the messages; defaults to the 1-based point index.
+     * @returns {{ ok: boolean, errors: string[] }} errors in Spanish
+     */
+    static validateProfileData(data) {
+        const errors = [];
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return { ok: false, errors: ['el contenido no es un objeto con una lista de puntos'] };
+        }
+        const points = Array.isArray(data.points) ? data.points : [];
+        const rows = Array.isArray(data.rows) ? data.rows : null;
+        const rowOf = i => (rows && rows[i] !== undefined ? rows[i] : i + 1);
+        const isNum = v => typeof v === 'number' && Number.isFinite(v);
+
+        let finite = true;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            if (!p || !isNum(p.x)) {
+                errors.push(`fila ${rowOf(i)}: X no es un número finito`);
+                finite = false;
+            }
+            if (!p || !isNum(p.y)) {
+                errors.push(`fila ${rowOf(i)}: Y no es un número finito`);
+                finite = false;
+            }
+        }
+        if (points.length < 2) {
+            errors.push(`se necesitan al menos 2 puntos y hay ${points.length}`);
+        }
+        if (finite && points.length >= 2) {
+            // X duplicada: misma tolerancia que addPoint (1e-9).
+            const order = points.map((p, i) => i).sort((i, j) => points[i].x - points[j].x || i - j);
+            let duplicated = false;
+            for (let k = 1; k < order.length; k++) {
+                const i = order[k - 1];
+                const j = order[k];
+                if (Math.abs(points[j].x - points[i].x) < 1e-9) {
+                    const pair = [rowOf(i), rowOf(j)].sort((m, n) => m - n);
+                    errors.push(`X duplicada (x = ${points[j].x}) en las filas ${pair[0]} y ${pair[1]}`);
+                    duplicated = true;
+                }
+            }
+            if (!duplicated) {
+                for (let i = 1; i < points.length; i++) {
+                    if (!(points[i].x > points[i - 1].x)) {
+                        errors.push(`X no es estrictamente creciente en la fila ${rowOf(i)}`);
+                    }
+                }
+            }
+        }
+
+        if (data.segments !== undefined && data.segments !== null) {
+            const segments = data.segments;
+            if (!Array.isArray(segments)) {
+                errors.push('segments debe ser una lista de tramos');
+            } else {
+                const expected = Math.max(0, points.length - 1);
+                if (segments.length !== expected) {
+                    errors.push(`se esperaban ${expected} tramos (puntos − 1) y segments trae ${segments.length}`);
+                }
+                for (let i = 0; i < segments.length; i++) {
+                    const seg = segments[i];
+                    const label = rows ? `fila ${rowOf(i)}` : `tramo ${i + 1}`;
+                    if (!seg || typeof seg !== 'object') {
+                        errors.push(`${label}: el tramo no es un objeto`);
+                        continue;
+                    }
+                    if (!isNum(seg.cn) || seg.cn < 0 || seg.cn > 1) {
+                        errors.push(`${label}: Cn debe ser un número entre 0 y 1`);
+                    }
+                    if (!isNum(seg.ct) || seg.ct < 0 || seg.ct > 1) {
+                        errors.push(`${label}: Ct debe ser un número entre 0 y 1`);
+                    }
+                    // roughness ausente es válida: se completa con la del preset.
+                    if (seg.roughness !== undefined &&
+                        (!isNum(seg.roughness) || seg.roughness < 0 || seg.roughness > 30)) {
+                        errors.push(`${label}: la rugosidad debe ser un número entre 0 y 30`);
+                    }
+                }
+            }
+        }
+        return { ok: errors.length === 0, errors };
+    }
+
+    /**
+     * Throws an Error (Spanish message) if the profile data is invalid.
+     */
+    static _assertValidProfile(data) {
+        const result = Terrain.validateProfileData(data);
+        if (result.ok) return;
+        const shown = result.errors.slice(0, 5).join('; ');
+        const more = result.errors.length > 5 ? ` (y ${result.errors.length - 5} más)` : '';
+        throw new Error(`Perfil inválido: ${shown}${more}`);
     }
 
     /**
@@ -176,6 +318,21 @@ class Terrain {
      */
     setSegmentProperties(index, props) {
         if (index >= 0 && index < this.segments.length) {
+            // P1.1 (4b): se valida antes de mutar; mismos rangos que la importación (§4).
+            const errors = [];
+            for (const key of ['cn', 'ct']) {
+                const v = props[key];
+                if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1)) {
+                    errors.push(`${key === 'cn' ? 'Cn' : 'Ct'} debe estar entre 0 y 1`);
+                }
+            }
+            const r = props.roughness;
+            if (r !== undefined && !(typeof r === 'number' && Number.isFinite(r) && r >= 0 && r <= 30)) {
+                errors.push('la rugosidad debe estar entre 0 y 30°');
+            }
+            if (errors.length) {
+                throw new Error(`Propiedades de tramo inválidas (tramo ${index}): ${errors.join('; ')}`);
+            }
             if (props.type !== undefined) {
                 const preset = TerrainPresets[props.type];
                 if (preset) {
@@ -389,8 +546,15 @@ class Terrain {
     }
 
     fromJSON(json) {
+        let data;
+        try {
+            data = JSON.parse(json);
+        } catch (err) {
+            throw new Error(`Perfil inválido: el archivo no es JSON válido (${err.message})`);
+        }
+        // Validar antes de reemplazar: si falla, el perfil vigente no cambia.
+        Terrain._assertValidProfile(data ? { points: data.points, segments: data.segments } : data);
         this._invalidateBounds();
-        const data = JSON.parse(json);
         this.points = data.points || [];
         this.segments = data.segments || [];
         // Ensure each segment has a roughness parameter, defaulting to its preset's roughness if missing
@@ -413,9 +577,15 @@ class Terrain {
     }
 
     fromCSV(text) {
-        this._invalidateBounds();
-        this.points = [];
-        this.segments = [];
+        // El perfil se arma en variables locales y solo reemplaza al vigente
+        // después de validar (P1.1 §4): nunca queda un perfil parcial.
+        const points = [];
+        const segments = [];
+        // Número estricto: '' o '12m' dan NaN y la validación los rechaza.
+        const toNumber = s => (s === undefined || s === '' ? NaN : Number(s));
+        // Columna opcional (CP11): ausente o vacía toma el valor por defecto
+        // de la base; presente pero inválida queda en NaN y se rechaza.
+        const optional = (s, fallback) => (s === undefined || s === '' ? fallback : Number(s));
         const lines = text.trim().split('\n');
         // Recolección por filas (T0.12): cada fila aporta su punto y, si trae
         // columnas de material, el segmento del tramo que DESDE esa fila va
@@ -426,33 +596,36 @@ class Terrain {
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
             if (!line) continue;
-            // Skip header row if present
-            if (i === 0 && /^\s*[xXyY]/.test(line)) continue;
             // Support comma, semicolon, tab, or space as delimiter
             const parts = line.split(/[,\t;]+|\s+/);
-            if (parts.length >= 2) {
-                const x = parseFloat(parts[0]);
-                const y = parseFloat(parts[1]);
-                if (!isNaN(x) && !isNaN(y)) {
-                    let segment = null;
-                    // Optional: type, cn, ct, roughness
-                    if (parts.length >= 5) {
-                        const type = parts[2] || 'roca-suave';
-                        const cn = parseFloat(parts[3]) || 0.6;
-                        const ct = parseFloat(parts[4]) || 0.4;
-                        const roughness = parts[5] !== undefined ? (parseFloat(parts[5]) || 0) : null;
-                        const preset = TerrainPresets[type] || TerrainPresets['roca-suave'];
-                        segment = {
-                            type: type,
-                            cn: cn,
-                            ct: ct,
-                            color: preset.color,
-                            roughness: roughness !== null ? roughness : (preset.roughness || 0)
-                        };
-                    }
-                    rows.push({ x, y, segment });
-                }
+            // Cabecera (CP11): la primera fila se salta, cualquiera sea su
+            // texto, si no empieza con X e Y numéricas (mismo criterio de
+            // lectura que la base).
+            if (i === 0 && (isNaN(parseFloat(parts[0])) || isNaN(parseFloat(parts[1])))) continue;
+            // Cualquier otra fila ilegible no se descarta: X o Y quedan en
+            // NaN y la validación la rechaza con su número de fila.
+            const x = toNumber(parts[0]);
+            const y = toNumber(parts[1]);
+            let segment = null;
+            // Optional: type, cn, ct, roughness
+            if (parts.length >= 5) {
+                const type = parts[2] || 'roca-suave';
+                // Sin sustitución silenciosa de valores inválidos: Cn, Ct o
+                // rugosidad presentes y no numéricos quedan en NaN y se
+                // rechazan; 0 es un valor válido. Vacíos: 0.6, 0.4 y 0.
+                const cn = optional(parts[3], 0.6);
+                const ct = optional(parts[4], 0.4);
+                const roughness = parts[5] !== undefined ? optional(parts[5], 0) : null;
+                const preset = TerrainPresets[type] || TerrainPresets['roca-suave'];
+                segment = {
+                    type: type,
+                    cn: cn,
+                    ct: ct,
+                    color: preset.color,
+                    roughness: roughness !== null ? roughness : (preset.roughness || 0)
+                };
             }
+            rows.push({ x, y, segment, row: i + 1 });
         }
         // Ordenar filas por X y recién ahí materializar: el segmento de la
         // fila i describe el tramo points[i] → points[i+1]; la última fila
@@ -460,24 +633,30 @@ class Terrain {
         // material) la convención anterior de crear defaults abajo se sigue
         // aplicando — y en un CSV mixto, las filas intermedias sin material
         // reciben un segmento por defecto para mantener la alineación fila↔tramo.
-        rows.sort((a, b) => a.x - b.x);
+        if (rows.every(r => Number.isFinite(r.x))) {
+            rows.sort((a, b) => a.x - b.x);
+        }
         const defaultsNeeded = rows.length >= 2 && rows.some(r => r.segment);
         for (let i = 0; i < rows.length; i++) {
-            this.points.push({ x: rows[i].x, y: rows[i].y });
+            points.push({ x: rows[i].x, y: rows[i].y });
             if (rows[i].segment) {
-                if (i < rows.length - 1) this.segments.push(rows[i].segment);
+                if (i < rows.length - 1) segments.push(rows[i].segment);
             } else if (defaultsNeeded && i < rows.length - 1) {
                 const preset = TerrainPresets['roca-suave'];
-                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
+                segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
             }
         }
         // If no segment data at all, create defaults (tramos sin material)
-        if (this.segments.length === 0 && this.points.length >= 2) {
-            for (let i = 0; i < this.points.length - 1; i++) {
+        if (segments.length === 0 && points.length >= 2) {
+            for (let i = 0; i < points.length - 1; i++) {
                 const preset = TerrainPresets['roca-suave'];
-                this.segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
+                segments.push({ type: 'roca-suave', cn: preset.cn, ct: preset.ct, color: preset.color, roughness: preset.roughness || 0 });
             }
         }
+        Terrain._assertValidProfile({ points, segments, rows: rows.map(r => r.row) });
+        this._invalidateBounds();
+        this.points = points;
+        this.segments = segments;
     }
 
     findNearestPoint(cx, cy, threshold = 15) {
