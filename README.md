@@ -15,6 +15,48 @@ python3 -m http.server 8080
 
 Abrir: `http://localhost:8080`
 
+## Pruebas
+
+```bash
+node --test tests/
+```
+
+Pruebas headless con el runner nativo `node:test` (requiere Node >= 20). Sin dependencias: los scripts se cargan en un contexto `vm` de Node y ejercitan la física sin navegador.
+
+## Cambios del motor (versión F0, oct-2026)
+
+> **⚠️ Advertencia:** Los alcances y energías calculados con versiones anteriores **no son comparables** con esta versión. Recalcule los escenarios antes de extraer conclusiones.
+
+Correcciones de física (todas verificadas en `js/physics.js`):
+
+- **Criterio de reposo**: el reposo exige al menos 3 comprobaciones acumuladas (el contador no se reinicia en las colisiones), velocidad por debajo de 0.08 m/s escalada por la pendiente local como `max(0.1, 1 − 2·|pendiente|)`, `|ω| < 0.5 rad/s` y, además, más de 2 contactos detectados o contacto sostenido. El contacto sostenido solo existe en Lumped Mass (|vn| < 0.5 m/s) y `ignoreResting` desactiva la comprobación (`_checkResting`). Que el reposo se detecte depende del método, del contacto y del paso de tiempo; no se documenta como garantía.
+- **Contactos detectados**: `bounces` es un conteo interno de contactos —sube en cada penetración detectada en cuerpo rígido y nonsmooth, y también en barreras e impactos de Lumped Mass—, no una cuenta de impactos; la interfaz y las exportaciones lo rotulan «Contactos detectados».
+- **Paso de tiempo grueso**: con dt > 0.02 s en cuerpo rígido o nonsmooth el reposo puede no detectarse (en las muestras de S1b hubo 100/100 reposos con dt ≤ 0.02 y fallas con dt = 0.05). Desde P0.3 se muestra la advertencia no bloqueante `dtGrueso` en el estado, el reporte y el CSV; esa advertencia no sustituye un estudio de convergencia en dt.
+- **Ceros finitos**: desde P0.3 los ceros finitos válidos de los parámetros (por ejemplo Cn, Ct, rodadura y variabilidades) se respetan; los valores no finitos o fuera de dominio usan el valor por defecto.
+- **Fricción de Nonsmooth**: se corrigió el signo del impulso de fricción — antes la fricción agregaba energía en lugar de disiparla.
+- **Corrección de posición energéticamente neutra** (`Rock._penetrationCorrection`): la penetración se resuelve sin fugar energía por posicionamiento; antes se fijaba el centro a 1 cm del suelo.
+- **Contacto sostenido en Lumped Mass (tipo RocFall "minimum velocity")**: cuando la velocidad normal es baja (|vn| < 0.5 m/s, `Rock.slideVelocityThreshold`), el contacto se trata como deslizamiento/rodadura y no como impulso de impacto en cada sub-paso. El contacto se evalúa con el cuerpo de la roca (centro − radio), no con el punto de masa.
+- **Acoplamiento de rodadura en Lumped Mass**: la velocidad angular sí se actualiza por contacto (solo visual; la dinámica sigue siendo de masa puntual) — ya NO es "sin rotación".
+- **Fricción de rodadura con contacto real** (`applyRollingFriction`): solo actúa cuando hay contacto efectivo con el terreno; antes frenaba rocas en el aire.
+- **Culling derivado del terreno** (`Terrain.getBounds()`): los límites de terminación ya no son fijos; se derivan del perfil actual con margen (típicamente X: ±50 m de los extremos, Y: −100 m por debajo).
+- **Masa de formas no esféricas** (polígono, elipse, bloque): área del polígono × espesor equivalente 4r/3 (`Rock.equivalentThickness`), de modo que una roca circular pesa lo mismo que la esfera del mismo diámetro. Antes el espesor era 0,5r y la energía cinética de estas formas quedaba unas 2,7 veces por debajo de lo correcto (5,7 veces frente a la esfera).
+- **massLossRatio** es ahora una fracción de masa (0–1), de uso directo para la conservación en fragmentación.
+
+Fragmentación (`_fragmentRockProgressive`):
+
+- La masa se **conserva** salvo el polvo (fragmentos < 0.05 m), que se descarta.
+- La disipación de fractura configurada se aplica **exactamente solo a los fragmentos principales en ruptura** — en abrasión, las esquirlas tienen dispersión aleatoria ±30 % en su velocidad de eyección.
+
+## Cambios de P0.2-β (nov-2026)
+
+β **agrega** campos e instrumentación: no reinterpreta los campos existentes. Con la variabilidad de Cn/Ct en 0, las trayectorias son idénticas a P0.3 en corridas sin impactos fuera del perfil.
+
+- **Impacto real (C1)**: se registra un evento cuando en una superficie (terreno o barrera) pasa la guardia de aproximación existente, la velocidad normal de aproximación cumple `|vn| ≥ 0.5 m/s` y no hay un episodio abierto en esa superficie. El episodio se abre en el primer sub-paso con contacto detectado y se cierra en el primero sin contacto, así que un rebote no se cuenta una vez por sub-paso. La captura es de solo lectura y ocurre antes del impulso. En nonsmooth con polígonos el conteo de impactos incluye golpes de vértice al volcar, y `vn` es la velocidad normal del punto de contacto (incluye `ω × r`), no la del centro.
+- **Altura de vuelo (C3)**: un vuelo empieza después de un impacto C1 y termina en el siguiente sub-paso con contacto detectado en cualquier superficie. La muestra es la altura del **centro de la roca** sobre el terreno (`y − terrain.getHeightAt(x)`), solo si x está dentro del perfil y el tramo existe; la caída inicial desde la liberación no cuenta y el valor es nulo si no hubo ninguna muestra válida. No es la altura de un colector ni se atribuye a RocFall.
+- **Materiales por tramo (U4)**: en cuerpo rígido y nonsmooth el impacto lo gobiernan el Cn, el Ct y la rugosidad del tramo; la variabilidad de Cn/Ct (en %) multiplica el valor de ese tramo y el resultado se acota a [0, 1]. Los controles globales de Cn/Ct quedan deshabilitados en los tres métodos y solo actúan en perfiles de menos de 2 puntos. Un impacto más allá de los extremos del perfil (su prolongación horizontal) usa el Cn y el Ct del tramo extremo más cercano (sin rugosidad fuera del perfil), con el mismo factor de variabilidad, y las estadísticas lo advierten (`fueraDelPerfil`). La advertencia mira la x del centro de la roca en los eventos de impacto: un contacto fuera del perfil que no genera evento no la dispara. En Lumped Mass el evento fuera del perfil también lleva el índice del tramo extremo, pero la física sigue usando Kn/Kt globales y la advertencia lo dice. Un tramo sin tipo recibe igualmente la variabilidad y figura como «sin tipo». En Lumped Mass la misma variabilidad actúa sobre Kn/Kt, y las barreras conservan sus propios coeficientes.
+- **Exportación de impactos**: «Exportar impactos (CSV)» genera una fila por evento, con tope de 200 eventos por roca y 100 000 en total. Si se descartan eventos se emite una advertencia; los máximos y los conteos por roca incluyen todos los eventos. La exportación queda bloqueada con fragmentación activa o tras cancelar la corrida, y el botón se deshabilita igual que las demás exportaciones.
+- **Invariante de instrumentación**: la instrumentación es de solo lectura —no agrega sorteos de `Math.random`, no cambia su cantidad ni su orden y no altera operaciones de punto flotante del estado físico; las llamadas adicionales a `getHeightAt` solo pueden tocar la caché `_lastSegIdx`. Con variabilidad 0 las corridas son idénticas a P0.3 en corridas sin impactos fuera del perfil (ahí cambian a propósito: manda el tramo extremo y no los globales), y Lumped Mass es idéntico con cualquier variabilidad.
+
 ## Funcionalidades
 
 ### Editor de terreno
@@ -26,7 +68,7 @@ Abrir: `http://localhost:8080`
 - Zoom con scroll del mouse
 - Pan con botón central o Shift+clic
 - Botón "Reset Vista" para ajustar automáticamente
-- Editor de segmentos: asignar material (roca, suelo, vegetación, relleno, concreto, asfalto) por tramo y calibrar su rugosidad geológica
+- Editor de segmentos: asignar material (roca, suelo, vegetación, relleno, concreto, asfalto) por tramo, calibrar su rugosidad geológica y fijar su Cn y Ct por tramo
 - **Topografía 3D (STL)**: Importar archivos STL (ASCII y Binario) con proyección interactiva en planta 2D. Permite trazar planos de sección transversal y generar perfiles 2D optimizados de exactamente N puntos (envolvente de altura máxima y suavizado por interpolación lineal).
 
 ### Motor de física
@@ -36,23 +78,27 @@ Tres métodos de cálculo:
 | Método | Descripción | Referencia |
 |--------|-------------|------------|
 | **Cuerpos Rígidos** (default) | Colisión poligonal con impulso, torque y momento de inercia | Leine et al. (2013) |
-| **Lumped Mass (2DLM)** | Masa puntual con Kn/Kt, sin rotación | GeoRock, CRSP |
+| **Lumped Mass (2DLM)** | Masa puntual con Kn/Kt, contacto sostenido (deslizamiento/rodadura) y acoplamiento de rodadura visual | GeoRock, CRSP |
 | **Nonsmooth Dynamics** | Contacto duro, ley de impacto Poisson, cono de fricción Coulomb | Moreau (1988) |
 
 Características del motor:
 - Colisiones poligonales reales: cada roca es un polígono convexo irregular (5-9 vértices)
 - Detección de impacto por vértice más profundo
 - Cálculo de velocidad del punto de contacto: `v_c = v_cm + ω × r`
-- Impulso normal con restitución Cn
-- Impulso tangencial con fricción Ct
+- Impulso normal con restitución Cn del tramo
+- Impulso tangencial con fricción Ct del tramo
 - Torque real: impactos asimétricos generan rotación
 - Momento de inercia calculado por forma poligonal
 - Dos modelos de fricción de rodadura: simple y Davis & McInnes (1991)
 - Dos modelos de disipación de energía: impulso clásico y energy ratio
-- Variabilidad Monte Carlo en coeficientes de restitución
+- Variabilidad Monte Carlo de Cn/Ct aplicada al valor de cada tramo (en Lumped Mass actúa sobre Kn/Kt)
 - 3 sub-steps por timestep para estabilidad numérica
 - **Rugosidad Geológica Estocástica (tipo CRSP)**: Permite asignar a cada tramo del talud un ángulo de rugosidad en grados ($\theta_r$, de $0^\circ$ a $30^\circ$). Al colisionar, el vector normal de contacto se rota estocásticamente de forma acotada por $\pm\theta_r$. La normal real se mantiene pura en cálculos estáticos para evitar vibraciones artificiales de rocas en reposo.
-- **Fragmentación de Bloques Fractal (tipo CRSP)**: Al ocurrir impactos de alta energía normal ($E_{k,n} > E_{crit}$), el bloque se fragmenta dinámicamente en $2$ o $3$ partículas hijas. La masa del padre se divide de forma fractal asimétrica (hijo principal toma $50\%-70\%$, satélites el residuo) conservando estrictamente la masa global. Las velocidades de salida se dispersan en un cono de $\pm 15^\circ$ y se escalan de forma rigurosa para cumplir con la disipación configurada. Posee protección activa contra explosión de memoria (límite de 2 generaciones y diámetro mínimo de $0.15\text{ m}$).
+- **Fragmentación Progresiva por Abrasión**: Al ocurrir impactos de alta energía normal ($E_{k,n} > E_{crit}$), la energía de impacto se compara con el umbral de fractura y el bloque responde según su intensidad:
+  - **Abrasión ($1\times$–$3\times$ el umbral)**: se desprenden $1$–$3$ esquirlas pequeñas (5%–15% de la masa del padre cada una, con tope acumulado de 40%) y el **núcleo sobrevive**, apenas reducido, continuando su trayectoria de rebotes.
+  - **Ruptura ($> 3\times$ el umbral)**: el núcleo se rompe en $2$ fragmentos principales (40%–60% de la masa remanente cada uno) más esquirlas menores.
+  - La masa se conserva estrictamente salvo el polvo (los fragmentos menores a $0.05\text{ m}$ se descartan): las velocidades de salida se escalan para cumplir la disipación de fractura configurada. En **ruptura**, esa disipación configurada se aplica con exactitud solo a los fragmentos principales; en **abrasión**, las esquirlas tienen una dispersión aleatoria de ±30 % en su velocidad de eyección.
+  - Protección contra explosión de memoria: máximo $3$ generaciones y diámetro mínimo de $0.10\text{ m}$.
 
 ### Modos de liberación
 - **Caída libre**: la roca se suelta desde una altura definida por el usuario
@@ -89,10 +135,12 @@ Características del motor:
 
 ### Resultados y estadísticas
 - Energía cinética máxima/media (kJ)
-- Altura máxima de rebote
+- Altura de vuelo del centro, máx. por roca (m)
 - Distancia de runout máxima
-- Velocidad máxima de impacto
-- Cantidad de rebotes
+- Velocidad normal de impacto, máx. por roca (m/s)
+- Energía de impacto (traslación + rotación), máx. por roca (kJ)
+- Impactos por roca (vn ≥ 0.5 m/s)
+- Contactos detectados
 - Percentiles P50, P83, P95
 - Ángulo de energía de Savigny (H/L)
 - Histograma de distribución de energía
@@ -102,6 +150,7 @@ Características del motor:
 ### Exportar
 - Captura PNG del canvas
 - Datos CSV con estadísticas completas
+- Impactos detallados (`simrocas_impactos.csv`): una fila por evento C1, con tiempo, centro, superficie, tramo o barrera, velocidad normal, rapidez, rapidez del punto de contacto, energía total, coeficientes efectivos y altura de vuelo previa
 - Reporte de texto formateado
 - Perfil de terreno como JSON o CSV
 
@@ -109,6 +158,8 @@ Características del motor:
 - Opcional: ejecutar simulación en hilo separado
 - Evita congelar la interfaz en simulaciones pesadas (+500 rocas)
 - Streaming de frames para visualización en tiempo real
+- **Paridad exacta con el hilo principal**: el Worker (`js/worker.js`) no tiene física propia; carga `terrain.js`, `physics.js` y `simulation.js` con `importScripts` y ejecuta la misma clase `Simulation` (verificado en `tests/worker.parity.test.js`)
+- Cache-busting en dos niveles: `js/app-worker.js` abre el Worker con `js/worker.js?v=WORKER_VERSION`, y el Worker propaga ese `?v` a cada `importScripts`; al editar `terrain.js`, `physics.js` o `simulation.js` hay que subir `WORKER_VERSION` (en `js/app-worker.js`) y el `?v=` de los `<script>` de `index.html`
 
 ### Atajos de teclado
 
@@ -129,14 +180,22 @@ rockfall2d-sim/
 ├── css/
 │   └── style.css           # Tema oscuro con CSS variables
 ├── js/
-│   ├── terrain.js          # Perfil topográfico (polilínea 2D, materiales por segmento, rugosidad)
+│   ├── terrain.js          # Perfil topográfico (polilínea 2D, materiales por segmento, rugosidad, getBounds())
 │   ├── stl.js              # Parser de mallas STL 3D (ASCII/Binario) y algoritmo de corte 2.5D
-│   ├── physics.js          # Motor de física (Rock + PhysicsEngine, 3 métodos, fragmentación, rugosidad)
+│   ├── physics.js          # Motor de física (Rock + PhysicsEngine, 3 métodos, fragmentación, rugosidad, culling derivado del terreno)
 │   ├── simulation.js       # Controlador de simulación (bucle dinámico, lifecycle, frames variable)
 │   ├── renderer.js         # Render Canvas 2D (terreno, rocas, barreras, mapa prob., árboles de trayectoria)
 │   ├── stats.js            # Estadísticas, percentiles, exportación CSV/texto
-│   ├── worker.js           # Web Worker para simulación Monte Carlo paralela sincronizada
-│   └── app.js              # Aplicación principal (UI, eventos, wiring, timeline variable)
+│   ├── worker.js           # Web Worker: SIN física propia — importScripts de terrain/physics/simulation y ejecuta Simulation
+│   ├── app.js              # Aplicación principal (UI, eventos, wiring, timeline variable)
+│   ├── app-stl.js          # Mixin de App: importación STL y curvas (Object.assign sobre SimRocas.App.prototype)
+│   └── app-worker.js       # Mixin de App: ejecución en Worker (WORKER_VERSION + cache-busting ?v)
+├── tests/
+│   ├── helpers/
+│   │   └── load.js                 # Cargador de scripts para Node (contexto vm)
+│   └── physics.roughness.test.js
+│       # (~50 pruebas headless: energía, reposo, pendiente, fragmentación, límites,
+│       #  namespace, paridad worker, split de app — listadas en tests/*.test.js)
 └── .github/
     └── workflows/
         └── deploy.yml      # GitHub Pages auto-deploy

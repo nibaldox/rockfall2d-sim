@@ -11,6 +11,374 @@ function clamp(value, min, max, fallback) {
     return (isNaN(n) || n < min || n > max) ? fallback : n;
 }
 
+/**
+ * Resuelve la semilla de la corrida (P0.5). Campo vacío: sorteo de 32 bits
+ * con crypto.getRandomValues, o Math.random como respaldo. Campo con valor:
+ * solo dígitos decimales, entero en [0, 2^32 - 1].
+ * @returns {number|null} la semilla, o null si el valor es inválido (ya avisado)
+ */
+function resolveRunSeed() {
+    const input = document.getElementById('sim-seed');
+    const text = input && input.value !== undefined && input.value !== null ? String(input.value).trim() : '';
+    if (text === '') {
+        if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
+            return crypto.getRandomValues(new Uint32Array(1))[0];
+        }
+        return Math.floor(Math.random() * 4294967296) >>> 0;
+    }
+    const value = /^\d+$/.test(text) ? Number(text) : NaN;
+    if (!Number.isInteger(value) || value < 0 || value > 4294967295) {
+        alert(`Semilla inválida («${text}»): debe ser un entero entre 0 y 4294967295, o quedar vacía para sortearla.`);
+        return null;
+    }
+    return value;
+}
+
+// Muestra la semilla usada sin sobrescribir lo que escribió el usuario.
+function showSeedUsed(seed) {
+    const used = document.getElementById('seed-used');
+    if (used) used.textContent = `Vacía = aleatoria; usada: ${seed}`;
+    const input = document.getElementById('sim-seed');
+    if (input) input.placeholder = `usada: ${seed}`;
+}
+
+/**
+ * Copia del terreno en el momento de la captura por época: índice de tramo,
+ * extremos en X, tipo, etiqueta del preset, cn, ct y rugosidad. Son primitivas
+ * copiadas, así que editar el perfil después no altera lo ya publicado.
+ */
+// P1.1: material por rol del perfil banco–berma. Los presets de terrain.js no
+// tienen «roca» ni «grava» genéricas: cara = 'roca-dura'; berma y plataforma =
+// 'relleno' (el preset granular suelto, lo más cercano a grava); piso = 'suelo'.
+const BENCH_ROLE_MATERIAL = { face: 'roca-dura', berm: 'relleno', platform: 'relleno', floor: 'suelo' };
+
+// --- P1.1: perfil banco–berma, invalidación 6c y bloqueo en corrida ---
+
+// true si hay una corrida en curso: la edición del perfil se ignora y se
+// avisa en el estado.
+function profileEditBlocked(app) {
+    if (!(app.simulation && app.simulation.isRunning) && !app._workerActive) return false;
+    const status = document.getElementById('simulation-status');
+    if (status) status.textContent = 'Edición del perfil bloqueada durante la corrida; detén la simulación para editar';
+    return true;
+}
+
+// Toda mutación del perfil (puntos, tramos o materiales) invalida los
+// resultados y anula los metadatos banco–berma y su deshacer.
+function profileChanged(app) {
+    app._benchProfile = null;
+    app._benchUndo = null;
+    renderBenchMeta(null);
+    app._invalidateResults();
+}
+
+function renderBenchMeta(benchMeta) {
+    const table = document.getElementById('bench-meta-table');
+    if (!table) return;
+    if (!benchMeta || benchMeta.length === 0) {
+        table.innerHTML = '';
+        table.style.display = 'none';
+        return;
+    }
+    const n = (v, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
+    const rows = benchMeta.map(b => `<tr><td>${b.index}</td><td>${n(b.crestX)}; ${n(b.crestY)}</td>` +
+        `<td>${n(b.toeX)}; ${n(b.toeY)}</td><td>${n(b.height)}</td><td>${n(b.faceAngleDeg, 1)}</td>` +
+        `<td>${n(b.effectiveWidth)}</td></tr>`).join('');
+    table.innerHTML = '<thead><tr><th>Banco</th><th>Cresta X; Y (m)</th><th>Pata X; Y (m)</th>' +
+        `<th>Altura (m)</th><th>Ángulo (°)</th><th>Berma (m)</th></tr></thead><tbody>${rows}</tbody>`;
+    table.style.display = '';
+}
+
+// Deshace «Generar»: restaura el perfil, la fuente y el sentido previos.
+function undoBenchProfile(app) {
+    const undo = app._benchUndo;
+    if (!undo) return false;
+    app.terrain.clear();
+    for (const p of undo.points) app.terrain.addPoint(p.x, p.y, app.selectedPresetType);
+    app.terrain.segments = undo.segments.map(s => ({ ...s }));
+    app.releasePoint.x = undo.release.x;
+    app.releasePoint.y = undo.release.y;
+    document.getElementById('release-x').value = undo.releaseX;
+    document.getElementById('release-y').value = undo.releaseY;
+    const mode = document.getElementById('downhill-mode');
+    if (mode) mode.value = undo.downhillMode;
+    profileChanged(app);
+    app.updateTerrainInfo();
+    app.updateSegmentsList();
+    app.renderer.autoScale();
+    app.updateZoomInfo();
+    app.render();
+    document.getElementById('simulation-status').textContent = 'Perfil banco–berma deshecho; se restauró el perfil anterior';
+    return true;
+}
+
+function generateBenchProfile(app) {
+    if (profileEditBlocked(app)) return;
+    const fail = reason => alert('No se pudo generar el perfil banco–berma: ' + reason);
+    const num = id => Number(String(document.getElementById(id).value).trim() || NaN);
+    const params = {
+        benches: num('bench-count'), benchHeight: num('bench-height'), faceAngleDeg: num('bench-face-angle'),
+        bermWidth: num('bench-berm-width'), baseElevation: num('bench-base-elevation'),
+        topPlatform: num('bench-top-platform'), floorLength: num('bench-floor-length')
+    };
+    let out;
+    try {
+        if (!SimRocas.BenchProfile) throw new Error('el generador no está disponible');
+        out = SimRocas.BenchProfile.generate(params);
+    } catch (err) {
+        fail(err.message);
+        return;
+    }
+    if (!out || out.ok !== true) {
+        fail((out && out.error) || 'error desconocido');
+        return;
+    }
+    // I-D e I-E: nunca un perfil parcial; X finita y estrictamente creciente.
+    const points = Array.isArray(out.points) ? out.points : [];
+    const roles = Array.isArray(out.roles) ? out.roles : [];
+    let valid = points.length >= 2 && roles.length === points.length - 1 &&
+        roles.every(role => Object.prototype.hasOwnProperty.call(BENCH_ROLE_MATERIAL, role));
+    for (let i = 0; valid && i < points.length; i++) {
+        valid = Number.isFinite(points[i].x) && Number.isFinite(points[i].y) && (i === 0 || points[i].x - points[i - 1].x >= 1e-9);
+    }
+    if (!valid) {
+        fail('el generador devolvió un perfil inválido');
+        return;
+    }
+    const mode = document.getElementById('downhill-mode');
+    const undo = {
+        points: app.terrain.points.map(p => ({ x: p.x, y: p.y })),
+        segments: app.terrain.segments.map(s => ({ ...s })),
+        release: { x: app.releasePoint.x, y: app.releasePoint.y },
+        releaseX: document.getElementById('release-x').value,
+        releaseY: document.getElementById('release-y').value,
+        downhillMode: mode ? mode.value : 'auto'
+    };
+    try {
+        app.terrain.setPoints(points.map(p => ({ x: p.x, y: p.y })));
+        if (app.terrain.points.length !== points.length) throw new Error('el perfil no se pudo cargar completo');
+    } catch (err) {
+        app.terrain.clear();
+        for (const p of undo.points) app.terrain.addPoint(p.x, p.y, app.selectedPresetType);
+        app.terrain.segments = undo.segments.map(s => ({ ...s }));
+        fail(err.message);
+        return;
+    }
+    roles.forEach((role, i) => app.terrain.applyPresetToRange(BENCH_ROLE_MATERIAL[role], i, i));
+    profileChanged(app);
+    app._benchUndo = undo;
+    app._benchProfile = { params: out.params, benchMeta: out.benchMeta, pointsKey: JSON.stringify(app.terrain.points) };
+    renderBenchMeta(out.benchMeta);
+    // Fuente sobre la plataforma superior, 1 m antes de la primera cresta
+    // (o a media plataforma si mide menos de 2 m).
+    const first = app.terrain.points[0].x;
+    const crest = roles[0] === 'platform' ? app.terrain.points[1].x : first;
+    app.releasePoint.x = crest - Math.min(1, (crest - first) / 2);
+    const terrainY = app.terrain.getHeightAt(app.releasePoint.x);
+    app.releasePoint.y = app.releaseMode === 'detachment' ? terrainY : terrainY + 7;
+    document.getElementById('release-x').value = app.releasePoint.x.toFixed(1);
+    document.getElementById('release-y').value = app.releasePoint.y.toFixed(1);
+    if (mode) mode.value = '+x';
+    app.updateTerrainInfo();
+    app.updateSegmentsList();
+    app.renderer.autoScale();
+    app.updateZoomInfo();
+    app.render();
+    document.getElementById('simulation-status').textContent =
+        `Perfil banco–berma generado (${out.benchMeta ? out.benchMeta.length : 0} bancos); sentido de descenso fijado en +X`;
+}
+
+// --- P1.2: medición de bancos, geometría congelada por corrida y retención por banco ---
+
+// «Medir bancos»: no muta el perfil; solo llena _benchProfile con source 'medido'.
+function measureBenchProfile(app) {
+    if (profileEditBlocked(app)) return;
+    const fail = reason => alert('No se pudieron medir los bancos: ' + reason);
+    const num = id => Number(String(document.getElementById(id).value).trim().replace(',', '.') || NaN);
+    const thresholds = {
+        bermSlopeDeg: num('bench-measure-slope'), bermToleranceY: num('bench-measure-tolerance'),
+        minFaceHeight: num('bench-measure-min-height')
+    };
+    if (!(thresholds.bermSlopeDeg > 0 && thresholds.bermSlopeDeg < 90) ||
+        !(Number.isFinite(thresholds.bermToleranceY) && thresholds.bermToleranceY >= 0) ||
+        !(Number.isFinite(thresholds.minFaceHeight) && thresholds.minFaceHeight > 0)) {
+        fail('umbrales inválidos (pendiente entre 0° y 90°, tolerancia mayor o igual que 0 y altura mayor que 0)');
+        return;
+    }
+    let out;
+    try {
+        if (!SimRocas.BenchProfile || typeof SimRocas.BenchProfile.measure !== 'function') throw new Error('la medición no está disponible');
+        out = SimRocas.BenchProfile.measure(app.terrain.points.map(p => ({ x: p.x, y: p.y })), { ...thresholds });
+    } catch (err) {
+        fail(err.message);
+        return;
+    }
+    if (!out || out.ok !== true) {
+        fail((out && (out.reason || out.error)) || 'error desconocido');
+        return;
+    }
+    if (!Array.isArray(out.benchMeta) || out.benchMeta.length === 0 || (out.downhillSign !== 1 && out.downhillSign !== -1)) {
+        fail('la medición devolvió un resultado inválido');
+        return;
+    }
+    app._benchProfile = {
+        source: 'medido', benchMeta: out.benchMeta.map(b => ({ ...b })), pointsKey: JSON.stringify(app.terrain.points),
+        downhillSign: out.downhillSign, thresholds: { ...(out.thresholds || thresholds) },
+        schemaVersion: out.schemaVersion || 'bench-measure.v2'
+    };
+    renderBenchMeta(app._benchProfile.benchMeta);
+    const status = document.getElementById('simulation-status');
+    if (status) status.textContent = `${out.benchMeta.length} bancos medidos (umbrales provisionales; los define el responsable geotécnico)`;
+}
+
+// Copia campo por campo de benchGeometry (§5 del contrato P1.2).
+function copyBenchGeometry(g) {
+    return {
+        source: g.source, schemaVersion: g.schemaVersion, downhillSign: g.downhillSign,
+        benchMeta: g.benchMeta.map(b => ({ ...b })), thresholds: g.thresholds ? { ...g.thresholds } : null,
+        profileMinX: g.profileMinX, profileMaxX: g.profileMaxX, pointsKey: g.pointsKey
+    };
+}
+
+// Geometría de bancos de la corrida que empieza: solo si _benchProfile existe y
+// su pointsKey coincide con el perfil. Si no, devuelve el motivo (I-F).
+function runBenchGeometry(app) {
+    const profile = app._benchProfile;
+    if (!profile) return { reason: 'no hay geometría de bancos (genera un perfil banco–berma o usa «Medir bancos» antes de simular)' };
+    const points = Array.isArray(app.terrain?.points) ? app.terrain.points : [];
+    const pointsKey = JSON.stringify(points);
+    if (profile.pointsKey !== pointsKey) return { reason: 'la geometría de bancos no corresponde al perfil de la corrida' };
+    if (!Array.isArray(profile.benchMeta) || profile.benchMeta.length === 0) return { reason: 'la geometría de bancos no tiene bancos' };
+    const measured = profile.source === 'medido';
+    const xs = points.map(p => p.x);
+    return { geometry: copyBenchGeometry({
+        source: measured ? 'medido' : 'generado',
+        schemaVersion: profile.schemaVersion || (measured ? 'bench-measure.v2' : 'bench-profile.v1'),
+        downhillSign: measured ? profile.downhillSign : 1,
+        benchMeta: profile.benchMeta, thresholds: measured ? profile.thresholds : null,
+        profileMinX: Math.min(...xs), profileMaxX: Math.max(...xs), pointsKey
+    }) };
+}
+
+// Motivo de «No disponible» de la corrida vigente; no viaja en _runInfo (I-A).
+let benchRunReason = { epoch: null, reason: '' };
+
+const BENCH_CENSOR_LABELS = { culled: 'salida del dominio', maxTime: 'tiempo máximo', maxSteps: 'pasos máximos' };
+
+// Tabla «Retención por banco». result nulo la limpia; sin results.benchRetention
+// dice «No disponible» con su motivo (ausente no es cero).
+function renderBenchRetention(result, geometry, reason) {
+    const block = document.getElementById('bench-retention-block');
+    const table = document.getElementById('bench-retention-table');
+    const title = document.getElementById('bench-retention-title');
+    if (!table) return;
+    if (title) title.textContent = 'Retención por banco';
+    if (!result) {
+        table.innerHTML = '';
+        if (block) block.style.display = 'none';
+        return;
+    }
+    if (block) block.style.display = '';
+    const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const retention = result.benchRetention;
+    let missing = null;
+    if (!geometry) missing = reason || 'no hay geometría de bancos';
+    else if (!retention) missing = 'Stats no publicó la retención (geometría de bancos inválida)';
+    else if (retention.ok === false || !Array.isArray(retention.zones)) missing = retention.reason || 'retención inválida';
+    if (missing) {
+        table.innerHTML = `<tbody><tr><td>No disponible: ${esc(missing)}</td></tr></tbody>`;
+        return;
+    }
+    if (title) title.textContent = `Retención por banco (geometría: ${geometry.source === 'medido' ? 'medida' : 'generada'})`;
+    const den = retention.denominators || {};
+    const censored = retention.censored || {};
+    const count = v => (Number.isFinite(v) ? String(v) : '—');
+    const pct = (v, total) => (Number.isFinite(v) && total > 0 ? (100 * v / total).toFixed(1) : '—');
+    const mass = v => (Number.isFinite(v) ? v.toFixed(1) : '—');
+    let rows = retention.zones.map(z => `<tr><td>${esc(z.label)}${z.note ? ` (${esc(z.note)})` : ''}</td><td>${count(z.primaries)}</td>` +
+        `<td>${pct(z.primaries, den.released)}</td><td>${pct(z.primaries, den.known)}</td>` +
+        `<td>${count(z.pieces)}</td><td>${mass(z.mass)}</td></tr>`).join('');
+    const byReason = censored.byReason || {};
+    for (const key of ['culled', 'maxTime', 'maxSteps']) {
+        // Forma del §7: { primaries, pieces, mass } por motivo.
+        const cell = byReason[key] && typeof byReason[key] === 'object' ? byReason[key] : {};
+        rows += `<tr><td>Censuradas: ${BENCH_CENSOR_LABELS[key]}</td><td>${count(cell.primaries)}</td>` +
+            `<td>${pct(cell.primaries, den.released)}</td><td>—</td><td>${count(cell.pieces)}</td><td>${mass(cell.mass)}</td></tr>`;
+    }
+    rows += `<tr><td>Censuradas (total, sin zona)</td><td>${count(censored.primaries)}</td><td>${pct(censored.primaries, den.released)}</td>` +
+        `<td>—</td><td>${count(censored.pieces)}</td><td>${mass(censored.mass)}</td></tr>`;
+    if (retention.discardedMass > 0) rows += `<tr><td>Masa descartada (sin zona)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>${mass(retention.discardedMass)}</td></tr>`;
+    const closure = retention.closure || {};
+    const closed = closure.primariesOk === true && closure.piecesOk === true && closure.massOk === true;
+    rows += `<tr><td colspan="6">Σ zonas + censuradas = N: ${closed ? 'verificado' : 'NO verificado'} ` +
+        `(N lanzadas: ${count(den.released)}; con destino conocido: ${count(den.known)}; piezas: ${count(den.releasedPieces)})</td></tr>`;
+    table.innerHTML = '<thead><tr><th>Zona</th><th>Rocas</th><th>% de lanzadas</th><th>% con destino conocido</th>' +
+        `<th>Piezas</th><th>Masa (kg)</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
+// Para los mixins app-stl.js y app-profile3d.js (funciones de módulo: App.prototype no gana métodos).
+SimRocas.ProfileEdit = { blocked: profileEditBlocked, changed: profileChanged };
+
+function copyRunSegments(terrain) {
+    const points = Array.isArray(terrain?.points) ? terrain.points : [];
+    const segments = Array.isArray(terrain?.segments) ? terrain.segments : [];
+    const presets = typeof SimRocas !== 'undefined' && SimRocas.TerrainPresets ? SimRocas.TerrainPresets : {};
+    const count = Math.min(segments.length, Math.max(0, points.length - 1));
+    const result = [];
+    for (let i = 0; i < count; i++) {
+        const seg = segments[i] || {};
+        const preset = presets[seg.type] || null;
+        result.push({
+            index: i,
+            x0: Number.isFinite(points[i]?.x) ? points[i].x : null,
+            x1: Number.isFinite(points[i + 1]?.x) ? points[i + 1].x : null,
+            type: typeof seg.type === 'string' ? seg.type : '',
+            label: preset && typeof preset.label === 'string' ? preset.label : '',
+            cn: Number.isFinite(seg.cn) ? seg.cn : null,
+            ct: Number.isFinite(seg.ct) ? seg.ct : null,
+            roughness: Number.isFinite(seg.roughness) ? seg.roughness : 0
+        });
+    }
+    return result;
+}
+
+/** Etiquetas de variabilidad: en masa concentrada los sorteos actúan sobre Kn/Kt. */
+function syncVariabilityLabels() {
+    const method = document.getElementById('calc-method');
+    const suffix = method && method.value === 'lumped-mass' ? ' (se aplica a Kn/Kt)' : '';
+    const cnLabel = document.getElementById('cn-variability-label');
+    const ctLabel = document.getElementById('ct-variability-label');
+    if (cnLabel) cnLabel.textContent = `Variabilidad Cn (%)${suffix}`;
+    if (ctLabel) ctLabel.textContent = `Variabilidad Ct (%)${suffix}`;
+}
+
+// Bloque «Piezas finales (fragmentación)»: visible solo si Stats publica results.lineage.
+function updateLineageBlock(result) {
+    const lineage = result && result.lineage ? result.lineage : null;
+    const block = document.getElementById('lineage-block');
+    if (block) block.style.display = lineage ? 'block' : 'none';
+    const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+    const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
+    const list = (counts, labels) => Object.keys(labels).filter(key => counts && counts[key] > 0)
+        .map(key => `${labels[key]}: ${counts[key]}`).join(' · ') || '—';
+    const mass = lineage && lineage.mass ? lineage.mass : {};
+    const runout = lineage && lineage.finalRunout ? lineage.finalRunout : {};
+    set('lineage-primaries', lineage ? String(lineage.primaries) : '—');
+    set('lineage-leaves', lineage ? String(lineage.leaves) : '—');
+    set('lineage-by-kind', lineage ? list(lineage.byKind, {
+        primary: 'Roca original intacta', core: 'Núcleo de abrasión', major: 'Fragmento principal', spall: 'Esquirla'
+    }) : '—');
+    set('lineage-by-reason', lineage ? list(lineage.byReason, {
+        rest: 'En reposo', culled: 'Fuera del perfil', maxTime: 'Tiempo máximo', maxSteps: 'Pasos máximos'
+    }) : '—');
+    ['original', 'rest', 'culled', 'censored', 'discarded'].forEach(key => set(`lineage-mass-${key}`, format(mass[key])));
+    ['p50', 'p83', 'p95'].forEach(key => set(`lineage-runout-${key}`, format(runout[key])));
+    const warning = lineage && Array.isArray(result.warnings) ? result.warnings.find(w => w && w.code === 'masaDescartada') : null;
+    const exceeded = lineage && Array.isArray(lineage.discardedByTree) ? lineage.discardedByTree.filter(t => t && t.fraction > 0.01).length : 0;
+    set('lineage-warning', warning ? warning.message :
+        exceeded ? `Masa descartada superior al 1 % en ${exceeded} roca(s) original(es).` : '');
+}
+
 class App {
     constructor() {
         this.terrain = new SimRocas.Terrain();
@@ -122,8 +490,7 @@ class App {
         document.querySelector('[data-tab="results"]').classList.add('active');
         document.getElementById('tab-results').classList.add('active');
 
-        const hasResults = this.simulation.rocks.length > 0 &&
-            this.simulation.rocks.some(r => r.isResting);
+        const hasResults = this._resultsValid === true;
 
         const placeholder = document.getElementById('results-placeholder-msg');
         const content = document.getElementById('results-sidebar-content');
@@ -196,11 +563,19 @@ class App {
     }
 
     setupTerrainControls() {
+        // P1.1: generador paramétrico banco–berma.
+        document.getElementById('btn-bench-generate').addEventListener('click', () => generateBenchProfile(this));
+        // P1.2: medición de bancos del perfil actual.
+        const measureBtn = document.getElementById('btn-bench-measure');
+        if (measureBtn) measureBtn.addEventListener('click', () => measureBenchProfile(this));
+
         document.getElementById('btn-add-point').addEventListener('click', () => {
             const x = parseFloat(document.getElementById('input-x').value);
             const y = parseFloat(document.getElementById('input-y').value);
             if (!isNaN(x) && !isNaN(y)) {
+                if (profileEditBlocked(this)) return;
                 this.terrain.addPoint(x, y, this.selectedPresetType);
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -208,8 +583,10 @@ class App {
         });
 
         document.getElementById('btn-clear-terrain').addEventListener('click', () => {
+            if (profileEditBlocked(this)) return;
             if (confirm('¿Limpiar todo el perfil?')) {
                 this.terrain.clear();
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -245,8 +622,10 @@ class App {
         document.getElementById('file-input').addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            if (profileEditBlocked(this)) return;
             const reader = new FileReader();
             reader.onload = (ev) => {
+                if (profileEditBlocked(this)) return;
                 try {
                     const ext = file.name.split('.').pop().toLowerCase();
                     if (ext === 'csv') {
@@ -254,6 +633,7 @@ class App {
                     } else {
                         this.terrain.fromJSON(ev.target.result);
                     }
+                    profileChanged(this);
                     this.terrain.canvas = this.canvas;
                     this.renderer.autoScale();
                     this.updateTerrainInfo();
@@ -292,7 +672,9 @@ class App {
 
         // Pegar coordenadas desde Excel (X(tab/coma)Y, una por línea)
         document.getElementById('btn-paste-coords').addEventListener('click', () => {
+            if (profileEditBlocked(this)) return;
             navigator.clipboard.readText().then((text) => {
+                if (profileEditBlocked(this)) return;
                 const lines = text.trim().split(/\r?\n/);
                 let added = 0;
                 for (const line of lines) {
@@ -307,6 +689,7 @@ class App {
                     }
                 }
                 if (added > 0) {
+                    profileChanged(this);
                     this.renderer.autoScale();
                     this.updateTerrainInfo();
                     this.updateSegmentsList();
@@ -341,7 +724,9 @@ class App {
         applyBtn.addEventListener('click', () => {
             const from = parseInt(this.segFrom.value) || 0;
             const to = parseInt(this.segTo.value) !== 0 ? parseInt(this.segTo.value) : this.terrain.segmentCount - 1;
+            if (profileEditBlocked(this)) return;
             this.terrain.applyPresetToRange(this.selectedPresetType, from, to);
+            profileChanged(this);
             this.updateSegmentsList();
             this.render();
         });
@@ -352,10 +737,26 @@ class App {
         if (roughnessSlider && roughnessVal) {
             const handleInput = () => {
                 const val = parseInt(roughnessSlider.value) || 0;
-                roughnessVal.textContent = `${val}°`;
                 if (this.selectedSegmentIndex >= 0 && this.terrain.segments[this.selectedSegmentIndex]) {
-                    this.terrain.segments[this.selectedSegmentIndex].roughness = val;
+                    if (profileEditBlocked(this)) {
+                        roughnessVal.textContent = `${val}°`;
+                        return;
+                    }
+                    if (this.terrain.segments[this.selectedSegmentIndex].roughness !== val) {
+                        // P1.1 (4b): la rugosidad pasa por la validación de Terrain; fuera de rango no cambia nada.
+                        try {
+                            this.terrain.setSegmentProperties(this.selectedSegmentIndex, { roughness: val });
+                        } catch (err) {
+                            alert('Error al editar el tramo: ' + err.message);
+                            const current = this.terrain.segments[this.selectedSegmentIndex].roughness || 0;
+                            roughnessSlider.value = current;
+                            roughnessVal.textContent = `${current}°`;
+                            return;
+                        }
+                        profileChanged(this);
+                    }
                 }
+                roughnessVal.textContent = `${val}°`;
             };
             roughnessSlider.addEventListener('input', handleInput);
             roughnessSlider.addEventListener('change', () => {
@@ -461,6 +862,7 @@ class App {
             nonsmoothControls.style.display = method === 'nonsmooth' ? 'block' : 'none';
             energyModelGroup.style.display = method === 'rigid-body' ? 'block' : 'none';
             this.physics.calcMethod = method;
+            syncVariabilityLabels();
         };
         calcMethod.addEventListener('change', updateCalcMethodVisibility);
         updateCalcMethodVisibility();
@@ -870,9 +1272,11 @@ class App {
 
         // Undo
         document.getElementById('tool-undo').addEventListener('click', () => {
-            if (this.simulation.isRunning) return;
+            if (profileEditBlocked(this)) return;
+            if (undoBenchProfile(this)) return;
             if (this.terrain.points.length > 0) {
                 this.terrain.removePoint(this.terrain.points.length - 1);
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -881,9 +1285,10 @@ class App {
 
         // Random terrain
         document.getElementById('tool-random').addEventListener('click', () => {
-            if (this.simulation.isRunning) return;
+            if (profileEditBlocked(this)) return;
             this.terrain.points = [];
             this.terrain.segments = [];
+            profileChanged(this);
             const pts = this.generateRandomTerrain();
             for (const p of pts) {
                 this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
@@ -927,6 +1332,7 @@ class App {
 
         const csvBtn = document.getElementById('btn-export-csv');
         if (csvBtn) csvBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const csv = this.stats.generateCSV();
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -937,8 +1343,40 @@ class App {
             URL.revokeObjectURL(url);
         });
 
+        const impactsBtn = document.getElementById('btn-export-impacts');
+        if (impactsBtn) impactsBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
+            if (!this.stats.results || this.stats.results.impactExportAvailable !== true) return;
+            const csv = this.stats.generateImpactCSV();
+            if (csv === null || csv === undefined) return;
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas_impactos.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // P1.2: una fila por pieza final; no depende de la geometría de bancos.
+        const destinationsBtn = document.getElementById('btn-export-destinations');
+        if (destinationsBtn) destinationsBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
+            if (typeof this.stats.generateDestinationsCSV !== 'function') return;
+            const csv = this.stats.generateDestinationsCSV();
+            if (csv === null || csv === undefined) return;
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas_destinos.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
         const reportBtn = document.getElementById('btn-export-report');
         if (reportBtn) reportBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const report = this.stats.generateReport();
             const blob = new Blob([report], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
@@ -977,8 +1415,11 @@ class App {
             // Ctrl+Z — deshacer último punto del terreno
             if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
                 e.preventDefault();
+                if (profileEditBlocked(this)) return;
+                if (undoBenchProfile(this)) return;
                 if (this.terrain.points.length > 0) {
                     this.terrain.removePoint(this.terrain.points.length - 1);
+                    profileChanged(this);
                     this.updateTerrainInfo();
                     this.updateSegmentsList();
                     this.render();
@@ -1006,9 +1447,10 @@ class App {
 
             // T — regenerar terreno aleatorio
             if (e.key === 't' || e.key === 'T') {
-                if (!this.simulation.isRunning) {
+                if (!profileEditBlocked(this)) {
                     this.terrain.points = [];
                     this.terrain.segments = [];
+                    profileChanged(this);
                     const defaultPoints = this.generateRandomTerrain();
                     for (const p of defaultPoints) {
                         this.terrain.addPoint(p.x, p.y, this.selectedPresetType);
@@ -1080,6 +1522,7 @@ class App {
         });
 
         document.getElementById('btn-dashboard-csv').addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const csv = this.stats.generateCSV();
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -1091,6 +1534,7 @@ class App {
         });
 
         document.getElementById('btn-dashboard-report').addEventListener('click', () => {
+            if (!this._resultsValid) return;
             const report = this.stats.generateReport();
             const blob = new Blob([report], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
@@ -1103,8 +1547,7 @@ class App {
     }
 
     showResultsDashboard() {
-        const hasResults = this.simulation.rocks.length > 0 &&
-            this.simulation.rocks.some(r => r.isResting);
+        const hasResults = this._resultsValid === true;
 
         if (!hasResults) {
             alert('Ejecuta una simulación para ver resultados.');
@@ -1117,24 +1560,22 @@ class App {
         // Update stat badges
         const r = this.stats.results;
         if (r) {
-            document.getElementById('dash-stat-total').textContent = r.finishedRocks;
-            document.getElementById('dash-stat-max-ke').textContent = r.kineticEnergy.max.toFixed(1);
-            document.getElementById('dash-stat-max-bounce').textContent = r.bounceHeight.max.toFixed(1);
-            document.getElementById('dash-stat-max-runout').textContent = r.runoutDistance.max.toFixed(1);
-            document.getElementById('dash-stat-max-vel').textContent = r.impactVelocity.max.toFixed(1);
-            document.getElementById('dash-stat-savigny').textContent =
-                r.savignyAngle !== null ? r.savignyAngle.toFixed(1) : '-';
-            document.getElementById('dash-stat-p95').textContent = r.runoutDistance.p95.toFixed(1);
+            const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
+            document.getElementById('dash-stat-total').textContent = r.population.rest;
+            document.getElementById('dash-stat-max-ke').textContent = format(r.kineticEnergy?.max);
+            document.getElementById('dash-stat-max-bounce').textContent = format(r.flightHeight?.max);
+            document.getElementById('dash-stat-max-runout').textContent = format(r.finalRunout?.max);
+            document.getElementById('dash-stat-max-vel').textContent = format(r.impactVelocity?.max);
+            document.getElementById('dash-stat-savigny').textContent = format(r.reachAngle?.min);
+            const p95 = r.reachBounds?.p95;
+            document.getElementById('dash-stat-p95').textContent = p95 ? `${p95.exact ? '' : '≥ '}${format(p95.lower)}` : '—';
         }
 
         // Render charts after a frame so the DOM has updated dimensions
+        const resultEpoch = this._runEpoch;
         requestAnimationFrame(() => {
-            this.renderer.renderResultsDashboard(
-                this.simulation.rocks,
-                this.terrain,
-                this.releasePoint,
-                r
-            );
+            if (!this._resultsValid || resultEpoch !== this._runEpoch) return;
+            this.renderer.renderResultsDashboard(r, this.terrain);
         });
     }
 
@@ -1144,6 +1585,7 @@ class App {
     }
 
     exportDashboardPNG() {
+        if (!this._resultsValid) return;
         const dashboard = document.getElementById('results-dashboard');
         // Create a temporary canvas combining all chart canvases
         const charts = dashboard.querySelectorAll('.chart-panel canvas');
@@ -1227,16 +1669,19 @@ class App {
             const world = this.terrain.canvasToWorld(cx, cy);
 
             if (document.getElementById('tab-terrain').classList.contains('active')) {
+                if (profileEditBlocked(this)) return;
                 if (this.activeTool === 'tool-delete') {
                     const idx = this.terrain.findNearestPoint(cx, cy);
                     if (idx >= 0) {
                         this.terrain.removePoint(idx);
+                        profileChanged(this);
                         this.updateTerrainInfo();
                         this.updateSegmentsList();
                     }
                 } else {
                     // crosshair (add) or pan — add point when not panning
                     this.terrain.addPoint(world.wx, world.wy, this.selectedPresetType);
+                    profileChanged(this);
                     this.updateTerrainInfo();
                     this.updateSegmentsList();
                 }
@@ -1266,7 +1711,9 @@ class App {
 
             const idx = this.terrain.findNearestPoint(cx, cy);
             if (idx >= 0) {
+                if (profileEditBlocked(this)) return;
                 this.terrain.removePoint(idx);
+                profileChanged(this);
                 this.updateTerrainInfo();
                 this.updateSegmentsList();
                 this.render();
@@ -1537,8 +1984,16 @@ class App {
     }
 
     getSimulationParams() {
+        // P03-6: el motor exige entero; se redondea, luego se acota a [1, 10000]
+        // y el input muestra el valor efectivo. Un dato no numérico usa 100.
+        const numRocksInput = document.getElementById('num-rocks');
+        const rawNumRocks = parseFloat(numRocksInput.value);
+        const numRocks = Number.isFinite(rawNumRocks)
+            ? Math.min(10000, Math.max(1, Math.round(rawNumRocks))) : 100;
+        if (numRocksInput) numRocksInput.value = String(numRocks);
         return {
-            numRocks: clamp(document.getElementById('num-rocks').value, 1, 10000, 100),
+            downhillMode: document.getElementById('downhill-mode')?.value || 'auto',
+            numRocks,
             gravity: clamp(document.getElementById('gravity').value, 1, 20, 9.81),
             cn: this.physics.cn,
             ct: this.physics.ct,
@@ -1555,13 +2010,270 @@ class App {
         };
     }
 
+    // _invalidateResults(): runSimulation, stopSimulation, resetSimulation,
+    // _completeRun (censura) y onerror de runSimulationWithWorker.
+    _invalidateResults() {
+        this._resultsValid = false;
+        const count = document.getElementById('rock-count-display');
+        if (count) { count.textContent = 'Rocas: 0'; count.classList.remove('warning-amber', 'warning-red'); }
+        this.stats.results = null;
+        this.renderer.probabilityPercentiles = null;
+        const ids = ['stat-max-ke', 'stat-mean-ke', 'stat-max-bounce', 'stat-max-runout',
+            'stat-max-velocity', 'stat-max-bounces', 'stat-savigny-angle', 'dash-stat-total',
+            'dash-stat-max-ke', 'dash-stat-max-bounce', 'dash-stat-max-runout',
+            'dash-stat-max-vel', 'dash-stat-savigny', 'dash-stat-p95'];
+        ids.forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '-'; });
+        ['stat-n-rest', 'stat-pct-leaving', 'stat-reach-p95'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.textContent = '—';
+        });
+        const warnings = document.getElementById('stats-warnings');
+        if (warnings) warnings.textContent = '';
+        updateLineageBlock(null);
+        renderBenchRetention(null);
+        const dashboard = document.getElementById('results-dashboard');
+        if (dashboard) {
+            dashboard.classList.add('hidden');
+            dashboard.querySelectorAll('.chart-panel canvas').forEach(canvas => {
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+            });
+        }
+        const placeholder = document.getElementById('results-placeholder-msg');
+        const content = document.getElementById('results-sidebar-content');
+        if (placeholder) placeholder.style.display = 'block';
+        if (content) content.style.display = 'none';
+        ['btn-export-csv', 'btn-export-report', 'btn-export-impacts', 'btn-export-destinations', 'btn-dashboard-csv', 'btn-dashboard-report',
+            'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
+            const el = document.getElementById(id); if (el) el.disabled = true;
+        });
+        const ctx = this.histogramCanvas.getContext('2d');
+        ctx.fillStyle = '#1e2a4a';
+        ctx.fillRect(0, 0, this.histogramCanvas.width, this.histogramCanvas.height);
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font = '12px sans-serif';
+        ctx.fillText('Sin datos', this.histogramCanvas.width / 2 - 20, this.histogramCanvas.height / 2);
+    }
+
+    // _completeRun(rocks, status, worker): onComplete normal y mensaje complete del worker.
+    _completeRun(rocks, status, worker) {
+        // Barrera común para los consumidores Stats y renderer.
+        const isCompatibleResultRock = rock => {
+            if (!rock || typeof rock !== 'object' || (!worker && typeof rock.getShapeVertices !== 'function')) return false;
+            const numbers = ['x', 'y', 'finalX', 'finalY', 'rotation', 'radius', 'stepsTaken',
+                'elapsedTime', 'bounces', 'maxKineticEnergy', 'maxBounceHeight', 'maxImpactVelocity'];
+            if (!numbers.every(key => Number.isFinite(rock[key])) || rock.isResting !== true) return false;
+            const finiteArray = array => Array.isArray(array) && Array.from(array).every(Number.isFinite);
+            if (!finiteArray(rock.trajectory) || rock.trajectory.length % 3 !== 0 ||
+                !finiteArray(rock.impactEnergies) || !Array.isArray(rock.bouncePoints) ||
+                !Array.from(rock.bouncePoints).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.energy)) ||
+                !Array.isArray(rock.shape) || !Array.from(rock.shape).every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))) return false;
+            // Campos β del §2: cada uno se valida con su regla; un fallo rechaza la roca.
+            const betaNumber = value => value === null || (Number.isFinite(value) && value >= 0);
+            const eventKeys = ['t', 'x', 'y', 'surface', 'index', 'vn', 'speed', 'contactSpeed',
+                'energy', 'cnEff', 'ctEff', 'flightHeightBefore'];
+            const isImpactEvent = event => {
+                if (!event || typeof event !== 'object' || Array.isArray(event)) return false;
+                const keys = Object.keys(event);
+                if (keys.length !== eventKeys.length || !eventKeys.every(key => Object.hasOwn(event, key))) return false;
+                const nums = [event.t, event.x, event.y, event.vn, event.speed, event.energy, event.cnEff, event.ctEff];
+                if (!nums.every(Number.isFinite)) return false;
+                // Magnitudes del §2: ninguna puede ser negativa.
+                if (event.vn < 0 || event.speed < 0 || event.energy < 0) return false;
+                if (!(event.contactSpeed === null || (Number.isFinite(event.contactSpeed) && event.contactSpeed >= 0))) return false;
+                if (!(event.flightHeightBefore === null || Number.isFinite(event.flightHeightBefore))) return false;
+                return ['terrain', 'barrier'].includes(event.surface) &&
+                    Number.isInteger(event.index) && event.index >= 0;
+            };
+            if (!Number.isInteger(rock.impactCount) || rock.impactCount < 0 ||
+                !betaNumber(rock.maxImpactNormalSpeed) || !betaNumber(rock.maxImpactSpeed) ||
+                !betaNumber(rock.maxImpactContactSpeed) || !betaNumber(rock.maxImpactEnergy) ||
+                !(rock.maxFlightHeight === null || Number.isFinite(rock.maxFlightHeight)) ||
+                !Array.isArray(rock.impactEvents) || rock.impactEvents.length > 200 ||
+                !rock.impactEvents.every(isImpactEvent) ||
+                !Number.isInteger(rock.droppedImpactEvents) || rock.droppedImpactEvents < 0 ||
+                rock.droppedImpactEvents !== rock.impactCount - rock.impactEvents.length) return false;
+            if (!Number.isFinite(rock.releaseX) || !Number.isFinite(rock.releaseY) ||
+                !Number.isInteger(rock.sourceIndex) || rock.sourceIndex < 0 ||
+                ![1, -1, null].includes(rock.downhillSign) ||
+                (rock.downhillSign === null ? rock.maxDownhillAdvance !== null : !Number.isFinite(rock.maxDownhillAdvance)) ||
+                !['minX', 'maxX', 'minY', 'maxY', null].includes(rock.cullBoundary) ||
+                (rock.stopReason !== 'culled' && rock.cullBoundary !== null)) return false;
+            // Linaje P0.4 (§2): tipos por roca y coherencia de las primarias.
+            const nonNegative = value => Number.isFinite(value) && value >= 0;
+            const isRockId = value => Number.isInteger(value) && value >= 1;
+            if (!isRockId(rock.id) || !(rock.parentId === null || isRockId(rock.parentId)) ||
+                !isRockId(rock.rootId) || !['primary', 'core', 'major', 'spall'].includes(rock.fragmentKind) ||
+                !nonNegative(rock.bornAt) || !nonNegative(rock.discardedMass) ||
+                (rock.parentId === null) !== (rock.fragmentKind === 'primary') ||
+                (rock.parentId === null && rock.rootId !== rock.id)) return false;
+            if (!rock.color || !['r', 'g', 'b'].every(key => Number.isFinite(rock.color[key]))) return false;
+            return ['_colorActive', '_colorResting', '_colorStroke'].every(key => typeof rock[key] === 'string');
+        };
+        // Validación de conjunto del linaje (§3); supone rocas ya validadas una a una.
+        const isValidLineageSet = list => {
+            const byId = new Map();
+            for (const rock of list) {
+                if (byId.has(rock.id)) return false;
+                byId.set(rock.id, rock);
+            }
+            // E1.3: `fragmentKind` coherente con `isCore` y `generation` (physics.js: primaria,
+            // constructor de Rock; `core` conserva la generación; `major` y `spall` suman 1).
+            const generationOf = rock => rock.parentId === null && rock.generation === undefined ? 0 : rock.generation;
+            const parents = new Set();
+            for (const rock of list) {
+                if (!byId.has(rock.rootId)) return false;
+                if (rock.parentId === null) {
+                    if (rock.isCore === true || generationOf(rock) !== 0) return false;
+                    continue;
+                }
+                const parent = byId.get(rock.parentId);
+                if (!parent || parent.stopReason !== 'fragmented' || parent.rootId !== rock.rootId) return false;
+                // E1.3: el hijo nace en el `elapsedTime` final del padre.
+                if (!(Math.abs(rock.bornAt - parent.elapsedTime) <= 1e-9)) return false;
+                const step = rock.fragmentKind === 'core' ? 0 : 1;
+                if (!Number.isInteger(rock.generation) || rock.generation !== generationOf(parent) + step ||
+                    rock.isCore !== (rock.fragmentKind !== 'spall')) return false;
+                parents.add(rock.parentId);
+            }
+            // E1.3: toda entidad `fragmented` tiene al menos un hijo en el conjunto.
+            for (const rock of list) {
+                if (rock.stopReason === 'fragmented' && !parents.has(rock.id)) return false;
+            }
+            // Sin ciclos: toda cadena de parentId termina en una primaria.
+            const rooted = new Set();
+            for (const rock of list) {
+                const path = new Set();
+                let current = rock;
+                while (current.parentId !== null && !rooted.has(current.id)) {
+                    if (path.has(current.id)) return false;
+                    path.add(current.id);
+                    current = byId.get(current.parentId);
+                }
+                path.forEach(id => rooted.add(id));
+            }
+            return true;
+        };
+        const allowed = ['rest', 'culled', 'maxTime', 'maxSteps', 'fragmented', 'cancelled', 'safetyLimit'];
+        const counts = {};
+        let incompatible = !Array.isArray(rocks) || rocks.length === 0 || !['completed', 'safetyLimit'].includes(status);
+        const hasRockList = Array.isArray(rocks);
+        if (!hasRockList) rocks = [];
+        let safeRocks = rocks.filter(r => isCompatibleResultRock(r));
+        if (!hasRockList || safeRocks.length !== rocks.length) {
+            incompatible = true;
+            // Los frames se indexan por roca: no deben apuntar a un subconjunto distinto.
+            this.simulation.frames = [];
+        } else if (!isValidLineageSet(safeRocks)) {
+            // Linaje incoherente: se rechaza la corrida entera, sin rocas ni frames.
+            incompatible = true;
+            safeRocks = [];
+            this.simulation.frames = [];
+        }
+        if (worker) safeRocks.forEach(r => { r.getShapeVertices = this._workerRockShapeVertices; });
+        this.simulation.rocks = safeRocks;
+        this.simulation.finishedRocks = safeRocks.filter(r => r.isResting);
+        this.simulation.simulatedCount = safeRocks.length;
+        rocks.forEach(r => {
+            const reason = r && r.stopReason;
+            if (!allowed.includes(reason)) incompatible = true;
+            const key = allowed.includes(reason) ? reason : 'desconocido';
+            counts[key] = (counts[key] || 0) + 1;
+        });
+        const invalid = status === 'safetyLimit' || incompatible ||
+            rocks.some(r => r && ['cancelled', 'safetyLimit'].includes(r.stopReason));
+        const summary = Object.entries(counts).map(([reason, count]) => `${reason}: ${count}`).join(', ');
+        let message;
+        // Con fragmentación (results.lineage) el conteo visible es por roca original, no por entidad.
+        let publishedCount = rocks.length;
+        if (invalid) {
+            this._invalidateResults();
+            message = `Corrida incompleta/censurada${incompatible ? ' (protocolo incompatible)' : ''}: ${summary || 'sin datos'}${status === 'safetyLimit' ? ' (límite de seguridad)' : ''}`;
+        } else {
+            // Misma regla de época que _runSources: solo la corrida vigente aporta
+            // sus valores efectivos, copiados como primitivas.
+            const info = this._runInfo && this._runInfo.epoch === this._runEpoch ?
+                {
+                    timeStep: this._runInfo.timeStep, calcMethod: this._runInfo.calcMethod,
+                    cnVariability: this._runInfo.cnVariability, ctVariability: this._runInfo.ctVariability,
+                    segments: this._runInfo.segments.map(segment => ({ ...segment })),
+                    seed: this._runInfo.seed, rngAlgorithm: this._runInfo.rngAlgorithm,
+                    engineVersion: this._runInfo.engineVersion, correlatedParams: this._runInfo.correlatedParams
+                } : null;
+            // P1.2: la geometría de bancos viaja solo si se congeló al iniciar esta corrida.
+            if (info && this._runInfo.benchGeometry) info.benchGeometry = copyBenchGeometry(this._runInfo.benchGeometry);
+            this.stats.compute(rocks, this.releasePoint, info);
+            const result = this.stats.results;
+            if (result.status === 'bloqueado') {
+                const reason = result.blockedReason;
+                this._invalidateResults();
+                message = `Resultados bloqueados (${reason}): ${summary || 'sin datos'}`;
+            } else {
+                this.stats.updateUI();
+                updateLineageBlock(result);
+                renderBenchRetention(result, info ? info.benchGeometry : null,
+                    benchRunReason.epoch === this._runEpoch ? benchRunReason.reason : '');
+                this.renderer.renderHistogram(this.histogramCanvas, result);
+                const population = result.population;
+                const sign = rocks[0].downhillSign;
+                const sourceIndex = population.sources[0];
+                // Sin instantánea solo se admite compatibilidad con llamadas directas de prueba.
+                const snapshot = this._runSources;
+                const sources = snapshot ? (snapshot.epoch === this._runEpoch ? (snapshot.multi || [snapshot.single]) : []) :
+                    (this.multiReleaseEnabled && this.multiReleasePoints?.length ? this.multiReleasePoints : [this.releasePoint]);
+                const source = sources[sourceIndex];
+                const mapEligible = population.sources.length === 1 && population.directionResolved && result.reachBounds &&
+                    rocks.every(r => r.downhillSign === sign) && source && Number.isFinite(source.x);
+                this.renderer.probabilityPercentiles = mapEligible ? {
+                    originX: source.x, sign, title: 'Alcance máximo',
+                    bands: [10, 50, 83, 95].map(p => ({ label: `P${p}`, value: result.reachBounds[`p${p}`].lower, exact: result.reachBounds[`p${p}`].exact }))
+                } : null;
+                this._resultsValid = true;
+                const placeholder = document.getElementById('results-placeholder-msg');
+                const content = document.getElementById('results-sidebar-content');
+                if (placeholder) placeholder.style.display = 'none';
+                if (content) content.style.display = 'block';
+                ['btn-export-csv', 'btn-export-report', 'btn-export-destinations', 'btn-dashboard-csv', 'btn-dashboard-report',
+                    'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
+                    const el = document.getElementById(id); if (el) el.disabled = false;
+                });
+                const impactsBtn = document.getElementById('btn-export-impacts');
+                if (impactsBtn) impactsBtn.disabled = result.impactExportAvailable !== true;
+                const warnings = result.warnings.map(w => w.message).join(' ');
+                let mapReason = '';
+                if (!mapEligible) {
+                    const cause = population.sources.length !== 1 ? 'varias fuentes o ninguna fuente' :
+                        !population.directionResolved || !rocks.every(r => r.downhillSign === sign) ? 'sentido ambiguo o no común' :
+                        !result.reachBounds ? 'cotas de alcance no disponibles' : 'origen nominal no disponible';
+                    mapReason = ` Mapa no disponible: ${cause}.`;
+                }
+                const lineage = result.lineage;
+                const format = value => Number.isFinite(value) ? value.toFixed(1) : '—';
+                if (lineage) publishedCount = lineage.primaries;
+                const subject = lineage ? `${lineage.primaries} rocas originales` : `${rocks.length} rocas`;
+                const detail = lineage ?
+                    `${lineage.leaves} piezas finales, masa en reposo ${format(lineage.mass && lineage.mass.rest)} kg (entidades: ${summary})` : summary;
+                message = `${result.status === 'parcial' ? 'Resultado parcial' : 'Completado'} (${subject}${worker ? ', Worker' : ''}): ${detail}. ${warnings}${mapReason}`;
+            }
+        }
+        document.getElementById('simulation-status').textContent = message;
+        document.getElementById('btn-run').disabled = false;
+        document.getElementById('btn-stop').disabled = true;
+        const fab = document.getElementById('fab-run');
+        if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
+        const count = document.getElementById('rock-count-display');
+        if (count && this._resultsValid) count.textContent = `Rocas: ${publishedCount}`;
+        if (this.simulation.frameCount > 0) this.activateTimeline();
+    }
+
     runSimulation() {
         if (this.terrain.points.length < 2) {
             alert('Define al menos 2 puntos del perfil del terreno.');
             return;
         }
 
-        this.hideTimeline();
+        // P0.5: la semilla se resuelve antes de cada corrida y antes de tocar
+        // cualquier estado; si es inválida, la corrida no arranca.
+        const seed = resolveRunSeed();
+        if (seed === null) return;
 
         const diameter = clamp(document.getElementById('rock-diameter').value, 0.1, 20, 0.5);
         const density = clamp(document.getElementById('rock-density').value, 1000, 5000, 2700);
@@ -1611,14 +2323,34 @@ class App {
             });
         }
 
+        this._runEpoch = (this._runEpoch || 0) + 1;
+        const runEpoch = this._runEpoch;
+        // Guardar las coordenadas nominales ajustadas enviadas en esta época.
+        this._runSources = {
+            epoch: runEpoch,
+            single: { x: this.releasePoint.x, y: this.releasePoint.y },
+            multi: multiPoints && multiPoints.length ? multiPoints.map(p => ({ ...p })) : null
+        };
+        if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
+        if (this._worker) this._worker.terminate();
+        this._worker = null;
+        this._workerActive = false;
+        this._workerRocks = null;
+        this._invalidateResults();
+        this.hideTimeline();
+
+        // La misma semilla viaja en params por ambos caminos: configure() en
+        // el modo normal y simParams en el mensaje del Worker.
         const params = this.getSimulationParams();
+        params.seed = seed;
         this.simulation.configure(params);
 
         this.simulation.onUpdate = (data) => {
+            if (runEpoch !== this._runEpoch) return;
             this.render();
             const progress = Math.round(data.progress * 100);
             document.getElementById('simulation-status').textContent =
-                `Simulando... ${progress}% (${this.simulation.simulatedCount}/${this.simulation.totalRocks})`;
+                `Simulando... ${progress}% (${this.simulation.simulatedCount}/${this.simulation.totalRocks}) · semilla ${seed}`;
             const rockCountEl = document.getElementById('rock-count-display');
             if (rockCountEl) {
                 const count = this.simulation.simulatedCount;
@@ -1630,42 +2362,8 @@ class App {
         };
 
         this.simulation.onComplete = (rocks) => {
-            this.stats.compute(rocks, this.releasePoint);
-            this.stats.updateUI();
-            this.renderer.renderHistogram(this.histogramCanvas, rocks);
-
-            // Compute probability map percentiles
-            const rd = this.stats.results.runoutDistance;
-            const sorted = [...rocks.filter(r => r.isResting).map(r => r.finalX)].sort((a, b) => a - b);
-            if (sorted.length > 0) {
-                const p = (arr, pct) => {
-                    const idx = (pct / 100) * (arr.length - 1);
-                    const lo = Math.floor(idx);
-                    const hi = Math.ceil(idx);
-                    const f = idx - lo;
-                    return arr[lo] * (1 - f) + arr[hi] * f;
-                };
-                this.renderer.probabilityPercentiles = {
-                    p10: p(sorted, 10),
-                    p50: p(sorted, 50),
-                    p83: p(sorted, 83),
-                    p95: p(sorted, 95),
-                    mean: rd.mean
-                };
-            }
-
-            document.getElementById('simulation-status').textContent =
-                `Completado (${rocks.length} rocas)`;
-            document.getElementById('btn-run').disabled = false;
-            document.getElementById('btn-stop').disabled = true;
-            const fabDone = document.getElementById('fab-run');
-            if (fabDone) {
-                fabDone.classList.remove('running');
-                fabDone.textContent = '▶';
-            }
-            const rockCountEl = document.getElementById('rock-count-display');
-            if (rockCountEl) rockCountEl.textContent = `Rocas: ${rocks.length}`;
-            this.activateTimeline();
+            if (runEpoch !== this._runEpoch) return;
+            this._completeRun(rocks, 'completed', false);
         };
 
         this.simulation.start(
@@ -1683,9 +2381,30 @@ class App {
             multiPoints
         );
 
+        // Captura por época de los valores efectivos de esta corrida. Se toma del
+        // motor de la simulación (en producción this.physics === this.simulation.physics);
+        // son primitivas copiadas y no se releen los controles al exportar.
+        this._runInfo = {
+            epoch: runEpoch,
+            timeStep: this.simulation.physics.dt,
+            calcMethod: this.simulation.physics.calcMethod,
+            cnVariability: this.simulation.physics.cnVariability,
+            ctVariability: this.simulation.physics.ctVariability,
+            segments: copyRunSegments(this.terrain),
+            seed,
+            rngAlgorithm: SimRocas.RNG_ALGORITHM || null,
+            engineVersion: typeof WORKER_VERSION === 'number' ? WORKER_VERSION : null,
+            correlatedParams: this.simulation.physics.correlatedParams === true
+        };
+        // P1.2 (I-G): copia congelada de la geometría de bancos, solo si corresponde a este perfil.
+        const bench = runBenchGeometry(this);
+        if (bench.geometry) this._runInfo.benchGeometry = bench.geometry;
+        benchRunReason = { epoch: runEpoch, reason: bench.reason || '' };
+        showSeedUsed(seed);
+
         document.getElementById('btn-run').disabled = true;
         document.getElementById('btn-stop').disabled = false;
-        document.getElementById('simulation-status').textContent = 'Simulando...';
+        document.getElementById('simulation-status').textContent = `Simulando... (semilla ${seed})`;
         const fabStart = document.getElementById('fab-run');
         if (fabStart) {
             fabStart.classList.add('running');
@@ -1700,179 +2419,15 @@ class App {
         }
     }
 
-    runSimulationWithWorker(diameter, density, initVel, angle, shapeType, aspectRatio, params, multiPoints) {
-        if (this._worker) {
-            this._worker.terminate();
-        }
-
-        this._worker = new Worker('js/worker.js');
-        this._workerActive = true;
-
-        // Build rock configs for worker
-        const origins = (multiPoints && multiPoints.length > 0)
-            ? multiPoints
-            : [{ x: this.releasePoint.x, y: this.releasePoint.y, velocity: initVel, angle: angle }];
-
-        const perOrigin = Math.ceil(this.simulation.totalRocks / origins.length);
-        const rockConfigs = [];
-        let created = 0;
-
-        for (const origin of origins) {
-            const count = Math.min(perOrigin, this.simulation.totalRocks - created);
-            const oVel = origin.velocity !== undefined ? origin.velocity : initVel;
-            const oAng = origin.angle !== undefined ? origin.angle : angle;
-            for (let i = 0; i < count; i++) {
-                rockConfigs.push({
-                    x: origin.x + (Math.random() - 0.5) * diameter,
-                    y: origin.y + (this.releaseMode === 'detachment' ? 0 : (Math.random() - 0.5) * diameter * 0.5),
-                    diameter, density,
-                    velocity: oVel,
-                    angle: oAng,
-                    shapeType, aspectRatio
-                });
-            }
-            created += count;
-        }
-
-        const terrainData = {
-            points: this.terrain.points,
-            segmentMaterials: this.terrain.segments || []
-        };
-
-        const config = {
-            gravity: this.simulation.physics.gravity,
-            dt: this.simulation.physics.dt,
-            cn: this.simulation.physics.cn,
-            ct: this.simulation.physics.ct,
-            calcMethod: this.physics.calcMethod,
-            Kn: this.physics.kn,
-            Kt: this.physics.kt,
-            energyModel: this.physics.energyModel,
-            energyRatio: this.physics.energyRatio,
-            rollingResistanceMethod: this.physics.rollingModel,
-            deformationCoef: this.physics.deformationCoef,
-            maxStepsPerRock: this.simulation.maxStepsPerRock,
-            maxDuration: params.maxDuration || 30,
-            animationSpeed: this.simulation.animationSpeed,
-            fragmentationEnabled: this.physics.fragmentationEnabled,
-            fractureEnergy: this.physics.fractureEnergy,
-            fractureDissipation: this.physics.fractureDissipation
-        };
-
-        this._worker.onmessage = (e) => {
-            const msg = e.data;
-
-            if (msg.type === 'progress') {
-                const progress = Math.round(msg.data.progress * 100);
-                document.getElementById('simulation-status').textContent =
-                    `Simulando (Worker)... ${progress}% (${msg.data.simulatedCount}/${msg.data.totalRocks})`;
-            }
-
-            if (msg.type === 'frame') {
-                // Store in simulation frames for timeline playback!
-                this.simulation.frames.push(msg.frame);
-
-                // Reconstruct lightweight rock objects for rendering
-                this._workerRocks = msg.frame.map(f => ({
-                    id: f.id,
-                    x: f.x,
-                    y: f.y,
-                    rotation: f.rotation,
-                    isResting: f.isResting,
-                    parentId: f.parentId,
-                    isFragmented: f.isFragmented
-                }));
-                this._renderWorkerFrame();
-            }
-
-            if (msg.type === 'complete') {
-                this._workerActive = false;
-                // Reconstruct full rocks for stats
-                const rocks = msg.rocks;
-                this.simulation.rocks = rocks;
-                this.simulation.finishedRocks = rocks.filter(r => r.isResting);
-                this.simulation.simulatedCount = rocks.length;
-                this.simulation.isRunning = false;
-
-                this.stats.compute(rocks, this.releasePoint);
-                this.stats.updateUI();
-                this.renderer.renderHistogram(this.histogramCanvas, rocks);
-
-                // Probability map
-                const rd = this.stats.results.runoutDistance;
-                const sorted = [...rocks.filter(r => r.isResting).map(r => r.finalX)].sort((a, b) => a - b);
-                if (sorted.length > 0) {
-                    const p = (arr, pct) => {
-                        const idx = (pct / 100) * (arr.length - 1);
-                        const lo = Math.floor(idx);
-                        const hi = Math.ceil(idx);
-                        const f = idx - lo;
-                        return arr[lo] * (1 - f) + arr[hi] * f;
-                    };
-                    this.renderer.probabilityPercentiles = {
-                        p10: p(sorted, 10), p50: p(sorted, 50),
-                        p83: p(sorted, 83), p95: p(sorted, 95), mean: rd.mean
-                    };
-                }
-
-                document.getElementById('simulation-status').textContent =
-                    `Completado (${rocks.length} rocas, Worker)`;
-                document.getElementById('btn-run').disabled = false;
-                document.getElementById('btn-stop').disabled = true;
-                this.activateTimeline();
-                this.render();
-            }
-        };
-
-        this._worker.onerror = (err) => {
-            console.error('Worker error:', err);
-            alert('Error en Web Worker. Revisa la consola.');
-            this._workerActive = false;
-            document.getElementById('btn-run').disabled = false;
-            document.getElementById('btn-stop').disabled = true;
-        };
-
-        this._worker.postMessage({
-            type: 'start',
-            terrainData,
-            rockConfigs,
-            config,
-            barriers: this.barriers || []
-        });
-    }
-
-    _renderWorkerFrame() {
-        if (!this._workerRocks) return;
-        // Quick render: just positions as dots
-        const ctx = this.canvas.getContext('2d');
-        const scale = this.terrain.scale;
-        const offsetX = this.terrain.offsetX;
-        const offsetY = this.terrain.offsetY;
-        const canvasH = this.canvas.height;
-
-        // Use the standard render pipeline but with worker rocks as positions
-        this.renderer.render(null, this.releasePoint.x, this.releasePoint.y);
-
-        // Overlay worker rock positions
-        const rocks = this._workerRocks;
-        ctx.fillStyle = 'rgba(180, 160, 140, 0.7)';
-        for (let i = 0; i < rocks.length; i++) {
-            const r = rocks[i];
-            if (r.isResting) continue;
-            const cx = r.x * scale + offsetX;
-            const cy = canvasH - (r.y * scale + offsetY);
-            ctx.beginPath();
-            ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
     animate() {
         if (!this.simulation.isRunning) return;
 
         this.simulation.step();
         this._doRender();
-        this.animationId = requestAnimationFrame(() => this.animate());
+        const runEpoch = this._runEpoch;
+        this.animationId = requestAnimationFrame(() => {
+            if (runEpoch === this._runEpoch) this.animate();
+        });
     }
 
     /**
@@ -1890,29 +2445,49 @@ class App {
         }
 
         if (this.simulation.isRunning) {
-            setTimeout(() => this._animateChunked(), 0);
+            const runEpoch = this._runEpoch;
+            setTimeout(() => {
+                if (runEpoch === this._runEpoch) this._animateChunked();
+            }, 0);
         }
     }
 
     stopSimulation() {
+        this._runEpoch = (this._runEpoch || 0) + 1;
+        if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
+        const workerRun = this._workerActive;
         if (this._worker && this._workerActive) {
             this._worker.terminate();
             this._workerActive = false;
         }
 
+        this._worker = null;
+        this._workerRocks = null;
         this.simulation.stop();
+        if (workerRun) {
+            this.simulation.rocks = [];
+            this.simulation.finishedRocks = [];
+            this.simulation.frames = [];
+        }
+        this._invalidateResults();
         document.getElementById('btn-run').disabled = false;
         document.getElementById('btn-stop').disabled = true;
-        document.getElementById('simulation-status').textContent = 'Detenido por usuario';
+        const counts = {};
+        if (!workerRun) {
+            this.simulation.rocks.forEach(rock => {
+                const reason = rock.stopReason || 'desconocido';
+                counts[reason] = (counts[reason] || 0) + 1;
+            });
+        }
+        const summary = Object.entries(counts).map(([reason, count]) => `${reason}: ${count}`).join(', ');
+        document.getElementById('simulation-status').textContent = workerRun
+            ? 'Corrida incompleta: cancelada por usuario (Worker; resultados descartados)'
+            : `Corrida incompleta: cancelada por usuario${summary ? ` — ${summary}` : ''}`;
         const fabStop = document.getElementById('fab-run');
         if (fabStop) {
             fabStop.classList.remove('running');
             fabStop.textContent = '▶';
         }
-
-        this.stats.compute(this.simulation.rocks, this.releasePoint);
-        this.stats.updateUI();
-        this.renderer.renderHistogram(this.histogramCanvas, this.simulation.rocks);
 
         if (this.simulation.frameCount > 1) {
             this.activateTimeline();
@@ -1922,379 +2497,26 @@ class App {
     }
 
     resetSimulation() {
+        this._runEpoch = (this._runEpoch || 0) + 1;
+        if (this.animationId !== null && this.animationId !== undefined) cancelAnimationFrame(this.animationId);
+        this._invalidateResults();
+        this._workerRocks = null;
         this.hideTimeline();
         if (this._worker && this._workerActive) {
             this._worker.terminate();
             this._workerActive = false;
         }
+        this._worker = null;
         this.simulation.reset();
         document.getElementById('btn-run').disabled = false;
         document.getElementById('btn-stop').disabled = true;
         document.getElementById('simulation-status').textContent = 'Listo';
-
-        ['stat-max-ke', 'stat-mean-ke', 'stat-max-bounce', 'stat-max-runout',
-          'stat-max-velocity', 'stat-max-bounces', 'stat-savigny-angle'].forEach(id => {
-            document.getElementById(id).textContent = '-';
-        });
-
-        const ctx = this.histogramCanvas.getContext('2d');
-        ctx.fillStyle = '#1e2a4a';
-        ctx.fillRect(0, 0, this.histogramCanvas.width, this.histogramCanvas.height);
-        ctx.fillStyle = 'rgba(255,255,255,0.3)';
-        ctx.font = '12px sans-serif';
-        ctx.fillText('Sin datos', this.histogramCanvas.width / 2 - 20, this.histogramCanvas.height / 2);
+        const fab = document.getElementById('fab-run');
+        if (fab) { fab.classList.remove('running'); fab.textContent = '▶'; }
 
         this.render();
     }
 
-    /**
-     * Build heightmap and contour lines from the current STL data.
-     * Runs asynchronously with a progress indicator.
-     */
-    _buildContours(upAxis) {
-        if (!this.currentStl || !SimRocas.StlContour) {
-            this.renderer.stlHeightmap = null;
-            this.renderer.stlContours = [];
-            return;
-        }
-
-        const bounds = this.currentStl.bounds;
-        let hWidth, hHeight;
-        if (upAxis === 'Y') {
-            hWidth = bounds.maxX - bounds.minX;
-            hHeight = bounds.maxZ - bounds.minZ;
-        } else {
-            hWidth = bounds.maxX - bounds.minX;
-            hHeight = bounds.maxY - bounds.minY;
-        }
-
-        // Auto-detect contour interval based on terrain size
-        const maxDim = Math.max(hWidth, hHeight);
-        let interval;
-        if (maxDim < 200) interval = 2;
-        else if (maxDim < 1000) interval = 5;
-        else if (maxDim < 5000) interval = 10;
-        else if (maxDim < 20000) interval = 25;
-        else interval = 50;
-
-        // Grid resolution proportional to mesh density but capped
-        const numTriangles = this.currentStl.triangles.length / 9;
-        const gridRes = Math.min(512, Math.max(128, Math.round(Math.sqrt(numTriangles) * 0.3)));
-
-        // Build heightmap (this is the expensive part for large meshes)
-        const heightmap = SimRocas.StlContour.buildHeightmap(
-            this.currentStl.triangles,
-            bounds,
-            upAxis,
-            gridRes
-        );
-
-        // Generate contour lines
-        const contours = heightmap
-            ? SimRocas.StlContour.generateContours(heightmap, interval)
-            : [];
-
-        // Store on renderer
-        this.renderer.stlHeightmap = heightmap;
-        this.renderer.stlContours = contours;
-        this.renderer.stlContourInterval = interval;
-    }
-
-    setupStlControls() {
-        const importBtn = document.getElementById('btn-import-stl');
-        const fileInput = document.getElementById('stl-file-input');
-        const upAxisSelect = document.getElementById('stl-up-axis');
-        const sliceX1Input = document.getElementById('stl-slice-x1');
-        const sliceY1Input = document.getElementById('stl-slice-y1');
-        const sliceX2Input = document.getElementById('stl-slice-x2');
-        const sliceY2Input = document.getElementById('stl-slice-y2');
-        const resolutionInput = document.getElementById('stl-resolution-points');
-        const generateBtn = document.getElementById('btn-generate-slice');
-
-        this.stlParser = (SimRocas.StlParser)
-            ? new SimRocas.StlParser()
-            : null;
-        this.currentStl = null;
-
-        if (!this.stlParser) {
-            console.warn('StlParser no encontrado — funciones STL deshabilitadas.');
-        }
-
-        // Label natively triggers the fileInput click, no JS programmatic click needed.
-
-        // File loading
-        fileInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            if (!this.stlParser) {
-                alert('Error: StlParser no disponible. Verifique que js/stl.js cargó correctamente.');
-                return;
-            }
-            const reader = new FileReader();
-            reader.onerror = () => {
-                alert('Error al leer el archivo STL. Intente nuevamente.');
-            };
-            reader.onload = (event) => {
-                try {
-                    const arrayBuffer = event.target.result;
-                    const stlData = this.stlParser.parse(arrayBuffer);
-
-                    if (!stlData.triangles || stlData.triangles.length === 0) {
-                        throw new Error('El archivo STL no contiene triángulos válidos o está vacío.');
-                    }
-
-                    this.currentStl = stlData;
-                    this.renderer.currentStl = stlData;
-
-                    // Show metadata panel
-                    document.getElementById('stl-filename').textContent = file.name;
-                    document.getElementById('stl-tri-count').textContent = (stlData.triangles.length / 9).toLocaleString();
-                    document.getElementById('stl-bounds-x').textContent = `[${stlData.bounds.minX.toFixed(1)}, ${stlData.bounds.maxX.toFixed(1)}] m`;
-                    document.getElementById('stl-bounds-y').textContent = `[${stlData.bounds.minY.toFixed(1)}, ${stlData.bounds.maxY.toFixed(1)}] m`;
-                    document.getElementById('stl-bounds-z').textContent = `[${stlData.bounds.minZ.toFixed(1)}, ${stlData.bounds.maxZ.toFixed(1)}] m`;
-                    
-                    document.getElementById('stl-info').style.display = 'block';
-                    document.querySelectorAll('.stl-controls').forEach(el => el.style.display = 'block');
-                    document.getElementById('btn-new-section').style.display = 'inline-block';
-                    
-                    // Set default slice line covering the bounding box horizontally
-                    const upAxis = upAxisSelect.value;
-                    let minHX, maxHX, minHY, maxHY;
-                    if (upAxis === 'Y') {
-                        minHX = stlData.bounds.minX;
-                        maxHX = stlData.bounds.maxX;
-                        minHY = stlData.bounds.minZ;
-                        maxHY = stlData.bounds.maxZ;
-                    } else {
-                        minHX = stlData.bounds.minX;
-                        maxHX = stlData.bounds.maxX;
-                        minHY = stlData.bounds.minY;
-                        maxHY = stlData.bounds.maxY;
-                    }
-                    
-                    const sliceLine = {
-                        x1: minHX,
-                        y1: (minHY + maxHY) / 2,
-                        x2: maxHX,
-                        y2: (minHY + maxHY) / 2,
-                        active: true
-                    };
-                    
-                    this.renderer.sliceLine = sliceLine;
-                    this.renderer.stlUpAxis = upAxis;
-                    
-                    // Build heightmap + contour lines for plan view
-                    this._buildContours(upAxis);
-                    
-                    // Sync coordinate inputs
-                    sliceX1Input.value = Math.round(sliceLine.x1);
-                    sliceY1Input.value = Math.round(sliceLine.y1);
-                    sliceX2Input.value = Math.round(sliceLine.x2);
-                    sliceY2Input.value = Math.round(sliceLine.y2);
-                    
-                    this.render();
-                } catch (err) {
-                    alert('Error al parsear el archivo STL: ' + err.message);
-                }
-            };
-            reader.readAsArrayBuffer(file);
-        });
-
-        // Eje vertical change
-        upAxisSelect.addEventListener('change', () => {
-            if (!this.currentStl) return;
-            const upAxis = upAxisSelect.value;
-            this.renderer.stlUpAxis = upAxis;
-            
-            // Recalculate default slice line with new horizontal mapping
-            let minHX, maxHX, minHY, maxHY;
-            if (upAxis === 'Y') {
-                minHX = this.currentStl.bounds.minX;
-                maxHX = this.currentStl.bounds.maxX;
-                minHY = this.currentStl.bounds.minZ;
-                maxHY = this.currentStl.bounds.maxZ;
-            } else {
-                minHX = this.currentStl.bounds.minX;
-                maxHX = this.currentStl.bounds.maxX;
-                minHY = this.currentStl.bounds.minY;
-                maxHY = this.currentStl.bounds.maxY;
-            }
-            
-            const sliceLine = {
-                x1: minHX,
-                y1: (minHY + maxHY) / 2,
-                x2: maxHX,
-                y2: (minHY + maxHY) / 2,
-                active: true
-            };
-            
-            this.renderer.sliceLine = sliceLine;
-            sliceX1Input.value = Math.round(sliceLine.x1);
-            sliceY1Input.value = Math.round(sliceLine.y1);
-            sliceX2Input.value = Math.round(sliceLine.x2);
-            sliceY2Input.value = Math.round(sliceLine.y2);
-            
-            // Rebuild contours with new axis
-            this._buildContours(upAxis);
-            
-            this.render();
-        });
-
-        // Sync inputs back to slice line
-        const syncInputsToSliceLine = () => {
-            if (!this.currentStl) return;
-            this.renderer.sliceLine.x1 = parseFloat(sliceX1Input.value) || 0;
-            this.renderer.sliceLine.y1 = parseFloat(sliceY1Input.value) || 0;
-            this.renderer.sliceLine.x2 = parseFloat(sliceX2Input.value) || 0;
-            this.renderer.sliceLine.y2 = parseFloat(sliceY2Input.value) || 0;
-            this.render();
-        };
-
-        [sliceX1Input, sliceY1Input, sliceX2Input, sliceY2Input].forEach(inp => {
-            inp.addEventListener('input', syncInputsToSliceLine);
-        });
-
-        // Generate profile
-        generateBtn.addEventListener('click', () => {
-            if (!this.currentStl) {
-                alert('Por favor, carga un archivo STL primero.');
-                return;
-            }
-            
-            const x1 = parseFloat(sliceX1Input.value);
-            const y1 = parseFloat(sliceY1Input.value);
-            const x2 = parseFloat(sliceX2Input.value);
-            const y2 = parseFloat(sliceY2Input.value);
-            const upAxis = upAxisSelect.value;
-            const resolution = parseInt(resolutionInput.value) || 50;
-            
-            if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
-                alert('Coordenadas de corte inválidas.');
-                return;
-            }
-            
-            // Show processing indicator
-            generateBtn.disabled = true;
-            const origText = generateBtn.textContent;
-            generateBtn.textContent = '⏳ Procesando...';
-
-            // Use setTimeout to let the UI update before heavy computation
-            setTimeout(() => {
-                try {
-                    const points2D = SimRocas.StlSlicer.slice(
-                        this.currentStl.triangles,
-                        x1, y1, x2, y2,
-                        upAxis,
-                        resolution
-                    );
-                    
-                    if (points2D.length === 0) {
-                        alert('No se encontraron intersecciones entre la línea de sección y la malla STL. Verifica que tu línea pase por dentro de la topografía.');
-                        return;
-                    }
-                    
-                    // Set the new points to active terrain!
-                    this.terrain.setPoints(points2D);
-                    
-                    // Clear current simulation state/rocks
-                    this.resetSimulation();
-                    
-                    // Redirect user back to the 2D Terrain tab
-                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                    document.querySelector('[data-tab="terrain"]').classList.add('active');
-                    document.getElementById('tab-terrain').classList.add('active');
-                    
-                    this.renderer.activeTab = 'terrain';
-                    
-                    // Scale and draw new profile
-                    this.renderer.autoScale();
-                    this.updateTerrainInfo();
-                    this.updateSegmentsList();
-                    this.render();
-                    
-                    alert(`Perfil 2D generado exitosamente con ${points2D.length} puntos. ¡Listo para configurar parámetros y ejecutar la simulación!`);
-                } catch (err) {
-                    alert('Error al generar perfil: ' + err.message);
-                    console.error('STL slice error:', err);
-                } finally {
-                    generateBtn.disabled = false;
-                    generateBtn.textContent = origText;
-                }
-            }, 50);
-        });
-
-        // "Nueva Sección" button — switch back to STL tab to draw a new slice line
-        const btnNewSection = document.getElementById('btn-new-section');
-        btnNewSection.addEventListener('click', () => {
-            if (!this.currentStl) return;
-
-            // Reset slice line to default (centered horizontal)
-            const upAxis = upAxisSelect.value;
-            const bounds = this.currentStl.bounds;
-            let minHX, maxHX, minHY, maxHY;
-            if (upAxis === 'Y') {
-                minHX = bounds.minX; maxHX = bounds.maxX;
-                minHY = bounds.minZ; maxHY = bounds.maxZ;
-            } else {
-                minHX = bounds.minX; maxHX = bounds.maxX;
-                minHY = bounds.minY; maxHY = bounds.maxY;
-            }
-            const newSlice = {
-                x1: minHX,
-                y1: (minHY + maxHY) / 2,
-                x2: maxHX,
-                y2: (minHY + maxHY) / 2,
-                active: false
-            };
-            this.renderer.sliceLine = newSlice;
-            sliceX1Input.value = Math.round(newSlice.x1);
-            sliceY1Input.value = Math.round(newSlice.y1);
-            sliceX2Input.value = Math.round(newSlice.x2);
-            sliceY2Input.value = Math.round(newSlice.y2);
-
-            // Switch to STL 3D tab
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector('[data-tab="stl3d"]').classList.add('active');
-            document.getElementById('tab-stl3d').classList.add('active');
-            this.renderer.activeTab = 'stl3d';
-
-            this.render();
-        });
-
-        // "Limpiar Línea" button — reset the slice line to default on current STL
-        const btnClearSlice = document.getElementById('btn-clear-slice');
-        btnClearSlice.addEventListener('click', () => {
-            if (!this.currentStl) return;
-
-            const upAxis = upAxisSelect.value;
-            const bounds = this.currentStl.bounds;
-            let minHX, maxHX, minHY, maxHY;
-            if (upAxis === 'Y') {
-                minHX = bounds.minX; maxHX = bounds.maxX;
-                minHY = bounds.minZ; maxHY = bounds.maxZ;
-            } else {
-                minHX = bounds.minX; maxHX = bounds.maxX;
-                minHY = bounds.minY; maxHY = bounds.maxY;
-            }
-            const cleared = {
-                x1: minHX,
-                y1: (minHY + maxHY) / 2,
-                x2: maxHX,
-                y2: (minHY + maxHY) / 2,
-                active: false
-            };
-            this.renderer.sliceLine = cleared;
-            sliceX1Input.value = Math.round(cleared.x1);
-            sliceY1Input.value = Math.round(cleared.y1);
-            sliceX2Input.value = Math.round(cleared.x2);
-            sliceY2Input.value = Math.round(cleared.y2);
-
-            this.render();
-        });
-    }
 
     render() {
         if (this._renderPending) return;
@@ -2329,4 +2551,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // Export to namespace
 SimRocas.App = App;
 SimRocas.clamp = clamp;
+SimRocas.copyRunSegments = copyRunSegments;
+SimRocas.syncVariabilityLabels = syncVariabilityLabels;
 window.SimRocas = SimRocas; // Make namespace globally accessible

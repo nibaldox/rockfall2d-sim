@@ -16,16 +16,13 @@ __pycache__/
 # Logs
 *.log
 
-# Large STL files
+# Large STL files (tracked test fixture excepted)
 *.stl
+!scratch/test_slope.stl
 
 # SDD artifacts
 .antigravitycli/
 .atl/
-openspec/
-
-# Scratch/test files
-scratch/
 
 # Screenshots
 *.png
@@ -33,3 +30,11 @@ scratch/
 
 # Exploration notes
 exploration.md
+
+# Hermes agent plans and local state
+.hermes/
+
+# Desktop (Electron) build artifacts
+desktop/node_modules/
+desktop/dist/
+desktop/app-web/

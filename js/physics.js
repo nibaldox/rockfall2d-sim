@@ -18,9 +18,40 @@
  *   - Moreau (1988) "Numerical analysis of the unilateral contact problem"
  */
 
-const _global = typeof window !== 'undefined' ? window : (typeof global !== 'undefined' ? global : self);
-_global.SimRocas = _global.SimRocas || {};
-_global.SimRocas.nextRockId = _global.SimRocas.nextRockId || 1;
+globalThis.SimRocas = globalThis.SimRocas || {};
+globalThis.SimRocas.nextRockId = globalThis.SimRocas.nextRockId || 1;
+
+/**
+ * P0.5: generador pseudoaleatorio con semilla (mulberry32). Función pura de
+ * módulo: cada llamada devuelve un generador independiente.
+ *
+ * @param {number} seed - Entero sin signo de 32 bits, en [0, 2^32 - 1]
+ * @returns {function(): number} Generador de valores en [0, 1)
+ */
+function createRng(seed) {
+    if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 4294967295) {
+        throw new Error(`Semilla inválida (${String(seed)}): debe ser un entero entre 0 y 4294967295`);
+    }
+    let a = seed >>> 0;
+    return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Instala el generador de una corrida como propiedad no enumerable: no viaja
+// en copias de propiedades ni en clonados estructurados (Worker).
+function attachRng(target, rng) {
+    Object.defineProperty(target, '_rng', {
+        value: typeof rng === 'function' ? rng : null,
+        writable: true,
+        configurable: true,
+        enumerable: false
+    });
+}
 
 class Rock {
     /**
@@ -32,10 +63,30 @@ class Rock {
      * @param {number} angle - Release angle (degrees)
      * @param {string} shapeType - Shape model: 'sphere'|'ellipse'|'polygon'|'block'
      * @param {number} aspectRatio - Minor/major axis ratio (0.2-1.0)
+     * @param {?function(): number} rng - Generador de la corrida (P0.5); sin él, Math.random
      */
-    constructor(x, y, diameter, density, initialVelocity = 0, angle = 0, shapeType = 'polygon', aspectRatio = 0.6) {
+    constructor(x, y, diameter, density, initialVelocity = 0, angle = 0, shapeType = 'polygon', aspectRatio = 0.6, rng = null) {
+        // P0.5: antes de cualquier sorteo (forma, giro y color).
+        if (typeof rng === 'function') attachRng(this, rng);
+        // Validación de entrada (T0.12): diámetro o densidad no positivos no
+        // tienen reparación física — con ellos la masa sale 0 y el momento de
+        // inercia 0/0 = NaN, envenenando toda la simulación (impulsos,
+        // energías, estadísticas). Fallamos temprano con un error claro en
+        // español en lugar de propagar NaN silenciosamente.
+        if (!(diameter > 0)) {
+            throw new Error(`Rock: diámetro inválido (${diameter} m) — debe ser mayor que 0`);
+        }
+        if (!(density > 0)) {
+            throw new Error(`Rock: densidad inválida (${density} kg/m³) — debe ser mayor que 0`);
+        }
         this.x = x;
         this.y = y;
+        this.releaseX = x;
+        this.releaseY = y;
+        this.sourceIndex = 0;
+        this.downhillSign = null;
+        this.maxDownhillAdvance = null;
+        this.cullBoundary = null;
         this.vx = initialVelocity * Math.cos(angle * Math.PI / 180);
         this.vy = initialVelocity * Math.sin(angle * Math.PI / 180);
         this.diameter = diameter;
@@ -47,21 +98,35 @@ class Rock {
         // Generate shape FIRST — needed for area/mass/inertia computations
         this.shape = this.generateShape(shapeType, aspectRatio);
 
-        // Mass: sphere volume vs polygon area × thickness
+        // Mass: sphere volume vs polygon area × equivalent thickness.
+        // La masa debe ser independiente de la forma: un círculo poligonal
+        // con este espesor pesa lo mismo que la esfera (T0.10).
         if (shapeType === 'sphere') {
             this.mass = density * (4 / 3) * Math.PI * Math.pow(this.radius, 3);
         } else {
             const area = this.computePolygonArea();
-            const thickness = this.radius * 0.5;
+            const thickness = Rock.equivalentThickness(this.radius);
             this.mass = density * area * thickness;
+        }
+
+        // Guardía T0.12: masa mínima positiva. Con geometría degenerada
+        // (aspectRatio → 0 ⇒ área 0) la masa saldría 0 y las divisiones del
+        // motor (1/m en los impulsos) producirían Inf/NaN. 1e-6 kg (1 mg) es
+        // físicamente irrelevante pero mantiene todas las magnitudes finitas.
+        if (!(this.mass > 0)) {
+            this.mass = Rock.MINIMUM_MASS;
         }
 
         this.momentOfInertia = this.computeMomentOfInertia();
 
-        this.rotation = Math.random() * Math.PI * 2;
-        this.angularVelocity = (Math.random() - 0.5) * 2;
+        this.rotation = this.rng() * Math.PI * 2;
+        this.angularVelocity = (this.rng() - 0.5) * 2;
 
         this.bounces = 0;
+        // Sustained-contact state for lumped-mass: true once a sub-step contact
+        // with |vn| below slideVelocityThreshold has been handled as
+        // sliding/rolling instead of an impact (T0.7b fix 1).
+        this._sustainedContact = false;
         this.maxBounceHeight = 0;
         this.maxKineticEnergy = 0;
         this.maxImpactVelocity = 0;
@@ -70,13 +135,43 @@ class Rock {
         this._maxTrajectoryPoints = 500;
         this.bouncePoints = [];
         this.impactEnergies = [];
+
+        // --- P0.2-β (C1/C3): eventos de impacto por episodio y vuelo ---------
+        this.impactCount = 0;
+        this.maxImpactNormalSpeed = null;
+        this.maxImpactSpeed = null;
+        this.maxImpactContactSpeed = null;
+        this.maxImpactEnergy = null;
+        this.maxFlightHeight = null;
+        this.impactEvents = [];
+        this.droppedImpactEvents = 0;
+        this._maxImpactEvents = Rock.MAX_IMPACT_EVENTS;
+        this._impactEpisodes = new Set();   // superficies con episodio abierto
+        this._episodeOpened = new Set();    // episodios abiertos en este sub-paso
+        this._substepContacts = new Set();  // superficies tocadas en este sub-paso
+        this._flightActive = false;
+        this._flightMax = null;
+        this._pendingFlightMax = null;
+        this._flightStartedThisSubstep = false;
+
         this.finalX = x;
         this.finalY = y;
         this.isResting = false;
+        this.stopReason = null;
         this.restThreshold = 0.08;
+        // Normal-velocity threshold separating a real IMPACT from sustained
+        // contact (sliding/rolling) in the lumped-mass method. Below it the
+        // impact law (vn -> -kn·vn, vt -> kt·vt) must NOT be applied: gravity
+        // re-injects |vn| ≈ g·cosθ·dt ≈ 0.013 m/s every sub-step on a slope,
+        // and applying kt = 0.75 ~600 times per second brings rocks to a stop
+        // even on 35° slopes with low rolling friction. Reference lumped-mass
+        // models (RocFall 'minimum velocity', CRSP, Pierre2) use a similar
+        // threshold. (T0.7b fix 1)
+        this.slideVelocityThreshold = 0.5;
         this._restCheckCount = 0;
         this.ignoreResting = false;
         this.elapsedTime = 0;
+        this._elapsedTimeCompensation = 0;
         this.totalEnergyDissipated = 0;
         this.stepsTaken = 0;
 
@@ -92,14 +187,79 @@ class Rock {
         this._colorStroke = `rgba(${Math.min(255, (c.r | 0) + 40)}, ${Math.min(255, (c.g | 0) + 40)}, ${Math.min(255, (c.b | 0) + 40)}, 0.54)`;
 
         // Fragmentation properties
-        this.id = _global.SimRocas.nextRockId++;
+        this.id = globalThis.SimRocas.nextRockId++;
         this.generation = 0;
         this.parentId = null;
+        // P0.4: linaje. `id` es único por corrida (el contador se reinicia en
+        // Simulation.start); `rootId` es el `id` de la primaria raíz.
+        this.rootId = this.id;
+        this.fragmentKind = 'primary'; // 'primary' | 'core' | 'major' | 'spall'
+        this.bornAt = 0;               // elapsedTime del padre al nacer
+        this.discardedMass = 0;        // kg de esquirlas < 0.05 m no simuladas
         this.isFragmented = false;
         this._lastCollision = null;
         this.isCore = false;          // true if this rock is a surviving core
         this.massLossRatio = 0;       // cumulative fraction of mass lost to spalling (0-1)
         this.originalDiameter = diameter; // track original size for erosion display
+    }
+
+    /**
+     * Espesor fuera-de-plano equivalente para las formas no esféricas
+     * (polígonos/ellipse/block tratados como área 2D × espesor).
+     *
+     * t = (4/3)·r hace que un polígono circular de radio r pese exactamente
+     * la esfera de radio r: ρ·πr²·(4/3)r = ρ·(4/3)πr³. Con el valor legado
+     * 0.5·r las rocas no esféricas pesaban ~1/5.7 y la energía cinética
+     * (kJ) dependía artificialmente de la forma elegida (T0.10).
+     *
+     * Úsalo (no re-derives el factor) en TODO lugar que convierta
+     * masa ↔ diámetro/área.
+     *
+     * @param {number} radius - Radio nominal de la roca (m)
+     * @returns {number} Espesor equivalente (m)
+     */
+    static equivalentThickness(radius) {
+        return (4 / 3) * radius;
+    }
+
+    /**
+     * Masa mínima positiva aceptada en el motor (T0.12).
+     *
+     * Con geometría degenerada (área 0: aspectRatio → 0, vértices
+     * coincidentes) la masa saldría 0 y las divisiones del motor
+     * (1/m en impulsos, m·g en fricción) producirían Inf/NaN. 1e-6 kg
+     * (1 mg) es física y numéricamente irrelevante pero conserva todas
+     * las magnitudes finitas.
+     *
+     * @type {number} kg
+     */
+    static MINIMUM_MASS = 1e-6;
+
+    /**
+     * Tope de eventos de impacto por roca (P0.2-β, §2): se guardan los
+     * primeros 200; `impactCount` y los máximos incluyen los descartados.
+     *
+     * @type {number}
+     */
+    static MAX_IMPACT_EVENTS = 200;
+
+    /**
+     * Diámetro de la esfera equivalente para una masa dada (T0.12).
+     *
+     * m = ρ·(4/3)·π·(d/2)³  ⇔  d = 2·cbrt(3m/(4πρ)).
+     *
+     * Coherente con la regla de masa T0.10 (espesor (4/3)·r ⇒ una roca
+     * circular de radio r pesa la esfera de radio r). Úsalo — no vuelvas a
+     * derivar el factor — en TODO lugar que convierta masa ↔ diámetro:
+     * antes los esquirlas usaban la convención AREAL
+     * r = sqrt(m/(ρπ)), incoherente con el espesor de masa.
+     *
+     * @param {number} mass - Masa (kg)
+     * @param {number} density - Densidad (kg/m³)
+     * @returns {number} Diámetro equivalente (m)
+     */
+    static diameterFromMass(mass, density) {
+        return 2 * Math.cbrt(3 * mass / (4 * Math.PI * density));
     }
 
     /**
@@ -150,7 +310,7 @@ class Rock {
         const ry = this.radius * aspectRatio;
         for (let i = 0; i < n; i++) {
             const theta = (i / n) * Math.PI * 2;
-            const jitter = 0.92 + Math.random() * 0.16;
+            const jitter = 0.92 + this.rng() * 0.16;
             points.push({
                 x: Math.cos(theta) * rx * jitter,
                 y: Math.sin(theta) * ry * jitter
@@ -185,18 +345,18 @@ class Rock {
      * Default model — good general-purpose approximation.
      */
     _generatePolygon() {
-        const vertices = 5 + Math.floor(Math.random() * 5);
+        const vertices = 5 + Math.floor(this.rng() * 5);
         const points = [];
         const angles = [];
 
         for (let i = 0; i < vertices; i++) {
-            angles.push((i / vertices) * Math.PI * 2 + (Math.random() - 0.5) * 0.4);
+            angles.push((i / vertices) * Math.PI * 2 + (this.rng() - 0.5) * 0.4);
         }
         angles.sort((a, b) => a - b);
 
         for (let i = 0; i < vertices; i++) {
             const theta = angles[i];
-            const r = this.radius * (0.45 + Math.random() * 0.55);
+            const r = this.radius * (0.45 + this.rng() * 0.55);
             points.push({ x: Math.cos(theta) * r, y: Math.sin(theta) * r });
         }
 
@@ -211,7 +371,21 @@ class Rock {
     computeMomentOfInertia() {
         const n = this.shape.length;
         let sum = 0;
-        const rho = this.mass / this.computePolygonArea();
+        const area = this.computePolygonArea();
+        // Guardía T0.12: con formas degeneradas (aspectRatio → 0, vértices
+        // coincidentes) el rho normalizado this.mass/area puede dar 0/0 = NaN
+        // y degradar todo el motor (I NaN → NaN en las divisiones de los
+        // impulsos). Con área no positiva o masa no positiva usamos el
+        // momento de inercia de un disco equivalente con el radio nominal y
+        // la masa mínima positiva (1e-6 kg): I finita siempre, y el paso de
+        // simulación sigue siendo estable.
+        if (!(area > 0) || !(this.mass > 0)) {
+            // Radio efectivo: el nominal si es válido, 1 mm si no — la I
+            // resultante es pequeña pero siempre finita y positiva.
+            const rEffective = this.radius > 0 ? this.radius : 0.001;
+            return 0.5 * Rock.MINIMUM_MASS * rEffective * rEffective;
+        }
+        const rho = this.mass / area;
 
         for (let i = 0; i < n; i++) {
             const j = (i + 1) % n;
@@ -242,14 +416,24 @@ class Rock {
         return Math.abs(area) / 2;
     }
 
+    /**
+     * P0.5: único punto de sorteo de la roca. Sin generador de corrida usa
+     * `Math.random`, resuelto en cada llamada.
+     * @returns {number} Valor en [0, 1)
+     */
+    rng() {
+        const generator = this._rng;
+        return generator ? generator() : Math.random();
+    }
+
     generateColor() {
         const types = [
-            { r: 150 + Math.random() * 40, g: 130 + Math.random() * 40, b: 110 + Math.random() * 30 },
-            { r: 120 + Math.random() * 50, g: 120 + Math.random() * 50, b: 120 + Math.random() * 50 },
-            { r: 140 + Math.random() * 30, g: 120 + Math.random() * 30, b: 100 + Math.random() * 20 },
-            { r: 160 + Math.random() * 30, g: 140 + Math.random() * 30, b: 115 + Math.random() * 25 }
+            { r: 150 + this.rng() * 40, g: 130 + this.rng() * 40, b: 110 + this.rng() * 30 },
+            { r: 120 + this.rng() * 50, g: 120 + this.rng() * 50, b: 120 + this.rng() * 50 },
+            { r: 140 + this.rng() * 30, g: 120 + this.rng() * 30, b: 100 + this.rng() * 20 },
+            { r: 160 + this.rng() * 30, g: 140 + this.rng() * 30, b: 115 + this.rng() * 25 }
         ];
-        return types[Math.floor(Math.random() * types.length)];
+        return types[Math.floor(this.rng() * types.length)];
     }
 
     /**
@@ -283,6 +467,53 @@ class Rock {
      */
     invalidateVertexCache() {
         this._verticesDirty = true;
+    }
+
+    /**
+     * Resolves the penetration of one impact without creating energy:
+     * the rock is lifted vertically by `lift` metres (the vertical penetration
+     * of the deepest contact point) plus a margin of at most 1e-4 m, and —
+     * when `chargeClimb` is true — the work m·g·lift of that climb is charged
+     * to the outgoing translational velocity. A pure geometric lift would add
+     * potential energy for free (on a 10 m drop with cn = 0.85 the accumulated
+     * lift is ~0.15 m, i.e. ~250 J ≈ 1.4 % of E0); charging the climb-out work
+     * keeps the position fix energy-neutral, as required by the conservation
+     * test.
+     *
+     * T0.7b fix 2: when the speed cannot pay the climb-out, the velocity is
+     * LEFT INTACT instead of zeroed. Zeroing froze rocks released at rest on
+     * slopes. And in sustained (slow) contact `chargeClimb` is false: the
+     * normal-velocity removal that precedes the lift already discards exactly
+     * the energy gravity injected to build that penetration
+     * (m·vn²/2 ≈ m·g·lift), so charging it again double-counts and pins
+     * creeping rocks at v ≈ sqrt(2·g·lift) forever.
+     * @param {number} lift - Vertical penetration to resolve (m)
+     * @param {boolean} [chargeClimb=true] - Charge the climb-out work to the
+     *   velocity (impact mode); false for sustained-contact lifts.
+     */
+    _penetrationCorrection(lift, chargeClimb = true) {
+        if (lift <= 0) return;
+        const margin = Math.min(1e-4, 0.05 * lift);
+        const total = lift + margin;
+        this.y += total;
+        this._verticesDirty = true;
+
+        if (!chargeClimb) return;
+
+        const speedSq = this.vx * this.vx + this.vy * this.vy;
+        const climbOut = 2 * 9.81 * total; // v² needed to climb `total` metres
+        if (speedSq > climbOut) {
+            const f = Math.sqrt(1 - climbOut / speedSq);
+            this.vx *= f;
+            this.vy *= f;
+        }
+        // T0.7b fix 2: when the kinetic energy cannot pay for the climb-out,
+        // LEAVE the velocity intact instead of zeroing it. In sustained or
+        // slow contact the lift is at most a few sub-steps of free fall
+        // (microns), so the maximum energy created is m·g·(lift + 1e-4),
+        // negligible; zeroing the velocity froze rocks released at rest on
+        // slopes (that path is exercised by tests/physics.slope.test.js). The
+        // energy charge above still applies whenever the speed allows it.
     }
 
     /**
@@ -320,6 +551,137 @@ class Rock {
      * @param {{nx: number, ny: number}} normal - Surface normal at impact
      * @returns {boolean} true if rock is resting
      */
+    sampleDownhillAdvance() {
+        if (this.downhillSign !== null) {
+            this.maxDownhillAdvance = Math.max(this.maxDownhillAdvance, this.downhillSign * (this.x - this.releaseX));
+        }
+    }
+
+    finish(reason) {
+        if (this.stopReason !== null) return false;
+        this.sampleDownhillAdvance();
+        this.stopReason = reason;
+        this.isResting = true;
+        this.finalX = this.x;
+        this.finalY = this.y;
+        return true;
+    }
+
+    /**
+     * Marca contacto detectado con una superficie en el sub-paso actual
+     * (P0.2-β, C1). Abre el episodio si no había uno activo y cierra el vuelo
+     * vigente si lo había (C3). Solo escribe estado de instrumentación: no
+     * altera ninguna magnitud física ni consume sorteos.
+     *
+     * @param {string} surfaceKey - 'terrain' o `barrier:<i>`
+     */
+    noteSurfaceContact(surfaceKey) {
+        this._substepContacts.add(surfaceKey);
+        if (!this._impactEpisodes.has(surfaceKey)) {
+            this._impactEpisodes.add(surfaceKey);
+            this._episodeOpened.add(surfaceKey);
+        }
+        if (this._flightActive && !this._flightStartedThisSubstep) {
+            this._flightActive = false;
+            if (this._flightMax !== null && (this.maxFlightHeight === null || this._flightMax > this.maxFlightHeight)) {
+                this.maxFlightHeight = this._flightMax;
+            }
+            this._pendingFlightMax = this._flightMax;
+            this._flightMax = null;
+        }
+    }
+
+    /**
+     * Muestrea la altura de vuelo del centro sobre el terreno (P0.2-β, C3).
+     * Se llama después de update y antes de handleCollision; fuera del perfil,
+     * o si el tramo no existe, la muestra se omite.
+     *
+     * @param {Terrain} terrain
+     */
+    sampleFlightHeight(terrain) {
+        if (!this._flightActive) return;
+        const points = terrain && terrain.points;
+        if (!points || points.length < 2) return;
+        if (this.x < points[0].x || this.x > points[points.length - 1].x) return;
+        if (!terrain.getSegmentAt(this.x)) return;
+        const height = this.y - terrain.getHeightAt(this.x);
+        if (this._flightMax === null || height > this._flightMax) {
+            this._flightMax = height;
+        }
+    }
+
+    /**
+     * Cierra los episodios de contacto que no tocaron su superficie en este
+     * sub-paso y limpia el estado efímero de instrumentación (P0.2-β, C1).
+     */
+    closeImpactEpisodes() {
+        if (this._impactEpisodes.size > 0) {
+            for (const key of this._impactEpisodes) {
+                if (!this._substepContacts.has(key)) this._impactEpisodes.delete(key);
+            }
+        }
+        this._substepContacts.clear();
+        this._episodeOpened.clear();
+        this._pendingFlightMax = null;
+        this._flightStartedThisSubstep = false;
+    }
+
+    /**
+     * Registra un evento de impacto C1 con las magnitudes previas al impulso.
+     * Devuelve null si la superficie ya tenía un episodio activo (C1.3).
+     *
+     * @param {{surface: string, index: number, vn: number, speed: number,
+     *          contactSpeed: number|null, energy: number, cnEff: number,
+     *          ctEff: number}} fields
+     * @returns {Object|null}
+     */
+    recordImpactEvent(fields) {
+        const surfaceKey = fields.surface === 'barrier' ? `barrier:${fields.index}` : 'terrain';
+        if (!this._episodeOpened.has(surfaceKey)) return null;
+
+        const vnAbs = Math.abs(fields.vn);
+        const event = {
+            t: this.elapsedTime,
+            x: this.x,
+            y: this.y,
+            surface: fields.surface,
+            index: fields.index,
+            vn: vnAbs,
+            speed: fields.speed,
+            contactSpeed: fields.contactSpeed,
+            energy: fields.energy,
+            cnEff: fields.cnEff,
+            ctEff: fields.ctEff,
+            flightHeightBefore: this._pendingFlightMax
+        };
+
+        this.impactCount++;
+        if (this.maxImpactNormalSpeed === null || vnAbs > this.maxImpactNormalSpeed) {
+            this.maxImpactNormalSpeed = vnAbs;
+        }
+        if (this.maxImpactSpeed === null || fields.speed > this.maxImpactSpeed) {
+            this.maxImpactSpeed = fields.speed;
+        }
+        if (fields.contactSpeed !== null && fields.contactSpeed !== undefined
+            && (this.maxImpactContactSpeed === null || fields.contactSpeed > this.maxImpactContactSpeed)) {
+            this.maxImpactContactSpeed = fields.contactSpeed;
+        }
+        if (this.maxImpactEnergy === null || fields.energy > this.maxImpactEnergy) {
+            this.maxImpactEnergy = fields.energy;
+        }
+        if (this.impactEvents.length < this._maxImpactEvents) {
+            this.impactEvents.push(event);
+        }
+        this.droppedImpactEvents = this.impactCount - this.impactEvents.length;
+
+        // El vuelo siguiente empieza en este evento (C3).
+        this._flightActive = true;
+        this._flightMax = null;
+        this._flightStartedThisSubstep = true;
+        this._pendingFlightMax = null;
+        return event;
+    }
+
     _checkResting(normal) {
         this._restCheckCount++;
         if (this._restCheckCount < 3) return false;
@@ -329,13 +691,12 @@ class Rock {
         const slopeFactor = Math.max(0.1, 1 - slope * 2);
         const adjustedThreshold = this.restThreshold * slopeFactor;
 
-        if (this.speed < adjustedThreshold && this.angularVelocity < 0.5 && this.bounces > 2) {
-            this.isResting = true;
+        if (this.speed < adjustedThreshold && Math.abs(this.angularVelocity) < 0.5 &&
+            (this.bounces > 2 || this._sustainedContact)) {
+            this.finish('rest');
             this.vx = 0;
             this.vy = 0;
             this.angularVelocity = 0;
-            this.finalX = this.x;
-            this.finalY = this.y;
             return true;
         }
         return false;
@@ -362,7 +723,6 @@ class Rock {
         this.y += this.vy * dt;
         this.rotation += this.angularVelocity * dt;
         this._verticesDirty = true;
-        this.stepsTaken++;
 
         const ke = 0.5 * this.mass * (this.vx * this.vx + this.vy * this.vy)
                  + 0.5 * this.momentOfInertia * this.angularVelocity * this.angularVelocity;
@@ -393,6 +753,38 @@ class Rock {
     }
 
     /**
+     * E2.2: índice del tramo extremo más cercano cuando `x` cae fuera del
+     * perfil (prolongación horizontal). Devuelve -1 dentro del perfil o si el
+     * perfil tiene menos de 2 puntos. No sortea.
+     *
+     * @param {Terrain} terrain
+     * @param {number} x
+     * @returns {number}
+     */
+    _edgeSegmentIndexAt(terrain, x) {
+        const points = terrain && terrain.points;
+        if (!points || points.length < 2) return -1;
+        if (x < points[0].x) return 0;
+        if (x > points[points.length - 1].x) return points.length - 2;
+        return -1;
+    }
+
+    /**
+     * Índice de tramo de un evento de terreno en rígido y nonsmooth: el tramo
+     * bajo `x` o, fuera del perfil, el tramo extremo más cercano (E2.2).
+     *
+     * @param {Terrain} terrain
+     * @param {number} x
+     * @returns {number}
+     */
+    _impactSegmentIndexAt(terrain, x) {
+        const segAt = terrain.getSegmentAt(x);
+        if (segAt) return segAt.index;
+        const edgeIndex = this._edgeSegmentIndexAt(terrain, x);
+        return edgeIndex >= 0 ? edgeIndex : 0;
+    }
+
+    /**
      * Handles rock-terrain collision using one of three calculation methods:
      *   - 'rigid-body': polygonal collision with impulse or energy-ratio models
      *   - 'lumped-mass': point mass with Kn/Kt coefficients (GeoRock, CRSP)
@@ -408,7 +800,7 @@ class Rock {
      * @param {number} kt - Tangential restitution coefficient (Kt) — lumped-mass only
      * @returns {boolean} true if rock is still active after collision
      */
-    handleCollision(terrain, cn, ct, energyModel, energyRatio, calcMethod, kn, kt) {
+    handleCollision(terrain, cn, ct, energyModel, energyRatio, calcMethod, kn, kt, cnFactor, ctFactor) {
         if (this.isResting) return false;
 
         // Determine impact X for segment lookup
@@ -428,9 +820,29 @@ class Rock {
         }
 
         // Read segment properties at impact point
-        const segProps = terrain.getSegmentPropertiesAt(impactX, cn, ct);
-        const segCn = segProps.cn;
-        const segCt = segProps.ct;
+        let segProps = terrain.getSegmentPropertiesAt(impactX, cn, ct);
+        // E2.2: sobre la prolongación horizontal del perfil manda el material
+        // del tramo extremo más cercano, no los Cn/Ct globales.
+        const edgeIndex = calcMethod === 'lumped-mass' ? -1 : this._edgeSegmentIndexAt(terrain, impactX);
+        const edgeSegment = edgeIndex >= 0 ? terrain.segments[edgeIndex] : null;
+        if (edgeSegment) {
+            segProps = { cn: edgeSegment.cn, ct: edgeSegment.ct, type: edgeSegment.type };
+        }
+        let segCn = segProps.cn;
+        let segCt = segProps.ct;
+
+        // U4/I4: la variabilidad del paso se aplica al Cn/Ct del tramo, también
+        // al del tramo extremo fuera del perfil. Con menos de 2 puntos la base
+        // ya es el global sorteado del paso y no se vuelve a variar.
+        // RVBa-2: decide la existencia del tramo, no su `type`.
+        if (edgeSegment || terrain.getSegmentAt(impactX)) {
+            if (cnFactor !== undefined && cnFactor !== null) {
+                segCn = Math.max(0, Math.min(1, segCn * cnFactor));
+            }
+            if (ctFactor !== undefined && ctFactor !== null) {
+                segCt = Math.max(0, Math.min(1, segCt * ctFactor));
+            }
+        }
 
         if (calcMethod === 'lumped-mass') {
             return this._handleLumpedMass(terrain, kn, kt);
@@ -448,13 +860,13 @@ class Rock {
      * Uses circle-line segment intersection with the rock radius.
      */
     handleBarrierCollisions(barriers) {
-        for (const barrier of barriers) {
-            this._checkBarrierCollision(barrier);
+        for (let i = 0; i < barriers.length; i++) {
+            this._checkBarrierCollision(barriers[i], i);
             if (this.isResting) break;
         }
     }
 
-    _checkBarrierCollision(barrier) {
+    _checkBarrierCollision(barrier, barrierIndex = 0) {
         const dx = barrier.x2 - barrier.x1;
         const dy = barrier.y2 - barrier.y1;
         const segLenSq = dx * dx + dy * dy;
@@ -475,6 +887,10 @@ class Rock {
 
         if (distSq >= collisionDist * collisionDist) return;
 
+        // Contacto detectado con esta barrera (P0.2-β, C1): abre episodio y
+        // cierra el vuelo vigente antes de cualquier guardia de aproximación.
+        this.noteSurfaceContact(`barrier:${barrierIndex}`);
+
         const dist = Math.sqrt(distSq);
         if (dist < 0.001) return;
 
@@ -488,6 +904,24 @@ class Rock {
 
         const barrierCn = barrier.cn !== undefined ? barrier.cn : 0.3;
         const barrierCt = barrier.ct !== undefined ? barrier.ct : 0.5;
+
+        // Captura previa al impulso (P0.2-β, C1): rapidez traslacional y
+        // energía total del centro. Sin punto de contacto en barreras.
+        const vxBefore = this.vx;
+        const vyBefore = this.vy;
+        const keBeforeEvent = this.kineticEnergy;
+        if (-vn >= 0.5) {
+            this.recordImpactEvent({
+                surface: 'barrier',
+                index: barrierIndex,
+                vn: vn,
+                speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                contactSpeed: null,
+                energy: keBeforeEvent,
+                cnEff: barrierCn,
+                ctEff: barrierCt
+            });
+        }
 
         // Decompose velocity
         const vtX = this.vx - vn * nx;
@@ -522,83 +956,167 @@ class Rock {
      */
     _handleLumpedMass(terrain, kn, kt) {
         const terrainY = terrain.getHeightAt(this.x);
-        const penetration = terrainY - this.y;
+        // Contact is body vs terrain, not centre vs terrain: the bottom of the
+        // rock reaches the ground one radius below the centre (T0.7 fix 5).
+        const penetration = terrainY - (this.y - this.radius);
 
         if (penetration <= 0) return false;
 
-        this.bounces++;
+        // Contacto detectado con el terreno (P0.2-β, C1): abre episodio y
+        // cierra el vuelo vigente, incluso si el contacto es sostenido.
+        this.noteSurfaceContact('terrain');
 
         const normal = terrain.getSurfaceNormalAt(this.x);
 
-        // Apply stochastically perturbed normal vector calculation (CRSP-Style)
-        let rnx = normal.nx;
-        let rny = normal.ny;
-        const seg = terrain.getSegmentAt(this.x);
-        if (seg && seg.properties && seg.properties.roughness > 0) {
-            const roughness = seg.properties.roughness;
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
-            const cosPhi = Math.cos(phi);
-            const sinPhi = Math.sin(phi);
-            const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
-            const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
-            if (proposedRny > 0) {
-                rnx = proposedRnx;
-                rny = proposedRny;
-            }
-        }
-
-        const vn = this.vx * rnx + this.vy * rny;
-
-        if (vn >= 0) return false;
-
-        // Save for fragmentation check
-        this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
+        // Macro approach test on the TRUE surface normal: the contact exists
+        // while the rock moves toward the real terrain, regardless of the
+        // roughness perturbation applied to individual impacts below.
+        const vnTrue = this.vx * normal.nx + this.vy * normal.ny;
+        if (vnTrue >= 0) return false;
 
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
 
-        const vtX = this.vx - vn * rnx;
-        const vtY = this.vy - vn * rny;
+        // T0.7b fix 1: distinguish a real IMPACT (|vn| >= slideVelocityThreshold)
+        // from SUSTAINED CONTACT (sliding/rolling, |vn| < threshold), using the
+        // TRUE surface normal. On a slope, gravity re-injects |vn| ≈ g·cosθ·dt
+        // ≈ 0.013 m/s every sub-step, so a rolling rock is always in sustained
+        // contact; classifying with the roughness-perturbed normal instead
+        // turned every fast sub-step into an impact and froze rocks mid-slope.
+        // Reference lumped-mass models (RocFall 'minimum velocity', CRSP,
+        // Pierre2) use a similar impact/sliding threshold.
+        const sustainedContact = Math.abs(vnTrue) < this.slideVelocityThreshold;
 
-        this.vx = -kn * vn * rnx + kt * vtX;
-        this.vy = -kn * vn * rny + kt * vtY;
+        if (sustainedContact) {
+            // Smooth sustained contact: remove only the incoming normal
+            // component, measured on the TRUE surface normal. The tangential
+            // velocity is left un-scaled — NO kt factor — so there is no
+            // artificial braking per sub-step; the deceleration in contact is
+            // provided by applyRollingFriction, not by the impact law. The
+            // CRSP-style roughness perturbation must NOT rotate the contact
+            // direction during sliding (it would deflect the trajectory by up
+            // to `roughness` degrees every sub-step, pushing the rock off the
+            // slope and into hundreds of spurious re-impacts per second).
+            this.vx -= vnTrue * normal.nx;
+            this.vy -= vnTrue * normal.ny;
+            this._sustainedContact = true;
+            // Lift without climb-out charge: the normal-velocity removal above
+            // already discarded exactly the energy gravity injected to build
+            // this penetration (m·vnTrue²/2 ≈ m·g·lift); charging the climb
+            // again double-counts and pins creeping rocks at
+            // v ≈ sqrt(2·g·lift) forever (T0.7b fix 2).
+            this._penetrationCorrection(penetration, false);
 
-        this.y = Math.max(terrainY + 0.01, this.y);
-        this._verticesDirty = true;
+            // Angular velocity update for lumped-mass (rolling coupling).
+            // Tangent direction (perpendicular to the true normal).
+            const tx = -normal.ny;
+            const ty = normal.nx;
+            const vtAfter = this.vx * tx + this.vy * ty;
+            const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
+            const transferRatio = 0.4;
+            this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+        } else {
+            // Real impact: full impact law with the CRSP-style perturbed
+            // normal (unchanged behaviour, T0.7b fix 1).
+            let rnx = normal.nx;
+            let rny = normal.ny;
+            const seg = terrain.getSegmentAt(this.x);
+            if (seg && seg.properties && seg.properties.roughness > 0) {
+                const roughness = seg.properties.roughness;
+                const phi = (this.rng() * 2 - 1) * roughness * Math.PI / 180;
+                const cosPhi = Math.cos(phi);
+                const sinPhi = Math.sin(phi);
+                const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
+                const proposedRny = normal.nx * sinPhi + normal.ny * cosPhi;
+                if (proposedRny > 0) {
+                    rnx = proposedRnx;
+                    rny = proposedRny;
+                }
+            }
 
-        // Angular velocity update for lumped-mass:
-        // Transfer some tangential velocity to rotation (rolling coupling).
-        // The tangential velocity at the contact point drives spin.
-        // Tangent direction (perpendicular to normal, in the surface direction)
-        const tx = -rny;
-        const ty = rnx;
-        const vtAfter = this.vx * tx + this.vy * ty;
-        // Rolling without slipping: v_tangential = omega * R
-        // Blend between current spin and rolling equilibrium
-        const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
-        // Transfer ratio: higher for rounded rocks, lower for blocky ones
-        const transferRatio = 0.4;
-        this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+            const vn = this.vx * rnx + this.vy * rny;
+            if (vn < 0) {
+                this.bounces++;
+                // Save for fragmentation check (impacts only — sustained
+                // contact must never trigger fragmentation, T0.7b fix 1).
+                this._lastCollision = { normal: { nx: rnx, ny: rny }, vn: vn };
+
+                // Evento C1 previo al impulso: modelo de punto, sin punto de
+                // contacto; coeficientes efectivos Kn/Kt.
+                if (-vn >= 0.5) {
+                    // P02B-3: fuera del perfil, el tramo extremo más cercano
+                    // (solo dato; Kn/Kt no dependen del tramo).
+                    this.recordImpactEvent({
+                        surface: 'terrain',
+                        index: this._impactSegmentIndexAt(terrain, this.x),
+                        vn: vn,
+                        speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                        contactSpeed: null,
+                        energy: keBefore,
+                        cnEff: kn,
+                        ctEff: kt
+                    });
+                }
+
+                const vtX = this.vx - vn * rnx;
+                const vtY = this.vy - vn * rny;
+
+                this.vx = -kn * vn * rnx + kt * vtX;
+                this.vy = -kn * vn * rny + kt * vtY;
+            }
+            // else: approaching per the true normal but separating per the
+            // perturbed one (large roughness draw) — lift only, no bounce.
+
+            // Lift by the real penetration so the body rests on the terrain
+            // (centre at terrainY + radius), not 1 cm above ground (T0.7 fix 5).
+            this._penetrationCorrection(penetration);
+
+            // Angular velocity update for lumped-mass (rolling coupling).
+            const tx = -rny;
+            const ty = rnx;
+            const vtAfter = this.vx * tx + this.vy * ty;
+            const rollingOmega = vtAfter / Math.max(this.radius, 0.1);
+            const transferRatio = 0.4;
+            this.angularVelocity = this.angularVelocity * (1 - transferRatio) + rollingOmega * transferRatio;
+        }
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
-        this.impactEnergies.push(keBefore / 1000);
 
-        const bounceH = this.y - terrainY;
-        if (bounceH > this.maxBounceHeight) {
-            this.maxBounceHeight = bounceH;
+        if (sustainedContact) {
+            // Sustained contact: NOT a bounce — no impactEnergies entry, no
+            // bouncePoints push, no maxBounceHeight update, no _lastCollision.
+            // The rest check is allowed here (it increments _restCheckCount),
+            // which is how a rock that rolls onto a gentle flat section can
+            // finally stop even if it never had 3 real impacts (T0.7b fix 1).
+            if (this.ignoreResting) return true;
+            if (this._checkResting(normal)) return false;
+            return true;
         }
 
-        this.bouncePoints.push({
-            x: this.x,
-            y: terrainY,
-            energy: keBefore / 1000,
-            velocity: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore)
-        });
+        const bounced = this._lastCollision !== null;
+
+        if (bounced) {
+            this.impactEnergies.push(keBefore / 1000);
+
+            const bounceH = this.y - terrainY;
+            if (bounceH > this.maxBounceHeight) {
+                this.maxBounceHeight = bounceH;
+            }
+
+            this.bouncePoints.push({
+                x: this.x,
+                y: terrainY,
+                energy: keBefore / 1000,
+                velocity: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore)
+            });
+        }
 
         if (this.ignoreResting) return true;
-        this._restCheckCount = 0;
+        // No counter reset here: _checkResting requires _restCheckCount >= 3
+        // and the old `reset + check` pattern made resting unreachable
+        // (T0.7 fix 1).
         if (this._checkResting(normal)) return false;
         return true;
     }
@@ -635,6 +1153,9 @@ class Rock {
 
         if (deepestPenetration <= 0 || contactIndex < 0) return false;
 
+        // Contacto detectado con el terreno (P0.2-β, C1).
+        this.noteSurfaceContact('terrain');
+
         this.bounces++;
 
         const contactVertex = vertices[contactIndex];
@@ -647,7 +1168,7 @@ class Rock {
         const seg = terrain.getSegmentAt(contactVertex.x);
         if (seg && seg.properties && seg.properties.roughness > 0) {
             const roughness = seg.properties.roughness;
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const phi = (this.rng() * 2 - 1) * roughness * Math.PI / 180;
             const cosPhi = Math.cos(phi);
             const sinPhi = Math.sin(phi);
             const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
@@ -674,6 +1195,20 @@ class Rock {
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
 
+        // Evento C1 previo al impulso (terreno, método nonsmooth).
+        if (-vDotN >= 0.5) {
+            this.recordImpactEvent({
+                surface: 'terrain',
+                index: this._impactSegmentIndexAt(terrain, contactVertex.x),
+                vn: vDotN,
+                speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                contactSpeed: Math.sqrt(vContactX * vContactX + vContactY * vContactY),
+                energy: keBefore,
+                cnEff: cn,
+                ctEff: mu
+            });
+        }
+
         // Poisson impact law — normal impulse
         const rCrossN = rx * rny - ry * rnx;
         const denom = 1 / this.mass + (rCrossN * rCrossN) / this.momentOfInertia;
@@ -692,7 +1227,10 @@ class Rock {
 
         const rCrossT = rx * tangentY - ry * tangentX;
         const denomT = 1 / this.mass + (rCrossT * rCrossT) / this.momentOfInertia;
-        const jtFree = -vDotT / denomT;
+        // Free impulse that cancels the contact sliding exactly; Coulomb
+        // clamps it to mu*|jn|. The old `-vDotT / denomT` had the sign
+        // inverted and friction ADDED tangential energy (T0.7 fix 3).
+        const jtFree = vDotT / denomT;
 
         const jtMax = mu * Math.abs(jn);
         const jt = Math.max(-jtMax, Math.min(jtMax, jtFree));
@@ -701,9 +1239,11 @@ class Rock {
         this.vy -= jt * tangentY / this.mass;
         this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
 
-        // Clamp position above terrain to prevent tunneling/jitter
-        this.y = contactTerrainY + 0.01;
-        this._verticesDirty = true;
+        // Lift by the vertical penetration of the deepest vertex so the body
+        // rests on the terrain; the old absolute clamp `terrainY + 0.01`
+        // placed the CENTRE 1 cm above ground regardless of rock size or
+        // penetration depth (T0.7 fix 4).
+        this._penetrationCorrection(deepestPenetration);
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
@@ -722,7 +1262,9 @@ class Rock {
         });
 
         if (this.ignoreResting) return true;
-        this._restCheckCount = 0;
+        // No counter reset here: _checkResting requires _restCheckCount >= 3
+        // and the old `reset + check` pattern made resting unreachable
+        // (T0.7 fix 1).
         if (this._checkResting(normal)) return false;
         return true;
     }
@@ -751,6 +1293,9 @@ class Rock {
 
         if (deepestPenetration <= 0 || contactIndex < 0) return false;
 
+        // Contacto detectado con el terreno (P0.2-β, C1).
+        this.noteSurfaceContact('terrain');
+
         this.bounces++;
 
         const contactVertex = vertices[contactIndex];
@@ -763,7 +1308,7 @@ class Rock {
         const seg = terrain.getSegmentAt(contactVertex.x);
         if (seg && seg.properties && seg.properties.roughness > 0) {
             const roughness = seg.properties.roughness;
-            const phi = (Math.random() * 2 - 1) * roughness * Math.PI / 180;
+            const phi = (this.rng() * 2 - 1) * roughness * Math.PI / 180;
             const cosPhi = Math.cos(phi);
             const sinPhi = Math.sin(phi);
             const proposedRnx = normal.nx * cosPhi - normal.ny * sinPhi;
@@ -789,6 +1334,20 @@ class Rock {
         const vxBefore = this.vx;
         const vyBefore = this.vy;
         const keBefore = this.kineticEnergy;
+
+        // Evento C1 previo al impulso (terreno, método rígido).
+        if (-vDotN >= 0.5) {
+            this.recordImpactEvent({
+                surface: 'terrain',
+                index: this._impactSegmentIndexAt(terrain, contactVertex.x),
+                vn: vDotN,
+                speed: Math.sqrt(vxBefore * vxBefore + vyBefore * vyBefore),
+                contactSpeed: Math.sqrt(vContactX * vContactX + vContactY * vContactY),
+                energy: keBefore,
+                cnEff: cn,
+                ctEff: ct
+            });
+        }
 
         if (energyModel === 'energy-ratio') {
             const vn = this.vx * rnx + this.vy * rny;
@@ -827,9 +1386,11 @@ class Rock {
             this.angularVelocity -= rCrossT * jt / this.momentOfInertia;
         }
 
-        // Clamp position above terrain to prevent tunneling/jitter
-        this.y = contactTerrainY + 0.01;
-        this._verticesDirty = true;
+        // Lift by the vertical penetration of the deepest vertex so the body
+        // rests on the terrain; the old absolute clamp `terrainY + 0.01`
+        // placed the CENTRE 1 cm above ground regardless of rock size or
+        // penetration depth (T0.7 fix 4).
+        this._penetrationCorrection(deepestPenetration);
 
         const keAfter = this.kineticEnergy;
         this.totalEnergyDissipated += Math.max(0, keBefore - keAfter);
@@ -848,7 +1409,9 @@ class Rock {
         });
 
         if (this.ignoreResting) return true;
-        this._restCheckCount = 0;
+        // No counter reset here: _checkResting requires _restCheckCount >= 3
+        // and the old `reset + check` pattern made resting unreachable
+        // (T0.7 fix 1).
         if (this._checkResting(normal)) return false;
         return true;
     }
@@ -875,12 +1438,18 @@ class Rock {
 
         if (calcMethod === 'lumped-mass') {
             const terrainY = terrain.getHeightAt(this.x);
-            onGround = this.y >= terrainY - 0.02;
+            // Ground contact means the BODY (centre minus radius) touches the
+            // terrain; comparing the bare centre marked rocks in mid-air as
+            // grounded (T0.7 fix 6).
+            onGround = (this.y - this.radius) <= terrainY + 0.02;
         } else {
             const vertices = this.getShapeVertices();
             for (const v of vertices) {
                 const terrainY = terrain.getHeightAt(v.x);
-                if (v.y >= terrainY - 0.02) {
+                // A vertex AT or BELOW the terrain (within tolerance) means
+                // ground contact; `v.y >= terrainY - 0.02` was true for any
+                // rock flying above the terrain (T0.7 fix 6).
+                if (v.y <= terrainY + 0.02) {
                     onGround = true;
                     break;
                 }
@@ -962,33 +1531,81 @@ class PhysicsEngine {
     }
 
     /**
-     * Applies random variation to a base coefficient.
-     * When correlatedParams is true, Cn and Ct are inversely correlated:
-     * hard rock surfaces have high Cn (elastic) and low Ct (slippery).
+     * Applies random variation to a base coefficient (a single draw).
+     * The Cn/Ct correlation needs both parameters of the pair, so it lives
+     * in `stepVariationFactors`; `paramType` is kept for compatibility.
      *
      * @param {number} base - Base coefficient value
      * @param {number} variability - Variability percentage (0-50)
-     * @param {string} paramType - 'cn' or 'ct' for correlation
+     * @param {string} paramType - 'cn' or 'ct' (unused)
      * @returns {number} Varied coefficient
      */
     randomVariation(base, variability, paramType) {
-        const variation = variability / 100;
-        let factor;
+        return Math.max(0, Math.min(1, base * this.variationFactor(variability, paramType)));
+    }
 
-        if (this.correlatedParams && paramType) {
-            // Generate a shared random factor for correlation
-            // Hard surface: high restitution, low friction
-            const shared = (Math.random() * 2 - 1); // -1 to 1
-            if (paramType === 'cn') {
-                factor = 1 + shared * variation;
-            } else {
-                factor = 1 - shared * variation; // Inverse correlation
-            }
-        } else {
-            factor = 1 + (Math.random() * 2 - 1) * variation;
-        }
+    /**
+     * Factor de variación de un parámetro: un sorteo, `1 + u·variación` con
+     * u en [-1, 1). No correlaciona: la correlación es del par y se resuelve
+     * en `stepVariationFactors`.
+     *
+     * @param {number} variability - Variabilidad porcentual (0-50)
+     * @param {string} paramType - 'cn' o 'ct' (sin uso; compatibilidad)
+     * @returns {number} Factor multiplicativo (1 ± variabilidad/100)
+     */
+    variationFactor(variability, paramType) {
+        return 1 + (this.rng() * 2 - 1) * (variability / 100);
+    }
 
-        return Math.max(0, Math.min(1, base * factor));
+    /**
+     * Factores de variación de un paso (P0.2-β I4, P0.5 §4). Siempre hace
+     * cuatro sorteos, en el orden cn, ct, kn, kt.
+     * - Sin `correlatedParams`: cada factor usa su propio sorteo.
+     * - Con `correlatedParams`: el par (cn, ct) comparte el sorteo de cn y el
+     *   par (kn, kt) el de kn, ambos con `1 + shared·variación` (correlación
+     *   positiva). Los sorteos de ct y kt se consumen y se descartan para
+     *   conservar el número y el orden de las llamadas al generador.
+     *
+     * @returns {{cnFactor: number, ctFactor: number, knFactor: number, ktFactor: number}}
+     */
+    stepVariationFactors() {
+        const cnVariation = this.cnVariability / 100;
+        const ctVariation = this.ctVariability / 100;
+        const correlated = !!this.correlatedParams;
+        const cnShared = this.rng() * 2 - 1;
+        const ctOwn = this.rng() * 2 - 1;
+        const knShared = this.rng() * 2 - 1;
+        const ktOwn = this.rng() * 2 - 1;
+        return {
+            cnFactor: 1 + cnShared * cnVariation,
+            ctFactor: 1 + (correlated ? cnShared : ctOwn) * ctVariation,
+            knFactor: 1 + knShared * cnVariation,
+            ktFactor: 1 + (correlated ? knShared : ktOwn) * ctVariation
+        };
+    }
+
+    /**
+     * Número de sub-pasos adaptativos para un paso de duración dt (T0.12).
+     *
+     * Fórmula: min(64, max(3, ceil(dt·speedEstimate/0.1))) con
+     * speedEstimate = rapidez actual + g·dt (cota de la ganancia por
+     * gravedad dentro del paso). Garantiza un desplazamiento máx. ~0.1 m
+     * por sub-paso: con dt 0.02 y 60 m/s una roca ya no atraviesa una
+     * pared de 0.3 m sin contacto (tunneling, hallazgo F0).
+     *
+     * Con dt = 0.005 el cálculo sigue dando 3 sub-pasos hasta ~60 m/s,
+     * así que los resultados por defecto (rocas < 55 m/s) no cambian.
+     *
+     * NAN-safe: con velocidad inválida (NaN) devuelve el mínimo 3.
+     *
+     * @param {Rock} rock
+     * @param {number} dt - Duración del paso completo (s)
+     * @returns {number} Sub-pasos (3..64)
+     */
+    subStepsFor(rock, dt) {
+        const speedEstimate = (Math.hypot(rock.vx, rock.vy) + this.gravity * dt) || 0;
+        const maxSubStepDisplacement = 0.1;
+        return Math.min(64, Math.max(3, Math.ceil(dt * speedEstimate / maxSubStepDisplacement)));
     }
 
     /**
@@ -998,29 +1615,60 @@ class PhysicsEngine {
      * @param {number} dt - Time step (s)
      */
     simulateStep(rock, terrain, dt, barriers) {
-        const subSteps = 3;
+        if (rock.isResting) return null;
+        rock.stepsTaken++;
+        const subSteps = this.subStepsFor(rock, dt);
         const subDt = dt / subSteps;
+        const elapsedBeforeStep = rock.elapsedTime;
+        const compensationBeforeStep = rock._elapsedTimeCompensation;
         let spawnedChildren = null;
 
-        const cn = this.randomVariation(this.cn, this.cnVariability, 'cn');
-        const ct = this.randomVariation(this.ct, this.ctVariability, 'ct');
-        const kn = this.randomVariation(this.kn, this.cnVariability, 'cn');
-        const kt = this.randomVariation(this.kt, this.ctVariability, 'ct');
+        // I3: mismos sorteos, mismo orden. El factor se separa del valor base
+        // para aplicarlo también al Cn/Ct de cada tramo (I4/U4).
+        // Con `correlatedParams`, (cn, ct) y (kn, kt) comparten un sorteo por par.
+        const { cnFactor, ctFactor, knFactor, ktFactor } = this.stepVariationFactors();
+
+        const cn = Math.max(0, Math.min(1, this.cn * cnFactor));
+        const ct = Math.max(0, Math.min(1, this.ct * ctFactor));
+        const kn = Math.max(0, Math.min(1, this.kn * knFactor));
+        const kt = Math.max(0, Math.min(1, this.kt * ktFactor));
+
+        // Culling bounds: derived from the terrain when available, legacy
+        // fixed values otherwise. Computed once per step, not per sub-step.
+        const hasBounds = terrain && typeof terrain.getBounds === 'function';
+        const bounds = hasBounds ? terrain.getBounds() : null;
+        const cullMinX = bounds ? bounds.minX - 50 : -50;
+        const cullMaxX = bounds ? bounds.maxX + 50 : 500;
+        const cullMinY = bounds ? bounds.minY - 100 : -100;
 
         for (let i = 0; i < subSteps; i++) {
             // Reset collision tracking at each sub-step
             rock._lastCollision = null;
 
             rock.update(subDt, this.gravity);
-            rock.handleCollision(terrain, cn, ct, this.energyModel, this.energyRatio, this.calcMethod, kn, kt);
+            // Sum a whole dt exactly once, with compensation; an interrupted
+            // step retains only the substeps actually integrated.
+            const integrated = i + 1 === subSteps ? dt : subDt * (i + 1);
+            const correctedDt = integrated - compensationBeforeStep;
+            const elapsed = elapsedBeforeStep + correctedDt;
+            rock._elapsedTimeCompensation = (elapsed - elapsedBeforeStep) - correctedDt;
+            rock.elapsedTime = elapsed;
+            // C3: muestra de vuelo después de update y antes de la colisión.
+            rock.sampleFlightHeight(terrain);
+            rock.handleCollision(terrain, cn, ct, this.energyModel, this.energyRatio, this.calcMethod, kn, kt, cnFactor, ctFactor);
 
             // Barrier collision (independent of terrain)
             if (!rock.isResting && barriers && barriers.length > 0) {
                 rock.handleBarrierCollisions(barriers);
             }
 
+            // C1: cierra los episodios sin contacto en este sub-paso.
+            rock.closeImpactEpisodes();
+
+            rock.sampleDownhillAdvance();
+
             // Check for fragmentation after collision
-            if (this.fragmentationEnabled && rock._lastCollision) {
+            if (!rock.isResting && this.fragmentationEnabled && rock._lastCollision) {
                 const { normal, vn } = rock._lastCollision;
                 const impactEnergy = 0.5 * rock.mass * vn * vn;
                 const minDiameter = 0.10;
@@ -1031,35 +1679,20 @@ class PhysicsEngine {
                     const result = this._fragmentRockProgressive(rock, normal, energyRatio);
 
                     if (result && result.children && result.children.length > 0) {
+                        // P0.4: masa de las esquirlas descartadas por este evento.
+                        rock.discardedMass = result.discardedMass;
                         spawnedChildren = spawnedChildren || [];
                         spawnedChildren.push(...result.children);
 
                         if (result.core) {
-                            // Core survives — copy core properties onto original rock in-place.
-                            // This keeps a single Rock object (same id, same trajectory history)
-                            // so we don't end up with two rocks sharing the same id in
-                            // finishedRocks + activeRocks. The core returned by
-                            // _fragmentRockProgressive is a template, not a new entity.
-                            const c = result.core;
-                            rock.mass = c.mass;
-                            rock.diameter = c.diameter;
-                            rock.shape = c.shape;
-                            rock._cachedVertices = null;
-                            rock._verticesDirty = true;
-                            rock.momentOfInertia = c.momentOfInertia;
-                            rock.vx = c.vx;
-                            rock.vy = c.vy;
-                            rock.angularVelocity = c.angularVelocity;
-                            rock.color = c.color;
-                            rock.isCore = c.isCore;
-                            rock.massLossRatio = c.massLossRatio;
-                            rock.originalDiameter = c.originalDiameter;
+                            // Core survives — replace rock properties in-place
+                            spawnedChildren.push(result.core);
                             rock.isFragmented = true;
-                            rock.isResting = true;
+                            rock.finish('fragmented');
                         } else {
                             // Full breakup — rock is destroyed
                             rock.isFragmented = true;
-                            rock.isResting = true;
+                            rock.finish('fragmented');
                         }
                         break;
                     }
@@ -1070,8 +1703,9 @@ class PhysicsEngine {
 
             if (rock.isResting) break;
 
-            if (rock.x < -50 || rock.x > 500 || rock.y < -100) {
-                rock.isResting = true;
+            if (rock.x < cullMinX || rock.x > cullMaxX || rock.y < cullMinY) {
+                rock.cullBoundary = rock.x < cullMinX ? 'minX' : rock.x > cullMaxX ? 'maxX' : 'minY';
+                rock.finish('culled');
                 break;
             }
         }
@@ -1104,18 +1738,19 @@ class PhysicsEngine {
 
         const children = [];
         let core = null;
+        let discardedMass = 0;
 
         if (energyRatio < 3.0) {
             // ========================================
             // ABRASION MODE: spalls fly off, core survives
             // ========================================
-            const numSpalls = energyRatio < 1.5 ? 1 : (Math.random() < 0.6 ? 2 : 3);
+            const numSpalls = energyRatio < 1.5 ? 1 : (this.rng() < 0.6 ? 2 : 3);
 
             // Each spall takes 5-15% of parent mass
             let totalSpallMass = 0;
             const spallMasses = [];
             for (let i = 0; i < numSpalls; i++) {
-                const frac = 0.05 + Math.random() * 0.10;
+                const frac = 0.05 + this.rng() * 0.10;
                 const sm = frac * parentMass;
                 spallMasses.push(sm);
                 totalSpallMass += sm;
@@ -1130,34 +1765,29 @@ class PhysicsEngine {
                 totalSpallMass = 0.40 * parentMass;
             }
 
-            // Minimum fragment size: 2cm diameter. Below that we consider the
-            // spall too small to be a meaningful rockfall projectile and merge
-            // its mass into the surviving core (preserves mass conservation).
-            const MIN_FRAGMENT_DIAMETER = 0.02;
+            const coreMass = parentMass - totalSpallMass;
 
             // Energy budget: spalls get 15-30% of the impact energy
             // (they fly off with moderate velocity)
-            const spallEnergyFraction = 0.15 + Math.random() * 0.15;
+            const spallEnergyFraction = 0.15 + this.rng() * 0.15;
             const E_spalls = E_parent * spallEnergyFraction * (1 - this.fractureDissipation);
             const E_core = E_parent * (1 - spallEnergyFraction) * (1 - this.fractureDissipation * 0.5);
 
-            // Create spalls — ejected from the contact zone.
-            // Track only the mass that actually gets a rock — anything below
-            // MIN_FRAGMENT_DIAMETER is silently merged into the core below.
-            let createdSpallMass = 0;
-
+            // Create spalls — ejected from the contact zone
             for (let i = 0; i < numSpalls; i++) {
                 const sm = spallMasses[i];
-                const childArea = sm / rock.density;
-                const childRadius = Math.sqrt(childArea / Math.PI);
-                const childDiameter = childRadius * 2;
+                // Esfera equivalente por masa (T0.12): la convención areal
+                // r = sqrt(m/(ρπ)) quedaba desalineada de la regla de masa
+                // T0.10 (espesor (4/3)·r).
+                const childDiameter = Rock.diameterFromMass(sm, rock.density);
 
-                if (childDiameter < MIN_FRAGMENT_DIAMETER) continue; // too small — mass stays in core
-
-                createdSpallMass += sm;
+                if (childDiameter < 0.05) { // skip dust-sized fragments
+                    discardedMass += sm;
+                    continue;
+                }
 
                 // Spalls fly off at ±20-45° from the impact normal
-                const ejectAngle = ((Math.random() * 2 - 1) * (20 + Math.random() * 25)) * Math.PI / 180;
+                const ejectAngle = ((this.rng() * 2 - 1) * (20 + this.rng() * 25)) * Math.PI / 180;
                 const cosE = Math.cos(ejectAngle);
                 const sinE = Math.sin(ejectAngle);
                 // Rotate normal by ejectAngle
@@ -1170,6 +1800,7 @@ class PhysicsEngine {
                 const parentVt = vxParent * tx + vyParent * ty;
 
                 // Position: offset along surface tangent from impact point
+                const childRadius = childDiameter * 0.5;
                 const offsetFactor = (i - (numSpalls - 1) / 2) * childDiameter * 1.2;
 
                 const spall = this.createRock(
@@ -1178,24 +1809,21 @@ class PhysicsEngine {
                     childDiameter, rock.density, 0, 0, rock.shapeType, rock.aspectRatio
                 );
 
-                spall.vx = ejNx * spallSpeed * (0.7 + Math.random() * 0.6) + tx * parentVt * 0.3;
-                spall.vy = ejNy * spallSpeed * (0.7 + Math.random() * 0.6) + ty * parentVt * 0.3;
-                spall.angularVelocity = (Math.random() - 0.5) * 10; // fast spin for debris
+                spall.vx = ejNx * spallSpeed * (0.7 + this.rng() * 0.6) + tx * parentVt * 0.3;
+                spall.vy = ejNy * spallSpeed * (0.7 + this.rng() * 0.6) + ty * parentVt * 0.3;
+                spall.angularVelocity = (this.rng() - 0.5) * 10; // fast spin for debris
                 spall.mass = sm;
                 spall.momentOfInertia = spall.computeMomentOfInertia();
                 spall.generation = rock.generation + 1;
                 spall.parentId = rock.id;
+                spall.fragmentKind = 'spall';
 
                 children.push(spall);
             }
 
-            // Core gets the parent's mass minus only the spalls that were
-            // actually created. Mass of spalls filtered out as sub-threshold
-            // is absorbed by the core (mass conservation).
-            const coreMass = parentMass - createdSpallMass;
-            const coreArea = coreMass / rock.density;
-            const coreRadius = Math.sqrt(coreArea / Math.PI);
-            const coreDiameter = coreRadius * 2;
+            // Create surviving core — continues the trajectory
+            // Esfera equivalente por masa (T0.12), igual que las esquirlas.
+            const coreDiameter = Rock.diameterFromMass(coreMass, rock.density);
 
             core = this.createRock(
                 rock.x, rock.y,
@@ -1207,48 +1835,54 @@ class PhysicsEngine {
                 Math.sqrt(vxParent * vxParent + vyParent * vyParent + 0.001) : 0;
             core.vx = vxParent * Math.min(1.0, coreSpeedScale);
             core.vy = vyParent * Math.min(1.0, coreSpeedScale);
-            core.angularVelocity = rock.angularVelocity * (0.9 + Math.random() * 0.2);
+            core.angularVelocity = rock.angularVelocity * (0.9 + this.rng() * 0.2);
             core.mass = coreMass;
             core.momentOfInertia = core.computeMomentOfInertia();
             core.generation = rock.generation; // same generation — it's a surviving core
-            core.parentId = rock.parentId;
+            // P0.4: el núcleo es una entidad nueva, hija del padre fragmentado.
+            core.parentId = rock.id;
+            core.fragmentKind = 'core';
             core.isCore = true;
-            core.massLossRatio = rock.massLossRatio + totalSpallMass / rock.originalDiameter;
+            // Fraction of mass lost, in the same units as the rupture branch:
+            // divided by the parent's mass at fragmentation time, not by the
+            // original diameter in metres (kg/m summed into a ratio, T0.7 fix 7).
+            core.massLossRatio = rock.massLossRatio + totalSpallMass / parentMass;
             core.originalDiameter = rock.originalDiameter;
-            core.id = rock.id; // keep same ID for trajectory continuity
 
         } else {
             // ========================================
             // CORE SPLIT MODE: high-energy catastrophic failure
             // Core splits in 2 + small spalls
             // ========================================
-            const numSpalls = Math.random() < 0.5 ? 1 : 2;
+            const numSpalls = this.rng() < 0.5 ? 1 : 2;
             let totalSpallMass = 0;
             const spallMasses = [];
             for (let i = 0; i < numSpalls; i++) {
-                const sm = (0.03 + Math.random() * 0.07) * parentMass;
+                const sm = (0.03 + this.rng() * 0.07) * parentMass;
                 spallMasses.push(sm);
                 totalSpallMass += sm;
             }
 
-            // --- Create spalls ---
-            // Track only the mass that actually gets a rock — anything below
-            // the minimum diameter is merged into the main fragments below
-            // (mass conservation).
-            const MIN_FRAGMENT_DIAMETER = 0.02;
-            let createdSpallMass = 0;
+            const remainingMass = parentMass - totalSpallMass;
+
+            // Split remaining mass into two main fragments
+            const splitFrac = 0.40 + this.rng() * 0.20;
+            const m1 = splitFrac * remainingMass;
+            const m2 = remainingMass - m1;
+
             const E_target = E_parent * (1 - this.fractureDissipation);
 
+            // --- Create spalls ---
             for (let i = 0; i < spallMasses.length; i++) {
                 const sm = spallMasses[i];
-                const childArea = sm / rock.density;
-                const childRadius = Math.sqrt(childArea / Math.PI);
-                const childDiameter = childRadius * 2;
-                if (childDiameter < MIN_FRAGMENT_DIAMETER) continue; // too small — mass goes to main fragments
+                // Esfera equivalente por masa (T0.12).
+                const childDiameter = Rock.diameterFromMass(sm, rock.density);
+                if (childDiameter < 0.05) {
+                    discardedMass += sm;
+                    continue;
+                }
 
-                createdSpallMass += sm;
-
-                const ejectAngle = ((Math.random() * 2 - 1) * 30) * Math.PI / 180;
+                const ejectAngle = ((this.rng() * 2 - 1) * 30) * Math.PI / 180;
                 const cosE = Math.cos(ejectAngle);
                 const sinE = Math.sin(ejectAngle);
                 const ejNx = normal.nx * cosE - normal.ny * sinE;
@@ -1264,25 +1898,15 @@ class PhysicsEngine {
 
                 spall.vx = ejNx * spallSpeed + vxParent * 0.2;
                 spall.vy = ejNy * spallSpeed + vyParent * 0.2;
-                spall.angularVelocity = (Math.random() - 0.5) * 12;
+                spall.angularVelocity = (this.rng() - 0.5) * 12;
                 spall.mass = sm;
                 spall.momentOfInertia = spall.computeMomentOfInertia();
                 spall.generation = rock.generation + 1;
                 spall.parentId = rock.id;
+                spall.fragmentKind = 'spall';
 
                 children.push(spall);
             }
-
-            // Main fragments get the parent's mass minus only the spalls that
-            // were actually created. Mass of spalls filtered out as
-            // sub-threshold is added to the main fragment budget (mass
-            // conservation).
-            const remainingMass = parentMass - createdSpallMass;
-
-            // Split remaining mass into two main fragments
-            const splitFrac = 0.40 + Math.random() * 0.20;
-            const m1 = splitFrac * remainingMass;
-            const m2 = remainingMass - m1;
 
             // --- Create two main fragments ---
             const mainMasses = [m1, m2];
@@ -1292,7 +1916,7 @@ class PhysicsEngine {
 
             for (let i = 0; i < 2; i++) {
                 // Diverge ±10-25° from parent velocity direction
-                const alpha = ((i === 0 ? -1 : 1) * (10 + Math.random() * 15)) * Math.PI / 180;
+                const alpha = ((i === 0 ? -1 : 1) * (10 + this.rng() * 15)) * Math.PI / 180;
                 const cosA = Math.cos(alpha);
                 const sinA = Math.sin(alpha);
                 const vbx = vxParent * cosA - vyParent * sinA;
@@ -1305,9 +1929,8 @@ class PhysicsEngine {
 
             for (let i = 0; i < 2; i++) {
                 const cm = mainMasses[i];
-                const childArea = cm / rock.density;
-                const childRadius = Math.sqrt(childArea / Math.PI);
-                const childDiameter = childRadius * 2;
+                // Esfera equivalente por masa (T0.12).
+                const childDiameter = Rock.diameterFromMass(cm, rock.density);
 
                 const offsetFactor = (i === 0 ? -1 : 1) * childDiameter * 0.5;
 
@@ -1319,11 +1942,12 @@ class PhysicsEngine {
 
                 child.vx = mainVBase[i].vx * S;
                 child.vy = mainVBase[i].vy * S;
-                child.angularVelocity = rock.angularVelocity * (0.6 + Math.random() * 0.6);
+                child.angularVelocity = rock.angularVelocity * (0.6 + this.rng() * 0.6);
                 child.mass = cm;
                 child.momentOfInertia = child.computeMomentOfInertia();
                 child.generation = rock.generation + 1;
                 child.parentId = rock.id;
+                child.fragmentKind = 'major';
                 child.isCore = true;
                 child.originalDiameter = rock.originalDiameter;
                 child.massLossRatio = rock.massLossRatio + totalSpallMass / parentMass;
@@ -1332,11 +1956,30 @@ class PhysicsEngine {
             }
         }
 
-        return { children, core };
+        for (const fragment of core ? [...children, core] : children) {
+            fragment.releaseX = rock.releaseX;
+            fragment.releaseY = rock.releaseY;
+            fragment.sourceIndex = rock.sourceIndex;
+            fragment.downhillSign = rock.downhillSign;
+            // P0.4: el alcance, el reloj y la raíz se heredan del padre, así
+            // maxTime y maxSteps cuentan desde la liberación de la primaria.
+            fragment.maxDownhillAdvance = fragment.downhillSign === null ? null :
+                Math.max(rock.maxDownhillAdvance === null ? -Infinity : rock.maxDownhillAdvance,
+                    fragment.downhillSign * (fragment.x - fragment.releaseX));
+            fragment.rootId = rock.rootId;
+            fragment.bornAt = rock.elapsedTime;
+            fragment.elapsedTime = rock.elapsedTime;
+            fragment._elapsedTimeCompensation = rock._elapsedTimeCompensation;
+            fragment.stepsTaken = rock.stepsTaken;
+        }
+        return { children, core, discardedMass };
     }
 
     /**
-     * Legacy fragmentRock method — kept for compatibility with worker.js
+     * Legacy fragmentRock method — kept for compatibility with the legacy
+     * test only (tests/physics.fragmentation.test.js). The worker no longer
+     * uses it (T0.8 unified js/worker.js on the shared engine; simulateStep
+     * drives all fragmentation through _fragmentRockProgressive directly).
      * Delegates to the new progressive model.
      */
     fragmentRock(rock, normal) {
@@ -1360,9 +2003,30 @@ class PhysicsEngine {
      * @returns {Rock}
      */
     createRock(releaseX, releaseY, diameter, density, initialVelocity, angle, shapeType, aspectRatio) {
-        return new Rock(releaseX, releaseY, diameter, density, initialVelocity, angle, shapeType, aspectRatio);
+        return new Rock(releaseX, releaseY, diameter, density, initialVelocity, angle, shapeType, aspectRatio, this._rng);
+    }
+
+    /**
+     * P0.5: único punto de sorteo del motor. Sin generador de corrida usa
+     * `Math.random`, resuelto en cada llamada.
+     * @returns {number} Valor en [0, 1)
+     */
+    rng() {
+        const generator = this._rng;
+        return generator ? generator() : Math.random();
+    }
+
+    /**
+     * P0.5: fija el generador de la corrida; las rocas creadas después lo
+     * comparten. Con `null` se vuelve a `Math.random`.
+     * @param {?function(): number} rng
+     */
+    setRng(rng) {
+        attachRng(this, rng);
     }
 }
 
+SimRocas.createRng = createRng;
+SimRocas.RNG_ALGORITHM = 'mulberry32';
 SimRocas.Rock = Rock;
 SimRocas.PhysicsEngine = PhysicsEngine;

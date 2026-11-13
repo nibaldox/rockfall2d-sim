@@ -1,0 +1,74 @@
+{
+  "name": "simrocas-desktop",
+  "productName": "SimRocas",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "description": "SimRocas 2D — simulador de caída de rocas",
+  "homepage": "https://github.com/simrocas/rockfall2d-sim",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "prepare-web": "node scripts/copy-web.js",
+    "dist": "npm run prepare-web && electron-builder",
+    "dist:linux": "npm run prepare-web && electron-builder --linux AppImage deb",
+    "dist:win": "npm run prepare-web && electron-builder --win nsis --x64",
+    "dist:mac": "npm run prepare-web && electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^44.9.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "cl.simrocas.app",
+    "productName": "SimRocas",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "app-web",
+        "to": "app-web"
+      }
+    ],
+    "linux": {
+      "category": "Science",
+      "maintainer": "SimRocas <simrocas@example.com>",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null
+    }
+  }
+}

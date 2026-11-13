@@ -1,0 +1,359 @@
+'use strict';
+
+/**
+ * Test de paridad main-thread vs Web Worker (T0.8, openspec worker-physics-parity).
+ *
+ * Contexto A ('browser'): terrain.js + physics.js + simulation.js cargados
+ *   directamente; Terrain configurado con el perfil del caso de uso, physics
+ *   construido como en getSimulationParams, Simulation como en runSimulation
+ *   de js/app.js (configure + simulation.start con los mismos argumentos).
+ *   Bucle determinista: while (sim.isRunning) sim.step();
+ *
+ * Contexto B ('worker'): sandbox con postMessage/importScripts falsos;
+ *   js/worker.js carga los mismos scripts vía importScripts y recibe el
+ *   mensaje { type: 'start', terrainJSON, simParams, physicsParams,
+ *   barriers, startArgs } que debe enviar js/app.js.
+ *
+ * Aserto central: dado el MISMO seed, terrain, simParams, physicsParams y
+ * startArgs, el worker debe producir exactamente las mismas rocas (mismo
+ * número, mismos finalX/finalY a 1e-9, generation <= 3 del modelo
+ * progresivo) que la clase Simulation del hilo principal.
+ *
+ * El protocolo legado (terrainData/rockConfigs/config) quedó eliminado en
+ * T0.8: se fija como aserción de comportamiento que el worker nuevo NO
+ * produce resultados ante un mensaje con el formato viejo, para que no
+ * reaparezcan consumidores del formato duplicado.
+ */
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { loadScripts, createContext, runScript } = require('./helpers/load');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const { Worker } = require('node:worker_threads');
+
+const SEED = 1234;
+const TOL = 1e-9;
+
+// Perfil del caso de uso ( metros ).
+const PROFILE = [
+    { x: 0, y: 120 }, { x: 40, y: 100 }, { x: 80, y: 70 },
+    { x: 120, y: 45 }, { x: 160, y: 25 }, { x: 200, y: 15 },
+    { x: 260, y: 10 }, { x: 350, y: 8 }, { x: 450, y: 8 }
+];
+
+// --- Caso de uso compartido -------------------------------------------------
+
+function buildTerrainJSON() {
+    // Sin seed: setPoints/fromJSON no consumen aleatoriedad.
+    const ctx = loadScripts(['js/terrain.js'], { env: 'browser' });
+    const t = new ctx.SimRocas.Terrain();
+    t.setPoints(PROFILE.map(p => ({ ...p })));
+    return t.toJSON();
+}
+
+// Espejo de getSimulationParams (js/app.js ~1540) para el motor compartido.
+function makeSimParams(physics) {
+    return {
+        numRocks: 20,
+        gravity: 9.81,
+        cn: physics.cn,
+        ct: physics.ct,
+        rollingFriction: physics.rollingFriction,
+        cnVariability: 10,
+        ctVariability: 10,
+        timeStep: 0.005,
+        animationSpeed: 50,
+        maxDuration: 30,
+        ignoreResting: false,
+        fragmentationEnabled: true,
+        fractureEnergy: 2000,   // bajo: fuerza hijos de fragmentación
+        fractureDissipation: 0.4
+    };
+}
+
+// Copia de las propiedades primitivas propias de PhysicsEngine (lo que
+// runSimulationWithWorker debe enviar como physicsParams).
+function copyPrimitiveProps(physics) {
+    const out = {};
+    for (const key of Object.keys(physics)) {
+        const v = physics[key];
+        const type = typeof v;
+        if (type === 'number' || type === 'string' || type === 'boolean') {
+            out[key] = v;
+        }
+    }
+    return out;
+}
+
+// Espejo de runSimulation (js/app.js ~1558): mismos argumentos y orden de
+// configure / Object.assign / start que el modo normal.
+function runMainThread({ calcMethod, terrainJSON, physicsOverrides = {} }) {
+    const ctx = loadScripts(
+        ['js/terrain.js', 'js/physics.js', 'js/simulation.js'],
+        { env: 'browser', seed: SEED }
+    );
+
+    const terrain = new ctx.SimRocas.Terrain();
+    terrain.fromJSON(terrainJSON);
+
+    const physics = new ctx.SimRocas.PhysicsEngine();
+    Object.assign(physics, { calcMethod }, physicsOverrides);
+
+    const sim = new ctx.SimRocas.Simulation(terrain, physics);
+    sim.configure(makeSimParams(physics));
+    sim.barriers = [];
+
+    const params = makeSimParams(physics);
+    // Orden exacto de la llamada en js/app.js:1671.
+    sim.start(
+        10, 130,        // releaseX, releaseY (sobre el terreno en x=10)
+        0.8,            // diameter
+        2700,           // density
+        2,              // initVel
+        30,             // angle
+        params.maxDuration,
+        params.ignoreResting,
+        'sphere',       // shapeType determinista (esfera regular)
+        0.6,            // aspectRatio
+        'freefall',     // releaseMode
+        null            // multiReleasePoints
+    );
+
+    while (sim.isRunning) {
+        sim.step();
+    }
+
+    return {
+        physicsParams: copyPrimitiveProps(physics),
+        simParams: params,
+        startArgs: [10, 130, 0.8, 2700, 2, 30, params.maxDuration,
+            params.ignoreResting, 'sphere', 0.6, 'freefall', null],
+        rocks: sim.rocks,
+        maxGeneration: Math.max(...sim.rocks.map(r => r.generation)),
+        fragmentChildren: sim.rocks.filter(r => r.generation > 0).length
+    };
+}
+
+// Contexto B: worker sandbox. Las excepciones del handler quedan registradas
+// como { type: 'error' } (análogo a worker.onerror) para poder asertarlas.
+function runWorker(startMsg, limit = null) {
+    const msgs = [];
+    let ctx;
+    ctx = createContext({
+        env: 'worker',
+        seed: SEED,
+        extra: {
+            postMessage: (m) => msgs.push(m),
+            importScripts: (...files) => files.forEach(f => runScript(ctx, 'js/' + f))
+        }
+    });
+    if (limit === null) {
+        runScript(ctx, 'js/worker.js');
+    } else {
+        // Límite reducido solo en el harness; no cambia el mensaje público.
+        const source = fs.readFileSync(path.join(__dirname, '../js/worker.js'), 'utf8');
+        const replaced = source.replace('const MAX_ITERATIONS_SIMULATED = 100000;', `const MAX_ITERATIONS_SIMULATED = ${limit};`);
+        assert.notEqual(replaced, source);
+        vm.runInContext(replaced, ctx, { filename: 'js/worker.js' });
+    }
+    try {
+        ctx.onmessage({ data: startMsg });
+    } catch (err) {
+        msgs.push({ type: 'error', error: String(err && err.message || err) });
+    }
+    return msgs;
+}
+
+function findComplete(msgs, label) {
+    const complete = msgs.find(m => m.type === 'complete');
+    assert.ok(complete, `${label}: debe haber un mensaje 'complete'`);
+    return complete;
+}
+
+function parityWorkerStartMsg(main) {
+    return {
+        type: 'start',
+        terrainJSON: buildTerrainJSON(),
+        simParams: main.simParams,
+        physicsParams: main.physicsParams,
+        barriers: [],
+        startArgs: main.startArgs
+    };
+}
+
+// --- Paridad (protocolo T0.8) -----------------------------------------------
+
+for (const calcMethod of ['rigid-body', 'lumped-mass', 'nonsmooth']) {
+    test(`paridad main-thread vs worker (nuevo protocolo), calcMethod=${calcMethod}`, () => {
+        const terrainJSON = buildTerrainJSON();
+        const main = runMainThread({ calcMethod, terrainJSON });
+
+        assert.ok(main.fragmentChildren > 0,
+            'precondición: el caso debe producir hijos de fragmentación');
+
+        const msgs = runWorker(parityWorkerStartMsg(main));
+        const complete = findComplete(msgs, calcMethod);
+
+        assert.ok(msgs.some(m => m.type === 'progress'), `${calcMethod}: mensajes 'progress'`);
+        assert.ok(msgs.some(m => m.type === 'frame'), `${calcMethod}: mensajes 'frame'`);
+
+        assert.equal(complete.status, 'completed');
+        const workerRocks = complete.rocks;
+        assert.ok(workerRocks.some(r => r.stopReason === 'fragmented'));
+        assert.equal(workerRocks.length, main.rocks.length,
+            `${calcMethod}: mismo número de rocas (incluidos fragmentos)`);
+
+        for (let i = 0; i < main.rocks.length; i++) {
+            const a = main.rocks[i];
+            const b = workerRocks[i];
+            const msg = `${calcMethod}: roca[${i}] id=${a.id}`;
+            assert.equal(b.stopReason, a.stopReason);
+            assert.equal(b.stepsTaken, a.stepsTaken);
+            assert.equal(b.elapsedTime, a.elapsedTime);
+            assert.equal(b.finalX, a.finalX, `${msg}: finalX exacto`);
+            assert.equal(b.finalY, a.finalY, `${msg}: finalY exacto`);
+            for (const key of ['releaseX', 'releaseY', 'sourceIndex', 'downhillSign', 'maxDownhillAdvance', 'cullBoundary']) {
+                assert.ok(Object.hasOwn(a, key), `${msg}: ${key} presente en hilo`);
+                assert.ok(Object.hasOwn(b, key), `${msg}: ${key} presente en worker`);
+                assert.equal(b[key], a[key], `${msg}: ${key} exacto`);
+            }
+        }
+
+        // Modelo progresivo: hijos hasta generation <= 3.
+        for (const r of workerRocks) {
+            assert.ok(r.generation <= 3,
+                `${calcMethod}: generation <= 3 para id=${r.id}, es ${r.generation}`);
+        }
+    });
+}
+
+test('censura maxTime se transmite sin pérdida desde simulación al worker', () => {
+    const terrainJSON = buildTerrainJSON();
+    const ctx = loadScripts(['js/terrain.js', 'js/physics.js', 'js/simulation.js'], { env: 'browser', seed: SEED });
+    const terrain = new ctx.SimRocas.Terrain();
+    terrain.fromJSON(terrainJSON);
+    const physics = new ctx.SimRocas.PhysicsEngine();
+    const params = { numRocks: 1, animationSpeed: 1, timeStep: 0.005, maxDuration: 0.005, fragmentationEnabled: false };
+    const args = [10, 130, 0.8, 2700, 2, 30, 0.005, true, 'sphere', 0.6, 'freefall', null];
+    const sim = new ctx.SimRocas.Simulation(terrain, physics);
+    sim.configure(params);
+    sim.start(...args);
+    while (sim.isRunning) sim.step();
+    const complete = findComplete(runWorker({ type: 'start', terrainJSON, simParams: params, physicsParams: {}, barriers: [], startArgs: args }), 'censura');
+    assert.equal(complete.status, 'completed');
+    assert.equal(sim.rocks[0].stopReason, 'maxTime');
+    assert.equal(complete.rocks.length, 1);
+    for (const key of ['stopReason', 'finalX', 'finalY', 'stepsTaken', 'elapsedTime']) {
+        assert.equal(complete.rocks[0][key], sim.rocks[0][key], key);
+    }
+});
+
+test('guardia worker termina activos y distingue fin natural en última iteración', () => {
+    const params = { numRocks: 1, animationSpeed: 1, timeStep: 0.005, maxDuration: 30, fragmentationEnabled: false };
+    const message = {
+        type: 'start', terrainJSON: buildTerrainJSON(), simParams: params,
+        physicsParams: {}, barriers: [],
+        startArgs: [10, 130, 0.8, 2700, 2, 30, 30, true, 'sphere', 0.6, 'freefall', null]
+    };
+    const limited = findComplete(runWorker(message, 1), 'guardia');
+    assert.equal(limited.status, 'safetyLimit');
+    assert.equal(limited.rocks[0].stopReason, 'safetyLimit');
+    assert.equal(limited.rocks[0].finalX, limited.rocks[0].x);
+    assert.equal(limited.rocks[0].finalY, limited.rocks[0].y);
+    const natural = { ...message, simParams: { ...params, maxDuration: 0.005 },
+        startArgs: [10, 130, 0.8, 2700, 2, 30, 0.005, true, 'sphere', 0.6, 'freefall', null] };
+    const complete = findComplete(runWorker(natural, 1), 'natural');
+    assert.equal(complete.status, 'completed');
+    assert.equal(complete.rocks[0].stopReason, 'maxTime');
+});
+
+test('worker en hilo real conserva los seis campos y downhillMode por fuente', async () => {
+    const ctx = loadScripts(['js/terrain.js', 'js/physics.js', 'js/simulation.js'], { seed: SEED });
+    const terrain = new ctx.SimRocas.Terrain();
+    terrain.setPoints([{ x: 0, y: 100 }, { x: 50, y: 0 }, { x: 100, y: 100 }]);
+    assert.deepEqual([terrain.getBounds().minX, terrain.getBounds().maxX], [0, 100]);
+    assert.ok(terrain.getHeightAt(15) - terrain.getHeightAt(35) >= 0.5);
+    assert.ok(terrain.getHeightAt(65) - terrain.getHeightAt(85) <= -0.5);
+    const terrainJSON = terrain.toJSON();
+    const fields = ['releaseX', 'releaseY', 'sourceIndex', 'downhillSign', 'maxDownhillAdvance', 'cullBoundary'];
+    const bootstrap = `
+        const { parentPort, workerData } = require('node:worker_threads');
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const path = require('node:path');
+        globalThis.self = globalThis;
+        let a = 1234;
+        Math.random = function () {
+            a = (a + 0x6D2B79F5) >>> 0;
+            let t = a;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+        globalThis.postMessage = m => parentPort.postMessage(m);
+        globalThis.importScripts = (...files) => files.forEach(f => vm.runInThisContext(fs.readFileSync(path.join(workerData, f), 'utf8'), { filename: f }));
+        vm.runInThisContext(fs.readFileSync(path.join(workerData, 'worker.js'), 'utf8'), { filename: 'worker.js' });
+        parentPort.on('message', data => globalThis.onmessage({ data }));
+    `;
+    for (const mode of ['auto', '-x']) {
+        const mainCtx = loadScripts(['js/terrain.js', 'js/physics.js', 'js/simulation.js'], { seed: SEED });
+        const t = new mainCtx.SimRocas.Terrain();
+        t.fromJSON(terrainJSON);
+        const physics = new mainCtx.SimRocas.PhysicsEngine();
+        const sim = new mainCtx.SimRocas.Simulation(t, physics);
+        const params = { numRocks: 2, animationSpeed: 1, timeStep: 0.005, maxDuration: 0.01, fragmentationEnabled: false, downhillMode: mode };
+        const args = [25, 80, 1, 2700, 0, 0, 0.01, true, 'sphere', 1, 'freefall', [{ x: 25, y: 80 }, { x: 75, y: 80 }]];
+        sim.configure(params);
+        sim.start(...args);
+        while (sim.isRunning) sim.step();
+        assert.deepEqual(Array.from(sim.rocks, r => r.downhillSign), mode === 'auto' ? [1, -1] : [-1, -1]);
+        const worker = new Worker(bootstrap, { eval: true, workerData: path.join(__dirname, '../js') });
+        try {
+            const complete = await new Promise((resolve, reject) => {
+                worker.on('message', m => { if (m.type === 'complete') resolve(m); });
+                worker.on('error', reject);
+                worker.on('exit', code => { if (code !== 0) reject(new Error(`worker exit ${code}`)); });
+                worker.postMessage({ type: 'start', terrainJSON, simParams: params, physicsParams: {}, barriers: [], startArgs: args });
+            });
+            assert.equal(complete.rocks.length, sim.rocks.length);
+            for (let i = 0; i < sim.rocks.length; i++) {
+                for (const field of fields) {
+                    assert.ok(Object.hasOwn(complete.rocks[i], field), field);
+                    assert.equal(complete.rocks[i][field], sim.rocks[i][field], `${mode} ${i} ${field}`);
+                }
+            }
+        } finally {
+            await worker.terminate();
+        }
+    }
+});
+
+// --- Cambio de protocolo: el formato legado ya no se acepta ------------------
+
+test('cambio de protocolo: el mensaje legado (terrainData/rockConfigs) no produce resultados', () => {
+    // RED (worker viejo): estos mensajes se consumían con la copia duplicada
+    // de la física. Tras T0.8 el worker solo acepta el protocolo nuevo — un
+    // mensaje legado no debe generar ningún 'complete' (y por tanto ningún
+    // resultado de la física duplicada).
+    const legacyMsg = {
+        type: 'start',
+        terrainData: JSON.parse(buildTerrainJSON()),
+        rockConfigs: [],
+        config: {
+            gravity: 9.81, dt: 0.005, cn: 0.6, ct: 0.4,
+            calcMethod: 'rigid-body',
+            Kn: 0.35, Kt: 0.75,
+            energyModel: 'impulse', energyRatio: 0.7,
+            maxStepsPerRock: 5000, maxDuration: 30, animationSpeed: 50,
+            fragmentationEnabled: true,
+            fractureEnergy: 2000, fractureDissipation: 0.4
+        },
+        barriers: []
+    };
+
+    const msgs = runWorker(legacyMsg);
+    assert.ok(!msgs.some(m => m.type === 'complete'),
+        'el worker unificado no debe responder al formato legado');
+});

@@ -52,9 +52,18 @@ JS files are loaded in order by `<script>` tags in `index.html`. Each file defin
 - Coordinate system: Y grows UP (topographic convention)
 - Physics uses 3 sub-steps per time step for stability
 - Rocks are convex random polygons (5-9 vertices), never concave
-- Resting condition: velocity < 0.08 m/s, angular velocity < 0.5 rad/s, bounces > 2
+- Resting condition (`Rock._checkResting`): at least 3 accumulated checks (the counter is not reset on collisions), speed below 0.08 m/s scaled by the local slope as `max(0.1, 1 - 2 * |slope|)`, `|ω| < 0.5 rad/s`, and more than 2 detected contacts or sustained contact. Sustained contact exists only in Lumped Mass, with `|vn| < 0.5 m/s`; `ignoreResting` skips the check
+- `bounces` is an internal contact counter ("Contactos detectados"), not an impact count; the impact figure is `impactCount` (events with `|vn| >= 0.5 m/s`). With dt > 0.02 s in rigid-body or nonsmooth the resting state may go undetected (non-blocking `dtGrueso` warning)
 - Boundary culling: rocks outside [-50, 500] X or below -100 Y are terminated
 - Max steps per rock: 5,000
+
+## Impact Instrumentation (P0.2-β)
+
+- **Real impact (C1)**: logged per surface (terrain or barrier) when the existing approach guard passes, `|vn| >= 0.5 m/s`, and no episode is open on that surface. One episode per surface, opened on the first sub-step with detected contact and closed on the first without it. Captured read-only, before the impulse; `impactEvents` keeps the first 200 events and `droppedImpactEvents` the rest. In nonsmooth with polygons the impact count includes vertex strikes while the rock topples, and `vn` is the normal velocity of the contact point (it includes `ω × r`), not of the centre
+- **Flight height (C3)**: starts after a C1 event and ends at the next sub-step with contact on any surface; the sample is the rock centre over the terrain, `y - getHeightAt(x)`, only inside the profile. The initial fall does not count and the value is null when no valid sample exists. Not a bounce height, not a collector height, not a RocFall figure
+- **Materials per segment (U4)**: rigid-body and nonsmooth use the segment's own `cn`, `ct` and roughness. The Cn/Ct variability multiplies each segment's values (`clamp01(seg.cn × fCn)`, same draws and correlation as before); the global Cn/Ct inputs are disabled and only act on profiles with fewer than 2 points. An impact beyond the ends of the profile (its horizontal extension) uses the Cn and Ct of the nearest end segment (no roughness beyond the profile), and Stats emits the `fueraDelPerfil` warning. The warning looks at the x of the rock centre in the C1 events: a contact beyond the profile that produces no event does not trigger it. In Lumped Mass an event beyond the profile also carries the `index` of the nearest end segment, but the physics keeps using the global `Kn`/`Kt` and the warning text says so. A segment without `type` still gets the variability and is listed as «sin tipo». In Lumped Mass the variability acts on `Kn`/`Kt`; barriers keep their own coefficients
+- **Impact export**: CSV with one row per event, 200 events per rock and 100 000 rows overall, warning when events are dropped while maxima and counts keep every event. Blocked (button disabled) with fragmentation or after a cancelled run
+- **Instrumentation invariant**: no extra `Math.random` draws, no change to draw order or count, no change to floating-point operations of the physical state; extra `getHeightAt` calls may only touch `_lastSegIdx`. Variabilities at 0 give trajectories bit-identical to P0.3 in runs without impacts beyond the profile ends; Lumped Mass is bit-identical with any variability
 
 ## CSS Variables
 
@@ -65,12 +74,12 @@ All colors use CSS custom properties on `:root`:
 
 ## Key Classes
 
-- **Terrain** (`js/terrain.js`): Stores polyline points, per-segment material properties (Cn/Ct), world/canvas coordinate transforms, height lookup via interpolation.
+- **Terrain** (`js/terrain.js`): Stores polyline points, per-segment material properties (Cn/Ct/roughness per segment, which govern impacts in rigid-body and nonsmooth), world/canvas coordinate transforms, height lookup via interpolation.
 - **Rock** (`js/physics.js`): Polygonal shape, mass, moment of inertia, collision handling (rigid-body impulse, lumped mass, nonsmooth dynamics), rolling friction models.
 - **PhysicsEngine** (`js/physics.js`): Factory for Rock instances, time-stepping loop with sub-steps, parameter variation (Monte Carlo).
 - **Simulation** (`js/simulation.js`): Manages rock array lifecycle, step loop, frame recording for timeline playback.
 - **Renderer** (`js/renderer.js`): Canvas drawing — terrain, rocks, trajectories, bounce points, histogram. Timeline frame rendering.
-- **Stats** (`js/stats.js`): Computes min/mean/max/std/P50/P83/P95 for energy, bounce height, runout, velocity. CSV and text report generation.
+- **Stats** (`js/stats.js`): Computes min/mean/max/std/P50/P83/P95 for energy, flight height, impact normal speed, impact energy, runout, velocity. CSV (including the per-event impact CSV) and text report generation.
 - **App** (`js/app.js`): Central orchestrator — DOM event wiring, tab management, canvas interaction (click/drag/zoom), export functions.
 
 ## Modifying the App

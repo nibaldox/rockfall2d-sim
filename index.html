@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimRocas 2D — Simulador de Caída de Rocas</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪨</text></svg>">
-    <link rel="stylesheet" href="css/style.css">
-</head>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kaEog0AsPo4/9apXRMvp5eF3zpfBg9ltlJNNm2KUPio='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; base-uri 'self'">
+    <script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js","three/addons/":"./vendor/three/addons/"}}</script>
+    <link rel="stylesheet" href="css/style.css?v=2">
+    <script type="module" src="js/three-bridge.js?v=1"></script>
+    </head>
 <body>
     <div id="app">
         <header>
@@ -15,6 +18,10 @@
                 <h1>SimRocas 2D</h1>
             </div>
             <div class="header-actions">
+                <div class="mode-switcher" role="group" aria-label="Modo de vista">
+                    <button id="mode-2d" type="button" class="mode-btn active" aria-pressed="true">Perfil 2D</button>
+                    <button id="mode-3d" type="button" class="mode-btn" aria-pressed="false">Vista 3D</button>
+                </div>
                 <button id="theme-toggle" class="theme-toggle" title="Cambiar tema">
                     <svg class="theme-icon" viewBox="0 0 24 24" width="18" height="18">
                         <g class="sun-icon">
@@ -41,7 +48,9 @@
                     <button class="tab active" data-tab="terrain">Perfil Terreno</button>
                     <button class="tab" data-tab="barriers">Barreras</button>
                     <button class="tab" data-tab="parameters">Parámetros</button>
-                    <button class="tab" data-tab="stl3d">Topografía 3D</button>
+                    <button class="tab" data-tab="stl3d">STL 2.5D</button>
+                    <button class="tab" data-tab="dem3d">DEM 3D</button>
+                    <button class="tab" data-tab="sim3d">Simulación 3D</button>
                     <button class="tab" data-tab="results">Resultados</button>
                 </nav>
 
@@ -77,6 +86,36 @@
                         <div class="button-row" style="margin-top:4px;">
                             <button id="btn-copy-coords" class="btn btn-small" data-tooltip="Copia todas las coordenadas del perfil al portapapeles en formato tabular (pegar directo en Excel).">📋 Copiar Coord.</button>
                             <button id="btn-paste-coords" class="btn btn-small" data-tooltip="Pega coordenadas desde Excel (formato X tab Y, una fila por punto).">📋 Pegar Coord.</button>
+                        </div>
+                        <div class="control-group" id="bench-generator">
+                            <label data-tooltip="Genera un perfil de bancos y bermas con descenso hacia +X. Reemplaza el perfil actual.">Generar banco–berma:</label>
+                            <label for="bench-count">N.º de bancos:</label>
+                            <input type="number" id="bench-count" min="1" max="50" step="1" value="3" title="N.º de bancos" data-tooltip="N.º de bancos (entero de 1 a 50).">
+                            <label for="bench-height">Altura de banco (m):</label>
+                            <input type="number" id="bench-height" min="0.1" step="0.5" value="10" title="Altura de banco (m)" data-tooltip="Altura de banco (m), mayor que 0.">
+                            <label for="bench-face-angle">Ángulo de cara (°):</label>
+                            <input type="number" id="bench-face-angle" min="1" max="89" step="1" value="70" title="Ángulo de cara (°)" data-tooltip="Ángulo de cara (°), entre 0 y 90 sin incluirlos.">
+                            <label for="bench-berm-width">Ancho de berma (m):</label>
+                            <input type="number" id="bench-berm-width" min="0" step="0.5" value="6" title="Ancho de berma (m)" data-tooltip="Ancho de berma (m), mayor o igual que 0.">
+                            <label for="bench-base-elevation">Cota base (m):</label>
+                            <input type="number" id="bench-base-elevation" step="1" value="0" title="Cota base (m)" data-tooltip="Cota base (m): elevación del piso.">
+                            <label for="bench-top-platform">Plataforma superior (m):</label>
+                            <input type="number" id="bench-top-platform" min="0" step="1" value="20" title="Plataforma superior (m)" data-tooltip="Plataforma superior (m): largo antes de la primera cresta.">
+                            <label for="bench-floor-length">Piso (m):</label>
+                            <input type="number" id="bench-floor-length" min="0" step="1" value="30" title="Piso (m)" data-tooltip="Piso (m): largo después de la última pata.">
+                            <button id="btn-bench-generate" class="btn btn-small" data-tooltip="Reemplaza el perfil por el banco–berma generado, asigna materiales por tramo y fija el sentido de descenso en +X.">Generar</button>
+                            <table id="bench-meta-table" class="help-text" style="display:none; width:100%; font-size:11px;"></table>
+                        </div>
+                        <div class="control-group" id="bench-measure">
+                            <label>Medir bancos (perfil importado o editado):</label>
+                            <label for="bench-measure-slope">Pendiente máxima de berma (°):</label>
+                            <input type="number" id="bench-measure-slope" min="0.1" max="89" step="0.5" value="5" data-tooltip="Un tramo con pendiente de bajada mayor que este valor es cara; hasta este valor es berma.">
+                            <label for="bench-measure-tolerance">Tolerancia de cota de berma (m):</label>
+                            <input type="number" id="bench-measure-tolerance" min="0" step="0.1" value="0.5" data-tooltip="La berma efectiva llega hasta donde la cota se aparta de la pata más que este valor.">
+                            <label for="bench-measure-min-height">Altura mínima de cara (m):</label>
+                            <input type="number" id="bench-measure-min-height" min="0.1" step="0.1" value="1.0" data-tooltip="Una caída menor que este valor no cuenta como cara de banco.">
+                            <p class="help-text bench-measure-note">Umbrales: criterio provisional; lo define el responsable geotécnico.</p>
+                            <button id="btn-bench-measure" class="btn btn-small" data-tooltip="Mide crestas, patas y bermas del perfil actual con estos umbrales. No modifica el perfil.">Medir bancos</button>
                         </div>
                         <input type="file" id="file-input" accept=".json,.csv" style="display:none">
                     </div>
@@ -181,6 +220,14 @@
                                 <label data-tooltip="Coordenada horizontal del punto donde se liberan las rocas. Define desde dónde caen.">Posición X (m):</label>
                                 <input type="number" id="release-x" value="10" step="0.1">
                             </div>
+                            <div class="control-group">
+                                <label for="downhill-mode">Sentido de descenso:</label>
+                                <select id="downhill-mode">
+                                    <option value="auto">Automático</option>
+                                    <option value="+x">Hacia +X</option>
+                                    <option value="-x">Hacia −X</option>
+                                </select>
+                            </div>
                             <div class="control-group" id="release-y-group">
                                 <label data-tooltip="Altura del punto de liberación respecto al nivel de referencia. Mayor valor = más altura.">Posición Y (m):</label>
                                 <input type="number" id="release-y" value="55" step="0.1">
@@ -248,14 +295,15 @@
                                 <p class="help-text">Cn: relación velocidad normal después/antes del impacto. Ct: relación velocidad tangencial.</p>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de restitución NORMAL. Define qué fracción de velocidad perpendicular se conserva tras el impacto. 0 = no rebote, 1 = rebote perfecto.">Cn (Normal):</label>
-                                    <input type="range" id="cn-range" min="0" max="1" step="0.01" value="0.6">
+                                    <input type="range" id="cn-range" min="0" max="1" step="0.01" disabled value="0.6">
                                     <span id="cn-value">0.60</span>
                                 </div>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de restitución TANGENCIAL. Define qué fracción de velocidad paralela se conserva. Alto Ct = la roca desliza, bajo Ct = se adhiere.">Ct (Tangencial):</label>
-                                    <input type="range" id="ct-range" min="0" max="1" step="0.01" value="0.4">
+                                    <input type="range" id="ct-range" min="0" max="1" step="0.01" disabled value="0.4">
                                     <span id="ct-value">0.40</span>
                                 </div>
+                                <p class="help-text" id="cn-ct-notice">Los coeficientes Cn/Ct se definen por tramo en la pestaña Perfil; la variabilidad se aplica al valor de cada tramo.</p>
                             </div>
                             <div id="lumped-mass-controls" style="display:none;">
                                 <p class="help-text">Kn: coef. restitución normal. Kt: coef. restitución tangencial. La roca se trata como un punto masivo sin rotación.</p>
@@ -274,14 +322,15 @@
                                 <p class="help-text">Cn: coef. restitución normal (Poisson). Ct: coef. fricción Coulomb (mu) para el cono de fricción.</p>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de restitución normal de Poisson para modelo Nonsmooth. Define la energía conservada en el impacto.">Cn (Restitución):</label>
-                                    <input type="range" id="cn-range-ns" min="0" max="1" step="0.01" value="0.6">
+                                    <input type="range" id="cn-range-ns" min="0" max="1" step="0.01" disabled value="0.6">
                                     <span id="cn-value-ns">0.60</span>
                                 </div>
                                 <div class="control-group">
                                     <label data-tooltip="Coeficiente de fricción de Coulomb (mu). Define el cono de fricción en modelo Nonsmooth. Alto mu = más fricción, menos deslizamiento.">mu (Fricción Coulomb):</label>
-                                    <input type="range" id="mu-range" min="0" max="1" step="0.01" value="0.5">
+                                    <input type="range" id="mu-range" min="0" max="1" step="0.01" disabled value="0.5">
                                     <span id="mu-value">0.50</span>
                                 </div>
+                                <p class="help-text" id="cn-ct-notice-ns">Los coeficientes Cn/Ct se definen por tramo en la pestaña Perfil; la variabilidad se aplica al valor de cada tramo.</p>
                             </div>
                             <div class="control-group">
                                 <label data-tooltip="Coeficiente de fricción por rodadura. Frena la rotación de la roca al rodar sobre el terreno. 0 = sin fricción, 1 = frena completamente.">Coef. fricción rodadura:</label>
@@ -296,7 +345,7 @@
                                 </select>
                             </div>
                             <div class="control-group" id="energy-ratio-group" style="display:none;">
-                                <label data-tooltip="Fracción de energía cinética conservada tras cada impacto. 1.0 = sin pérdida, 0.5 = pierde la mitad en cada rebote.">Coeef. energía (0-1):</label>
+                                <label data-tooltip="Fracción de energía cinética conservada tras cada contacto detectado con el terreno. 1.0 = sin pérdida, 0.5 = pierde la mitad en cada contacto.">Coef. energía (0-1):</label>
                                 <input type="range" id="energy-ratio-coef" min="0.1" max="1" step="0.01" value="0.7">
                                 <span id="energy-ratio-value">0.70</span>
                             </div>
@@ -314,7 +363,7 @@
                             </div>
                             <div class="control-group">
                                 <label class="checkbox-label" data-tooltip="Activa la correlación entre Cn y Ct: materiales duros tienen alto rebote y bajo deslizamiento, y viceversa.">
-                                    <input type="checkbox" id="correlated-params"> Correlacionar Cn/Ct (roca dura = alto Cn, bajo Ct)
+                                    <input type="checkbox" id="correlated-params"> Correlacionar Cn/Ct (superficie dura: Cn y Ct altos)
                                 </label>
                             </div>
                         </div>
@@ -323,7 +372,7 @@
                     <div class="sub-tab-content" id="subtab-fragmentation">
                         <div class="section">
                             <h3>Fragmentación de Bloques</h3>
-                            <p class="help-text" style="margin-bottom: 8px;">Modelo de abrasión progresiva: la roca pierde fragmentos pequeños (spalls) en cada impacto, manteniendo un núcleo que sigue rebotando. Impactos de muy alta energía pueden partir el núcleo en dos.</p>
+                            <p class="help-text" style="margin-bottom: 8px;">Modelo de abrasión progresiva: la roca pierde fragmentos pequeños (spalls) en cada contacto detectado con el terreno, manteniendo un núcleo que sigue descendiendo. Los contactos de muy alta energía pueden partir el núcleo en dos.</p>
                             <div class="control-group">
                                 <label class="checkbox-label" data-tooltip="Permite que los bloques grandes de roca se rompan en fragmentos más pequeños al impactar con alta energía.">
                                     <input type="checkbox" id="fragmentation-enabled" checked> Habilitar Fragmentación
@@ -356,16 +405,21 @@
                                 <input type="number" id="gravity" value="9.81" step="0.01" min="1" max="20">
                             </div>
                             <div class="control-group">
-                                <label data-tooltip="Porcentaje de variación aleatoria en Cn entre rocas. Simula la heterogeneidad natural del terreno.">Variabilidad Cn (%):</label>
+                                <label id="cn-variability-label" data-tooltip="Porcentaje de variación aleatoria aplicado al Cn de cada tramo. Solo se usa el Cn global como respaldo cuando el perfil tiene menos de 2 puntos.">Variabilidad Cn (%):</label>
                                 <input type="number" id="cn-variability" value="10" min="0" max="50" step="1">
                             </div>
                             <div class="control-group">
-                                <label data-tooltip="Porcentaje de variación aleatoria en Ct entre rocas. Simula variaciones en la superficie de impacto.">Variabilidad Ct (%):</label>
+                                <label id="ct-variability-label" data-tooltip="Porcentaje de variación aleatoria aplicado al Ct de cada tramo. Solo se usa el Ct global como respaldo cuando el perfil tiene menos de 2 puntos.">Variabilidad Ct (%):</label>
                                 <input type="number" id="ct-variability" value="10" min="0" max="50" step="1">
                             </div>
                             <div class="control-group">
                                 <label data-tooltip="Intervalo de tiempo entre cada cálculo de física. Menor = más preciso pero más lento. 0.005s es el equilibrio recomendado.">Paso de tiempo (s):</label>
                                 <input type="number" id="time-step" value="0.005" step="0.001" min="0.001" max="0.05">
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Semilla del generador pseudoaleatorio: entero entre 0 y 4294967295. La misma semilla con los mismos parámetros reproduce la corrida.">Semilla:</label>
+                                <input type="text" id="sim-seed" inputmode="numeric" autocomplete="off" placeholder="aleatoria">
+                                <p class="help-text" id="seed-used" style="color: var(--text-secondary);">Vacía = aleatoria; se muestra la usada</p>
                             </div>
                             <div class="control-group">
                                 <label data-tooltip="Velocidad de reproducción de la animación. 1x = tiempo real, 10x = simulación acelerada.">Velocidad animación:</label>
@@ -450,15 +504,263 @@
                     </div>
                 </div>
 
+                <div class="tab-content" id="tab-dem3d">
+                    <div class="section">
+                        <h3>Topografía 3D (DEM)</h3>
+                        <p class="help-text">Importa un terreno (STL, OBJ, PLY, nube XYZ, ASCII Grid o GeoTIFF) y visualízalo en la Vista 3D.</p>
+                        <div class="control-group">
+                            <label id="btn-import-dem" for="dem-file-input" class="btn btn-primary" style="display: block; text-align: center; cursor: pointer; width: 100%;" data-tooltip="Carga un archivo de topografía y genera un DEM con su malla de visualización.">📂 Importar terreno</label>
+                            <input type="file" id="dem-file-input" accept=".stl,.obj,.ply,.xyz,.csv,.txt,.pts,.asc,.grd,.tif,.tiff,.dxf,.las,.laz" style="display:none">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Tamaño de celda del DEM resultante. 'Automática' elige la mejor cara al DEM según el tamaño y la densidad de datos.">Resolución de celda:</label>
+                            <select id="dem-cell-size">
+                                <option value="">Automática</option>
+                                <option value="0.25">0,25 m</option>
+                                <option value="0.5">0,5 m</option>
+                                <option value="1">1 m</option>
+                                <option value="2">2 m</option>
+                                <option value="5">5 m</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Eje vertical del archivo: Z es estándar CAD/Cartografía, Y se usa en OpenGL/Blender.">Eje vertical:</label>
+                            <select id="dem-up-axis">
+                                <option value="Z">Eje Z</option>
+                                <option value="Y">Eje Y</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="En nubes de puntos e importaciones por celda, cómo se calcula la altura de la celda.">Modo de puntos:</label>
+                            <select id="dem-point-mode">
+                                <option value="mean">Media</option>
+                                <option value="min">Mínimo</option>
+                                <option value="max">Máximo</option>
+                            </select>
+                        </div>
+                        <div id="dem-progress" class="dem-progress" style="display:none;">
+                            <div class="dem-progress-track"><div id="dem-progress-fill" class="dem-progress-fill"></div></div>
+                            <div class="dem-progress-row">
+                                <span id="dem-progress-label" class="dem-progress-label">Leyendo… 0%</span>
+                                <button id="btn-dem-cancel" class="btn btn-danger btn-small" type="button">Cancelar</button>
+                            </div>
+                        </div>
+                        <div id="dem-error" class="dem-error" style="display:none;"></div>
+                        <div id="dem-info" class="dem-info-panel" style="display:none;">
+                            <div><strong>Formato:</strong> <span id="dem-fmt">-</span></div>
+                            <div><strong>Archivo:</strong> <span id="dem-file">-</span></div>
+                            <div><strong>Tamaño:</strong> <span id="dem-size">-</span></div>
+                            <div><strong>Celdas:</strong> <span id="dem-cells">-</span></div>
+                            <div><strong>Resolución:</strong> <span id="dem-res">-</span></div>
+                            <div><strong>Celdas con datos:</strong> <span id="dem-valid">-</span></div>
+                            <div><strong>Extensión:</strong> <span id="dem-extent">-</span></div>
+                            <div><strong>CRS:</strong> <span id="dem-crs">-</span></div>
+                        </div>
+                        <div id="dem-warnings" class="dem-warnings" style="display:none;">
+                            <strong>Advertencias:</strong>
+                            <ul id="dem-warning-list"></ul>
+                        </div>
+                        <div id="dem-view-controls" class="dem-view-controls" style="display:none;">
+                            <button id="btn-dem-color-elevation" class="btn btn-small active" type="button">Cota</button>
+                            <button id="btn-dem-color-slope" class="btn btn-small" type="button">Pendiente</button>
+                            <button id="btn-dem-exag1" class="btn btn-small active" type="button">1×</button>
+                            <button id="btn-dem-exag2" class="btn btn-small" type="button">2×</button>
+                            <button id="btn-dem-exag3" class="btn btn-small" type="button">3×</button>
+                        </div>
+                        <div id="dem-profile-controls" class="dem-profile-controls" style="display:none;">
+                            <div class="button-row">
+                                <button id="btn-dem-profile-draw" class="btn btn-small" type="button" data-tooltip="Trazar una polilínea sobre el terreno: cada clic agrega un vértice; doble clic o Terminar cierran; Esc cancela.">✎ Trazar perfil</button>
+                                <button id="btn-dem-profile-finish" class="btn btn-small" type="button" disabled>Terminar</button>
+                                <button id="btn-dem-profile-undo" class="btn btn-small" type="button" disabled>Deshacer vértice</button>
+                                <button id="btn-dem-profile-cancel" class="btn btn-small" type="button">Cancelar</button>
+                            </div>
+                            <div class="button-row">
+                                <button id="btn-dem-profile-send" class="btn btn-primary btn-small" type="button" disabled data-tooltip="Muestrea el DEM sobre la polilínea, reduce los puntos y carga el perfil en el modo 2D.">⇥ Enviar a Perfil 2D</button>
+                                <button id="btn-dem-profile-clear" class="btn btn-small" type="button" disabled>Borrar línea</button>
+                            </div>
+                            <div class="control-group">
+                                <label data-tooltip="Número de puntos del perfil 2D tras la reducción.">Puntos del perfil:</label>
+                                <select id="dem-profile-points">
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="200" selected>200</option>
+                                    <option value="500">500</option>
+                                </select>
+                            </div>
+                            <div id="dem-profile-info" class="dem-profile-info">Sin vértices.</div>
+                            <div id="dem-profile-warning" class="dem-warnings" style="display:none;"></div>
+                            <div id="dem-profile-status" class="dem-profile-status" style="display:none;"></div>
+                        </div>
+                        <div id="dem-plan-controls" class="dem-profile-controls" style="display:none;">
+                            <button id="btn-dem-plan-view" class="btn btn-small" type="button" data-tooltip="Cámara cenital sobre el terreno." onclick="window.app && window.app.togglePlanView()">🜨 Vista en planta</button>
+                            <label class="checkbox-label" data-tooltip="Curvas de nivel sobre el terreno (marching squares sobre los nodos del DEM).">
+                                <input type="checkbox" id="dem-contours-toggle"> Curvas de nivel
+                            </label>
+                            <div class="dem-contour-row">
+                                <label for="dem-contour-interval">Intervalo (m):</label>
+                                <input type="number" id="dem-contour-interval" min="0.01" step="any" style="width:80px;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-sim3d">
+                    <div class="section">
+                        <h3>Zonas de liberación</h3>
+                        <p class="help-text">Dibuja un polígono con clics sobre el terreno (doble clic o Terminar cierra; Esc cancela) o coloca un punto de liberación con un clic.</p>
+                        <div class="button-row">
+                            <button id="btn-sim3d-zone" class="btn btn-small" type="button" data-tooltip="Dibujar una zona poligonal: cada clic agrega un vértice sobre el terreno.">Dibujar zona</button>
+                            <button id="btn-sim3d-zone-finish" class="btn btn-small" type="button" disabled>Terminar</button>
+                            <button id="btn-sim3d-zone-cancel" class="btn btn-small" type="button">Cancelar</button>
+                        </div>
+                        <div class="button-row">
+                            <button id="btn-sim3d-point" class="btn btn-small" type="button" data-tooltip="El próximo clic sobre el terreno crea un punto de liberación.">Punto de liberación</button>
+                            <button id="btn-sim3d-clear-zones" class="btn btn-danger btn-small" type="button">Limpiar todas</button>
+                        </div>
+                        <div class="control-group">
+                            <label>Zonas de liberación:</label>
+                            <div id="sim3d-zones-list" class="segments-list"></div>
+                        </div>
+                        <div id="sim3d-zones-status" class="dem-profile-status" style="display:none;"></div>
+                    </div>
+
+                    <div class="section">
+                        <h3>Parámetros de la simulación 3D</h3>
+                        <div class="control-group">
+                            <label data-tooltip="Cantidad total de rocas distribuidas entre las zonas. Hasta 10 000 rocas por corrida.">Número de rocas:</label>
+                            <input type="number" id="sim3d-rocks" value="500" min="1" max="10000" step="10">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Diámetro medio de las rocas (esfera equivalente).">Diámetro (m):</label>
+                            <input type="number" id="sim3d-diameter" value="0.5" min="0.05" step="0.1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Densidad del material de la roca. Granito típico: 2700 kg/m³.">Densidad (kg/m³):</label>
+                            <input type="number" id="sim3d-density" value="2700" min="500" step="100">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Caída libre: la roca se suelta a una altura sobre el terreno. Desprendimiento: la roca inicia apoyada en la superficie.">Modo de liberación:</label>
+                            <select id="sim3d-release-mode">
+                                <option value="fall">Caída libre (con altura)</option>
+                                <option value="detachment">Desprendimiento (en terreno)</option>
+                            </select>
+                        </div>
+                        <div class="control-group" id="sim3d-height-group">
+                            <label data-tooltip="Altura inicial sobre el terreno en modo caída libre.">Altura sobre el terreno (m):</label>
+                            <input type="number" id="sim3d-height" value="2" min="0" step="0.5">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Método de cálculo del contacto.">Método:</label>
+                            <select id="sim3d-method"></select>
+                            <p class="help-text" id="sim3d-method-note"></p>
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de restitución normal (Kn) del impacto.">Kn (Normal):</label>
+                            <input type="number" id="sim3d-kn" value="0.35" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de restitución tangencial (Kt) del impacto.">Kt (Tangencial):</label>
+                            <input type="number" id="sim3d-kt" value="0.75" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Variabilidad aleatoria de Kn/Kt entre rocas (%).">Variabilidad (%):</label>
+                            <input type="number" id="sim3d-variability" value="10" min="0" max="100" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Coeficiente de fricción de rodadura sobre el terreno.">Fricción de rodadura:</label>
+                            <input type="number" id="sim3d-rolling" value="0.15" min="0" max="1" step="0.01">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Rugosidad CRSP del terreno en grados (0° = liso).">Rugosidad (°):</label>
+                            <input type="number" id="sim3d-roughness" value="0" min="0" max="30" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Tiempo máximo de simulación por roca. Las rocas sin terminar por reposo o salida se cortan aquí.">Duración máxima (s):</label>
+                            <input type="number" id="sim3d-duration" value="60" min="1" max="600" step="1">
+                        </div>
+                        <div class="control-group">
+                            <label data-tooltip="Semilla entera para resultados reproducibles. Vacía = semilla aleatoria.">Semilla:</label>
+                            <input type="text" id="sim3d-seed" placeholder="(aleatoria)" inputmode="numeric">
+                        </div>
+                    </div>
+
+                    <div class="sim-action-bar">
+                        <button id="btn-sim3d-run" class="btn btn-primary" data-tooltip="Ejecuta la simulación 3D en paralelo (workers).">▶ Ejecutar simulación 3D</button>
+                        <button id="btn-sim3d-cancel" class="btn btn-warning" disabled data-tooltip="Cancela la corrida en curso.">⏸ Cancelar</button>
+                    </div>
+                    <div id="sim3d-progress" class="dem-progress" style="display:none;">
+                        <div class="dem-progress-track"><div id="sim3d-progress-fill" class="dem-progress-fill"></div></div>
+                        <div class="dem-progress-row">
+                            <span id="sim3d-progress-label" class="dem-progress-label">Simulando… 0%</span>
+                        </div>
+                    </div>
+                    <div id="sim3d-error" class="dem-error" style="display:none;"></div>
+
+                    <div class="section" id="sim3d-results" style="display:none;">
+                        <h3>Resultados 3D</h3>
+                        <div class="sim3d-stats">
+                            <span>Rocas totales: <strong id="sim3d-stat-total">-</strong></span>
+                            <span>En reposo: <strong id="sim3d-stat-rest">-</strong></span>
+                            <span>Salidas del terreno: <strong id="sim3d-stat-culled">-</strong></span>
+                            <span>Por tiempo máx.: <strong id="sim3d-stat-maxsteps">-</strong></span>
+                            <span>Alcance medio: <strong id="sim3d-stat-mean">-</strong></span>
+                            <span>Alcance P95: <strong id="sim3d-stat-p95">-</strong></span>
+                            <span>Energía máx.: <strong id="sim3d-stat-energy">-</strong></span>
+                            <span>Cómputo: <strong id="sim3d-stat-time">-</strong></span>
+                            <span>Workers: <strong id="sim3d-stat-workers">-</strong></span>
+                            <span>Semilla: <strong id="sim3d-stat-seed">-</strong></span>
+                        </div>
+
+                        <div class="control-group">
+                            <label class="checkbox-label" data-tooltip="Muestra las trayectorias muestreadas (hasta 500 rocas) con colores por velocidad.">
+                                <input type="checkbox" id="sim3d-show-tracks" checked> Mostrar trayectorias (≤ 500)
+                            </label>
+                        </div>
+                        <div id="sim3d-track-legend" class="sim3d-legend" style="display:none;">
+                            <div id="sim3d-track-bar" class="sim3d-legend-bar"></div>
+                            <div class="sim3d-legend-row">
+                                <span id="sim3d-track-min">-</span>
+                                <span>Velocidad</span>
+                                <span id="sim3d-track-max">-</span>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label data-tooltip="Colorea la malla de visualización muestreando el ráster de resultados del campo elegido.">Mapa sobre el terreno:</label>
+                            <select id="sim3d-map">
+                                <option value="">Ninguno</option>
+                                <option value="reachProbability">Probabilidad de alcance</option>
+                                <option value="maxEnergyKJ">Energía máxima (kJ)</option>
+                                <option value="maxBounceHeight">Altura de rebote (m)</option>
+                                <option value="stopCount">Detenciones</option>
+                            </select>
+                        </div>
+                        <div id="sim3d-map-legend" class="sim3d-legend" style="display:none;">
+                            <div id="sim3d-map-legend-title" class="sim3d-legend-title">-</div>
+                            <div id="sim3d-map-bar" class="sim3d-legend-bar"></div>
+                            <div class="sim3d-legend-row">
+                                <span id="sim3d-map-min">-</span>
+                                <span>máx ↓</span>
+                                <span id="sim3d-map-max">-</span>
+                            </div>
+                        </div>
+
+                        <div class="button-row">
+                            <button id="btn-sim3d-export-asc" class="btn btn-small" type="button" data-tooltip="Descarga el ráster del campo activo como ESRI ASCII Grid.">Exportar ASC</button>
+                            <button id="btn-sim3d-export-csv" class="btn btn-small" type="button" data-tooltip="Descarga id, posición final en coordenadas mundo, estado, energía y alcance por roca.">Exportar CSV de rocas</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="tab-content" id="tab-results">
                     <div class="section">
                         <h3>Panel de Resultados</h3>
                         <p class="help-text" id="results-placeholder-msg">Ejecuta una simulación para ver resultados.</p>
                         <div id="results-sidebar-content" style="display:none;">
                             <div class="control-group">
-                                <label data-tooltip="Resalta en el canvas las zonas donde las rocas llegan con más del 50% de su energía máxima.">Mostrar zonas de riesgo:</label>
+                                <label data-tooltip="Muestra las posiciones finales de las rocas en reposo.">Posiciones finales (reposo):</label>
                                 <label class="checkbox-label">
-                                    <input type="checkbox" id="show-risk-zones"> Superior al 50% energía
+                                    <input type="checkbox" id="show-risk-zones"> Posiciones finales (reposo)
                                 </label>
                                 <label class="checkbox-label" data-tooltip="Muestra bandas de probabilidad de alcance (P10, P50, P83, P95) sobre el perfil. Se calcula al finalizar la simulación.">
                                     <input type="checkbox" id="show-probability-map"> Mapa de probabilidad
@@ -466,6 +768,8 @@
                             </div>
                             <div class="button-row">
                                 <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Dashboard Completo</button>
+                                <button id="btn-export-impacts" class="btn btn-small" disabled data-tooltip="Descarga un CSV con los eventos de impacto registrados (200 por roca como máximo).">Exportar impactos (CSV)</button>
+                                <button id="btn-export-destinations" class="btn btn-small" disabled data-tooltip="Descarga un CSV con una fila por pieza final: origen, destino, motivo de detención y zona.">Exportar destinos (CSV)</button>
                             </div>
                             <p class="help-text" style="margin-top:8px;font-size:10px;">Los datos de exportación están disponibles en el dashboard.</p>
                         </div>
@@ -490,6 +794,14 @@
                     <button id="btn-reset-view" class="btn btn-small" style="margin-left:auto;">⟲ Reset Vista</button>
                 </div>
                 <canvas id="main-canvas"></canvas>
+                <div id="view3d-container" aria-label="Visor 3D">
+                    <div class="view3d-overlay" id="view3d-overlay">
+                        <button id="btn-view3d-plan" class="btn btn-small" type="button" data-tooltip="Conmuta entre cámara cenital (planta) y la vista 3D.">Vista en planta</button>
+                        <label class="checkbox-label view3d-overlay-cb" data-tooltip="Curvas de nivel sobre el terreno.">
+                            <input type="checkbox" id="view3d-contours-check"> Curvas
+                        </label>
+                    </div>
+                </div>
                 <div class="canvas-tools-right" id="canvas-tools-right">
                     <!-- Navegación -->
                     <button id="tool-zoom-in" class="tool-btn" title="Zoom + (scroll)">
@@ -561,89 +873,139 @@
                 </div>
                 <div class="dashboard-stats" id="dashboard-stats-row">
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Rocas</span>
+                        <span class="dash-stat-label">Rocas en reposo</span>
                         <span class="dash-stat-val" id="dash-stat-total">-</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Energía Máx</span>
+                        <span class="dash-stat-label">Energía cinética máx. de trayectoria (kJ)</span>
                         <span class="dash-stat-val" id="dash-stat-max-ke">-</span>
                         <span class="dash-stat-unit">kJ</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Altura Máx Rebote</span>
+                        <span class="dash-stat-label">Altura de vuelo del centro, máx. (m)</span>
                         <span class="dash-stat-val" id="dash-stat-max-bounce">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Runout Máx</span>
+                        <span class="dash-stat-label">Alcance final relativo máx. (m)</span>
                         <span class="dash-stat-val" id="dash-stat-max-runout">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Vel. Impacto Máx</span>
+                        <span class="dash-stat-label">Velocidad máx. de trayectoria (m/s)</span>
                         <span class="dash-stat-val" id="dash-stat-max-vel">-</span>
                         <span class="dash-stat-unit">m/s</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">Ángulo Savigny</span>
+                        <span class="dash-stat-label">Ángulo de alcance mín. (°)</span>
                         <span class="dash-stat-val" id="dash-stat-savigny">-</span>
                         <span class="dash-stat-unit">°</span>
                     </div>
                     <div class="dash-stat-badge">
-                        <span class="dash-stat-label">P95 Runout</span>
+                        <span class="dash-stat-label">Alcance máximo P95 (m)</span>
                         <span class="dash-stat-val" id="dash-stat-p95">-</span>
                         <span class="dash-stat-unit">m</span>
                     </div>
                 </div>
             </div>
+            <div class="dashboard-stats">
+                <div class="dash-stat-badge"><span class="dash-stat-label">Energía cinética máx. de trayectoria (kJ)</span><span class="dash-stat-val" id="stat-max-ke">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Energía cinética máx. por roca, media (kJ)</span><span class="dash-stat-val" id="stat-mean-ke">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Altura de vuelo del centro, máx. (m)</span><span class="dash-stat-val" id="stat-max-bounce">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final relativo máx. (m)</span><span class="dash-stat-val" id="stat-max-runout">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Velocidad máx. de trayectoria (m/s)</span><span class="dash-stat-val" id="stat-max-velocity">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Contactos detectados, máx. (conteo interno; no son impactos)</span><span class="dash-stat-val" id="stat-max-bounces">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Velocidad normal de impacto, máx. por roca (m/s)</span><span class="dash-stat-val" id="stat-max-impact-vn">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Energía de impacto (traslación + rotación), máx. por roca (kJ)</span><span class="dash-stat-val" id="stat-max-impact-energy">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Impactos por roca (vn ≥ 0.5 m/s)</span><span class="dash-stat-val" id="stat-max-impacts">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Ángulo de alcance mín. (°)</span><span class="dash-stat-val" id="stat-savigny-angle">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Rocas en reposo / evaluadas</span><span class="dash-stat-val" id="stat-n-rest">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Salen del perfil aguas abajo (%)</span><span class="dash-stat-val" id="stat-pct-leaving">—</span></div>
+                <div class="dash-stat-badge"><span class="dash-stat-label">Alcance máximo P95 (m)</span><span class="dash-stat-val" id="stat-reach-p95">—</span></div>
+            </div>
+            <div id="stats-warnings" role="status"></div>
+            <div id="bench-retention-block" style="display:none;">
+                <h4 id="bench-retention-title">Retención por banco</h4>
+                <table id="bench-retention-table" class="help-text"></table>
+            </div>
+            <div id="lineage-block" style="display:none;">
+                <h4 style="color:var(--text-secondary);margin:8px 0;">Piezas finales (fragmentación)</h4>
+                <div class="dashboard-stats">
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Rocas originales</span><span class="dash-stat-val" id="lineage-primaries">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Piezas finales</span><span class="dash-stat-val" id="lineage-leaves">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Piezas por tipo</span><span class="dash-stat-val" id="lineage-by-kind">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Piezas por motivo</span><span class="dash-stat-val" id="lineage-by-reason">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa original (kg)</span><span class="dash-stat-val" id="lineage-mass-original">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa en reposo (kg)</span><span class="dash-stat-val" id="lineage-mass-rest">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa fuera del perfil (kg)</span><span class="dash-stat-val" id="lineage-mass-culled">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa censurada (kg)</span><span class="dash-stat-val" id="lineage-mass-censored">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Masa descartada (kg)</span><span class="dash-stat-val" id="lineage-mass-discarded">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final ponderado por masa, P50 (m)</span><span class="dash-stat-val" id="lineage-runout-p50">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final ponderado por masa, P83 (m)</span><span class="dash-stat-val" id="lineage-runout-p83">—</span></div>
+                    <div class="dash-stat-badge"><span class="dash-stat-label">Alcance final ponderado por masa, P95 (m)</span><span class="dash-stat-val" id="lineage-runout-p95">—</span></div>
+                </div>
+                <div id="lineage-warning" role="status" style="color:var(--warning);"></div>
+            </div>
             <div class="dashboard-grid">
                 <div class="chart-panel">
-                    <h4>Distribución de Energía Cinética</h4>
+                    <h4>Energía cinética máx. por roca</h4>
                     <canvas id="chart-energy-hist" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Energía vs Distancia</h4>
+                    <h4>Energía vs X final</h4>
                     <canvas id="chart-energy-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Zonas de Acumulación</h4>
+                    <h4>Acumulación en X final</h4>
                     <canvas id="chart-accumulation" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Altura de Rebote vs Distancia</h4>
+                    <h4>Altura de vuelo del centro vs X final</h4>
                     <canvas id="chart-bounce-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Velocidad de Impacto vs Distancia</h4>
+                    <h4>Velocidad normal de impacto, máx. vs X final</h4>
                     <canvas id="chart-velocity-distance" width="600" height="350"></canvas>
                 </div>
                 <div class="chart-panel">
-                    <h4>Distribución de Runout</h4>
+                    <h4>Alcance final relativo acumulado de las rocas en reposo</h4>
                     <canvas id="chart-runout-dist" width="600" height="350"></canvas>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Hidden stat elements for updateUI compatibility -->
+    <!-- Hidden histogram canvas for compatibility -->
     <div style="display:none;">
-        <span id="stat-max-ke">-</span>
-        <span id="stat-mean-ke">-</span>
-        <span id="stat-max-bounce">-</span>
-        <span id="stat-max-runout">-</span>
-        <span id="stat-max-velocity">-</span>
-        <span id="stat-max-bounces">-</span>
-        <span id="stat-savigny-angle">-</span>
         <canvas id="histogram-canvas" width="380" height="200"></canvas>
     </div>
 
-    <script src="js/terrain.js?v=10"></script>
-    <script src="js/stl.js?v=10"></script>
-    <script src="js/structural-failure.js?v=10"></script>
-    <script src="js/physics.js?v=10"></script>
-    <script src="js/simulation.js?v=10"></script>
-    <script src="js/renderer.js?v=10"></script>
-    <script src="js/stats.js?v=10"></script>
-    <script src="js/app.js?v=10"></script>
+    <script src="js/terrain.js?v=9"></script>
+    <script src="js/bench-profile.js?v=2"></script>
+    <script src="js/dem.js?v=1"></script>
+    <script src="js/view3d-profile.js?v=1"></script>
+    <script src="js/view3d-plan.js?v=1"></script>
+    <script src="js/view3d.js?v=3"></script>
+    <script src="js/view3d-terrain.js?v=1"></script>
+    <script src="js/stl.js?v=7"></script>
+    <script src="js/physics.js?v=14"></script>
+    <script src="js/simulation.js?v=13"></script>
+    <script src="js/renderer.js?v=7"></script>
+    <script src="js/bench-retention.js?v=1"></script>
+    <script src="js/stats.js?v=12"></script>
+    <script src="js/math3d.js?v=1"></script>
+    <script src="js/physics3d.js?v=1"></script>
+    <script src="js/source-zones.js?v=1"></script>
+    <script src="js/simulation3d.js?v=1"></script>
+    <script src="js/sim3d-pool.js?v=1"></script>
+    <script src="js/results3d.js?v=1"></script>
+    <script src="js/view3d-trajectories.js?v=1"></script>
+    <script src="js/app.js?v=20"></script>
+    <script src="js/app-stl.js?v=3"></script>
+    <script src="js/app-worker.js?v=11"></script>
+    <script src="js/app-modes.js?v=2"></script>
+    <script src="js/app-import.js?v=4"></script>
+    <script src="js/app-profile3d.js?v=3"></script>
+    <script src="js/app-sim3d.js?v=1"></script>
 </body>
 </html>

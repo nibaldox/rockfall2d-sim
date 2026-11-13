@@ -1,3 +1,13 @@
+// Valor efectivo de un parámetro numérico: se conserva si es finito y cumple
+// el dominio (negativo admitido o solo positivo; entero cuando se exige) y, si
+// no, se usa el defecto. Los ceros válidos no se sustituyen.
+function effectiveNumber(value, fallback, allowZero, requireInteger) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+    if (requireInteger && !Number.isInteger(value)) return fallback;
+    if (allowZero ? value < 0 : value <= 0) return fallback;
+    return value;
+}
+
 class Simulation {
     constructor(terrain, physics) {
         this.terrain = terrain;
@@ -10,9 +20,11 @@ class Simulation {
         this.totalRocks = 100;
         this.simulatedCount = 0;
         this.animationSpeed = 50;
-        this.maxStepsPerRock = 5000;
+        this._maxStepsPerRock = 5000;
+        this._maxStepsExplicit = false;
         this.maxDuration = 30;
         this.ignoreResting = false;
+        this.downhillMode = 'auto';
         this.onUpdate = null;
         this.onComplete = null;
         // Frame recording for timeline playback (throttled)
@@ -22,36 +34,76 @@ class Simulation {
         this.maxFrames = 5000; // Hard cap to prevent OOM
         // Barriers (line segments for containment structures)
         this.barriers = [];
+        // P0.5: semilla opcional de la corrida y su generador (null = Math.random).
+        this.seed = undefined;
+        this._rng = null;
+    }
+
+    /**
+     * P0.5: único punto de sorteo de la simulación. Sin semilla usa
+     * `Math.random`, resuelto en cada llamada.
+     * @returns {number} Valor en [0, 1)
+     */
+    rng() {
+        const generator = this._rng;
+        return generator ? generator() : Math.random();
+    }
+
+    get maxStepsPerRock() {
+        return this._maxStepsPerRock;
+    }
+
+    set maxStepsPerRock(value) {
+        this._maxStepsPerRock = value;
+        this._maxStepsExplicit = true;
     }
 
     configure(params) {
-        this.totalRocks = params.numRocks || 100;
-        this.animationSpeed = params.animationSpeed || 50;
-        this.physics.gravity = params.gravity || 9.81;
-        this.physics.dt = params.timeStep || 0.005;
-        this.physics.cn = params.cn || 0.6;
-        this.physics.ct = params.ct || 0.4;
-        this.physics.rollingFriction = params.rollingFriction || 0.15;
-        this.physics.cnVariability = params.cnVariability || 10;
-        this.physics.ctVariability = params.ctVariability || 10;
-        this.maxDuration = params.maxDuration || 30;
-        this.maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
+        // P0.5: `params.seed` opcional (entero en [0, 2^32 - 1]). Una semilla
+        // inválida lanza antes de cambiar la configuración; `undefined` deja
+        // la corrida con `Math.random`.
+        if (params.seed !== undefined) globalThis.SimRocas.createRng(params.seed);
+        this.seed = params.seed;
+        this.totalRocks = effectiveNumber(params.numRocks, 100, false, true);
+        this.animationSpeed = effectiveNumber(params.animationSpeed, 50, false, false);
+        this.physics.gravity = effectiveNumber(params.gravity, 9.81, false, false);
+        this.physics.dt = effectiveNumber(params.timeStep, 0.005, false, false);
+        this.physics.cn = effectiveNumber(params.cn, 0.6, true, false);
+        this.physics.ct = effectiveNumber(params.ct, 0.4, true, false);
+        this.physics.rollingFriction = effectiveNumber(params.rollingFriction, 0.15, true, false);
+        this.physics.cnVariability = effectiveNumber(params.cnVariability, 10, true, false);
+        this.physics.ctVariability = effectiveNumber(params.ctVariability, 10, true, false);
+        this.maxDuration = effectiveNumber(params.maxDuration, 30, false, false);
+        this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
+        this._maxStepsExplicit = false;
         this.ignoreResting = !!params.ignoreResting;
+        this.downhillMode = params.downhillMode === '+x' || params.downhillMode === '-x' ? params.downhillMode : 'auto';
 
         // Sync fragmentation properties
-        this.physics.fragmentationEnabled = params.fragmentationEnabled !== undefined ? params.fragmentationEnabled : true;
-        this.physics.fractureEnergy = params.fractureEnergy !== undefined ? params.fractureEnergy : 25000;
-        this.physics.fractureDissipation = params.fractureDissipation !== undefined ? params.fractureDissipation : 0.4;
+        this.physics.fragmentationEnabled = typeof params.fragmentationEnabled === 'boolean' ? params.fragmentationEnabled : true;
+        this.physics.fractureEnergy = effectiveNumber(params.fractureEnergy, 25000, false, false);
+        this.physics.fractureDissipation = effectiveNumber(params.fractureDissipation, 0.4, true, false);
     }
 
     start(releaseX, releaseY, diameter, density, initialVelocity, angle, maxDuration, ignoreResting, shapeType, aspectRatio, releaseMode, multiReleasePoints) {
+        // P0.4: contador de `id` por corrida, sin sorteos. El modo normal y el
+        // Worker asignan así los mismos `id`.
+        globalThis.SimRocas.nextRockId = 1;
+        // P0.5: un generador nuevo por corrida, compartido con el motor, para
+        // que repetir `start` con la misma semilla repita la corrida.
+        this._rng = this.seed === undefined ? null : globalThis.SimRocas.createRng(this.seed);
+        if (typeof this.physics.setRng === 'function') this.physics.setRng(this._rng);
         this.rocks = [];
         this.activeRocks = [];
         this.finishedRocks = [];
         this.simulatedCount = 0;
         this.isRunning = true;
         this.isPaused = false;
-        this.maxDuration = maxDuration || this.maxDuration;
+        this.maxDuration = effectiveNumber(maxDuration, this.maxDuration, false, false);
+        // Only assignments after configure are independent consumer overrides.
+        if (!this._maxStepsExplicit) {
+            this._maxStepsPerRock = Math.ceil(this.maxDuration / this.physics.dt);
+        }
         this.ignoreResting = !!ignoreResting;
         this.frames = [];
 
@@ -71,13 +123,20 @@ class Simulation {
 
         for (let oi = 0; oi < origins.length; oi++) {
             const origin = origins[oi];
+            let downhillSign = this.downhillMode === '+x' ? 1 : this.downhillMode === '-x' ? -1 : null;
+            if (this.downhillMode === 'auto') {
+                const bounds = this.terrain.getBounds();
+                const clamp = x => bounds ? Math.max(bounds.minX, Math.min(bounds.maxX, x)) : x;
+                const delta = this.terrain.getHeightAt(clamp(origin.x - 10)) - this.terrain.getHeightAt(clamp(origin.x + 10));
+                downhillSign = delta >= 0.5 ? 1 : delta <= -0.5 ? -1 : null;
+            }
             const count = Math.min(perOrigin, this.totalRocks - rocksCreated);
             const originVel = origin.velocity !== undefined ? origin.velocity : initialVelocity;
             const originAng = origin.angle !== undefined ? origin.angle : angle;
 
             for (let i = 0; i < count; i++) {
-                const jitterX = (Math.random() - 0.5) * diameter;
-                const jitterY = isDetachment ? 0 : (Math.random() - 0.5) * diameter * 0.5;
+                const jitterX = (this.rng() - 0.5) * diameter;
+                const jitterY = isDetachment ? 0 : (this.rng() - 0.5) * diameter * 0.5;
                 let rx = origin.x + jitterX;
                 let ry = origin.y + jitterY;
 
@@ -98,6 +157,9 @@ class Simulation {
                     shapeType,
                     aspectRatio
                 );
+                rock.sourceIndex = oi;
+                rock.downhillSign = downhillSign;
+                rock.maxDownhillAdvance = downhillSign === null ? null : 0;
                 rock.stepsTaken = 0;
                 rock.elapsedTime = 0;
                 rock.ignoreResting = this.ignoreResting;
@@ -128,16 +190,14 @@ class Simulation {
                     rockChildren = rockChildren || [];
                     rockChildren.push(...spawned);
                 }
-                rock.stepsTaken++;
-                rock.elapsedTime += this.physics.dt;
-
                 if (rock.isResting) break;
-                if (rock.stepsTaken >= this.maxStepsPerRock) {
-                    rock.isResting = true;
+                // Fixed absolute margin required by the duration contract.
+                if (this.maxDuration - rock.elapsedTime <= 1e-9) {
+                    rock.finish('maxTime');
                     break;
                 }
-                if (rock.elapsedTime >= this.maxDuration) {
-                    rock.isResting = true;
+                if (rock.stepsTaken >= this.maxStepsPerRock) {
+                    rock.finish('maxSteps');
                     break;
                 }
             }
@@ -158,8 +218,17 @@ class Simulation {
         // Push new child rocks to activeRocks and total list
         if (allNewChildren.length > 0) {
             for (const child of allNewChildren) {
-                this.activeRocks.push(child);
                 this.rocks.push(child);
+                // P0.4 E1.2: un hijo nacido con el reloj o los pasos heredados ya
+                // agotados termina al nacer, sin integrar ningún paso.
+                const bornAtLimit = this.maxDuration - child.elapsedTime <= 1e-9 ? 'maxTime' :
+                    (child.stepsTaken >= this.maxStepsPerRock ? 'maxSteps' : null);
+                if (bornAtLimit !== null && child.finish(bornAtLimit)) {
+                    this.finishedRocks.push(child);
+                    this.simulatedCount++;
+                } else {
+                    this.activeRocks.push(child);
+                }
             }
         }
 
@@ -215,11 +284,10 @@ class Simulation {
         return this.frames.length;
     }
 
-    stop() {
+    stop(reason = 'cancelled') {
         this.isRunning = false;
         for (const rock of this.activeRocks) {
-            rock.isResting = true;
-            this.finishedRocks.push(rock);
+            if (rock.finish(reason)) this.finishedRocks.push(rock);
         }
         this.activeRocks = [];
         this.simulatedCount = this.finishedRocks.length;
