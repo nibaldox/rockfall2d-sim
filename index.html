@@ -106,6 +106,17 @@
                             <button id="btn-bench-generate" class="btn btn-small" data-tooltip="Reemplaza el perfil por el banco–berma generado, asigna materiales por tramo y fija el sentido de descenso en +X.">Generar</button>
                             <table id="bench-meta-table" class="help-text" style="display:none; width:100%; font-size:11px;"></table>
                         </div>
+                        <div class="control-group" id="bench-measure">
+                            <label>Medir bancos (perfil importado o editado):</label>
+                            <label for="bench-measure-slope">Pendiente máxima de berma (°):</label>
+                            <input type="number" id="bench-measure-slope" min="0.1" max="89" step="0.5" value="5" data-tooltip="Un tramo con pendiente de bajada mayor que este valor es cara; hasta este valor es berma.">
+                            <label for="bench-measure-tolerance">Tolerancia de cota de berma (m):</label>
+                            <input type="number" id="bench-measure-tolerance" min="0" step="0.1" value="0.5" data-tooltip="La berma efectiva llega hasta donde la cota se aparta de la pata más que este valor.">
+                            <label for="bench-measure-min-height">Altura mínima de cara (m):</label>
+                            <input type="number" id="bench-measure-min-height" min="0.1" step="0.1" value="1.0" data-tooltip="Una caída menor que este valor no cuenta como cara de banco.">
+                            <p class="help-text bench-measure-note">Umbrales: criterio provisional; lo define el responsable geotécnico.</p>
+                            <button id="btn-bench-measure" class="btn btn-small" data-tooltip="Mide crestas, patas y bermas del perfil actual con estos umbrales. No modifica el perfil.">Medir bancos</button>
+                        </div>
                         <input type="file" id="file-input" accept=".json,.csv" style="display:none">
                     </div>
 
@@ -758,6 +769,7 @@
                             <div class="button-row">
                                 <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Dashboard Completo</button>
                                 <button id="btn-export-impacts" class="btn btn-small" disabled data-tooltip="Descarga un CSV con los eventos de impacto registrados (200 por roca como máximo).">Exportar impactos (CSV)</button>
+                                <button id="btn-export-destinations" class="btn btn-small" disabled data-tooltip="Descarga un CSV con una fila por pieza final: origen, destino, motivo de detención y zona.">Exportar destinos (CSV)</button>
                             </div>
                             <p class="help-text" style="margin-top:8px;font-size:10px;">Los datos de exportación están disponibles en el dashboard.</p>
                         </div>
@@ -912,6 +924,10 @@
                 <div class="dash-stat-badge"><span class="dash-stat-label">Alcance máximo P95 (m)</span><span class="dash-stat-val" id="stat-reach-p95">—</span></div>
             </div>
             <div id="stats-warnings" role="status"></div>
+            <div id="bench-retention-block" style="display:none;">
+                <h4 id="bench-retention-title">Retención por banco</h4>
+                <table id="bench-retention-table" class="help-text"></table>
+            </div>
             <div id="lineage-block" style="display:none;">
                 <h4 style="color:var(--text-secondary);margin:8px 0;">Piezas finales (fragmentación)</h4>
                 <div class="dashboard-stats">
@@ -965,7 +981,7 @@
     </div>
 
     <script src="js/terrain.js?v=9"></script>
-    <script src="js/bench-profile.js?v=1"></script>
+    <script src="js/bench-profile.js?v=2"></script>
     <script src="js/dem.js?v=1"></script>
     <script src="js/view3d-profile.js?v=1"></script>
     <script src="js/view3d-plan.js?v=1"></script>
@@ -975,7 +991,8 @@
     <script src="js/physics.js?v=14"></script>
     <script src="js/simulation.js?v=13"></script>
     <script src="js/renderer.js?v=7"></script>
-    <script src="js/stats.js?v=11"></script>
+    <script src="js/bench-retention.js?v=1"></script>
+    <script src="js/stats.js?v=12"></script>
     <script src="js/math3d.js?v=1"></script>
     <script src="js/physics3d.js?v=1"></script>
     <script src="js/source-zones.js?v=1"></script>
@@ -983,7 +1000,7 @@
     <script src="js/sim3d-pool.js?v=1"></script>
     <script src="js/results3d.js?v=1"></script>
     <script src="js/view3d-trajectories.js?v=1"></script>
-    <script src="js/app.js?v=19"></script>
+    <script src="js/app.js?v=20"></script>
     <script src="js/app-stl.js?v=3"></script>
     <script src="js/app-worker.js?v=11"></script>
     <script src="js/app-modes.js?v=2"></script>

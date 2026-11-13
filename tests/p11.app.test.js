@@ -393,12 +393,15 @@ test('index.html: grupo «Generar banco–berma» en la pestaña Perfil y versio
     assert.ok(order.indexOf('js/bench-profile.js') < order.indexOf('js/app.js'));
     const before = Object.fromEntries([...show('index.html').matchAll(/<script src="(js\/[\w.-]+\.js)\?v=(\d+)"/g)].map(m => [m[1], Number(m[2])]));
     const changed = file => show(file) !== read(file);
-    const expected = { ...before, 'js/bench-profile.js': 1, 'js/app.js': 19, 'js/terrain.js': 9 };
+    const expected = { ...before, 'js/bench-profile.js': 2, 'js/app.js': 20, 'js/terrain.js': 9, 'js/stats.js': 12, 'js/bench-retention.js': 1 }; // P1.2: bench-profile 2, app 20, stats 12 y bench-retention 1
     for (const [file, v] of [['js/app-stl.js', 3], ['js/app-profile3d.js', 3], ['js/app-worker.js', 11]]) if (changed(file)) expected[file] = v;
     assert.deepEqual(versions, expected);
     // worker.js carga terrain.js con el ?v= del Worker: WORKER_VERSION sube de 11 a 12.
     assert.match(read('js/worker.js'), /importScripts\('terrain\.js' \+ _v/);
     assert.match(show('js/app-worker.js'), /^const WORKER_VERSION = 11;$/m);
     assert.match(read('js/app-worker.js'), /^const WORKER_VERSION = 12;$/m);
-    for (const file of ['js/physics.js', 'js/simulation.js', 'js/stats.js', 'js/renderer.js', 'js/worker.js']) assert.equal(changed(file), false, file);
+    for (const file of ['js/physics.js', 'js/simulation.js', 'js/renderer.js', 'js/worker.js']) assert.equal(changed(file), false, file);
+    // P1.2: stats cambia; se preserva el invariante histórico de P1.1
+    assert.equal(show('js/stats.js'), execFileSync('git', ['show', '841fe984:js/stats.js'], { cwd: ROOT, encoding: 'utf8',
+        env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' }, maxBuffer: 64 * 1024 * 1024 }), 'js/stats.js');
 });

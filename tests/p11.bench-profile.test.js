@@ -134,7 +134,10 @@ for (const p of CASES) {
             near(bench.effectiveWidth, ref.effectiveWidth, `W medido ${k + 1}`);
             if (k < p.benches - 1) near(bench.effectiveWidth, p.bermWidth, `W medido ${k + 1}`);
             near(bench.bermEndX, ref.bermEndX, 'fin de berma');
-            assert.equal(bench.nominalWidth, null, 'el ancho nominal no se mide');
+            // P1.2 §3: el ancho nominal medido va de la pata a la cresta siguiente;
+            // solo el último banco queda en null.
+            if (k < p.benches - 1) near(bench.nominalWidth, p.bermWidth, `W nominal ${k + 1}`);
+            else assert.equal(bench.nominalWidth, null, 'último banco: sin ancho nominal');
         });
     });
 
@@ -168,12 +171,13 @@ test('W = 0: se omiten los vértices duplicados y la berma mide 0', () => {
     }
     const m = BP.measure(g.points, THRESHOLDS);
     assert.equal(m.ok, true, m.error);
-    assert.equal(m.benchMeta.length, N);
-    m.benchMeta.forEach((bench, k) => {
-        near(bench.height, 9, 'H medido');
-        near(bench.faceAngleDeg, 55, 'α medido');
-        if (k < N - 1) assert.equal(bench.effectiveWidth, 0);
-    });
+    // P1.2 §3: una cara es una cadena maximal de tramos de bajada. Con W = 0
+    // las N caras son contiguas y colineales: se miden como una sola de N·H.
+    assert.equal(m.benchMeta.length, 1);
+    near(m.benchMeta[0].height, N * 9, 'H medido');
+    near(m.benchMeta[0].faceAngleDeg, 55, 'α medido');
+    near(m.benchMeta[0].crestX, g.benchMeta[0].crestX, 'cresta');
+    near(m.benchMeta[0].toeX, g.benchMeta[N - 1].toeX, 'pata');
 });
 
 test('plataforma y piso de largo 0 no dejan vértices duplicados', () => {

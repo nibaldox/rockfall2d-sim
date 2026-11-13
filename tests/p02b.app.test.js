@@ -332,14 +332,15 @@ test('versionado del §4 coincide y ningún otro ?v= cambia', () => {
         { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' } }));
     assert.equal(current['js/physics.js'], 14);
     assert.equal(current['js/simulation.js'], 13);
-    assert.equal(current['js/stats.js'], 11);
+    assert.equal(current['js/stats.js'], 12); // P1.2
     assert.equal(current['js/renderer.js'], 7);
-    assert.equal(current['js/app.js'], 19); // P1.1
+    assert.equal(current['js/app.js'], 20); // P1.2
     assert.equal(current['js/app-worker.js'], 11); // P1.1: WORKER_VERSION 12
     const changed = ['js/physics.js', 'js/simulation.js', 'js/stats.js', 'js/renderer.js', 'js/app.js', 'js/app-worker.js',
         'js/terrain.js', 'js/app-stl.js', 'js/app-profile3d.js']; // P1.1: terrain 9, app-stl 3 y app-profile3d 3
-    assert.equal(Object.keys(current).length, Object.keys(head).length + 1); // P1.1: script nuevo js/bench-profile.js?v=1
-    assert.deepEqual([current['js/bench-profile.js'], current['js/terrain.js'], current['js/app-stl.js'], current['js/app-profile3d.js']], [1, 9, 3, 3]);
+    assert.equal(Object.keys(current).length, Object.keys(head).length + 2); // P1.1: script nuevo js/bench-profile.js; P1.2: script nuevo js/bench-retention.js?v=1
+    assert.deepEqual([current['js/bench-profile.js'], current['js/terrain.js'], current['js/app-stl.js'], current['js/app-profile3d.js']], [2, 9, 3, 3]); // P1.2: bench-profile 1→2
+    assert.equal(current['js/bench-retention.js'], 1); // P1.2
     for (const [file, version] of Object.entries(head)) {
         if (changed.includes(file)) continue;
         assert.equal(current[file], version, file);

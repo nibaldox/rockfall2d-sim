@@ -188,6 +188,134 @@ function generateBenchProfile(app) {
         `Perfil banco–berma generado (${out.benchMeta ? out.benchMeta.length : 0} bancos); sentido de descenso fijado en +X`;
 }
 
+// --- P1.2: medición de bancos, geometría congelada por corrida y retención por banco ---
+
+// «Medir bancos»: no muta el perfil; solo llena _benchProfile con source 'medido'.
+function measureBenchProfile(app) {
+    if (profileEditBlocked(app)) return;
+    const fail = reason => alert('No se pudieron medir los bancos: ' + reason);
+    const num = id => Number(String(document.getElementById(id).value).trim().replace(',', '.') || NaN);
+    const thresholds = {
+        bermSlopeDeg: num('bench-measure-slope'), bermToleranceY: num('bench-measure-tolerance'),
+        minFaceHeight: num('bench-measure-min-height')
+    };
+    if (!(thresholds.bermSlopeDeg > 0 && thresholds.bermSlopeDeg < 90) ||
+        !(Number.isFinite(thresholds.bermToleranceY) && thresholds.bermToleranceY >= 0) ||
+        !(Number.isFinite(thresholds.minFaceHeight) && thresholds.minFaceHeight > 0)) {
+        fail('umbrales inválidos (pendiente entre 0° y 90°, tolerancia mayor o igual que 0 y altura mayor que 0)');
+        return;
+    }
+    let out;
+    try {
+        if (!SimRocas.BenchProfile || typeof SimRocas.BenchProfile.measure !== 'function') throw new Error('la medición no está disponible');
+        out = SimRocas.BenchProfile.measure(app.terrain.points.map(p => ({ x: p.x, y: p.y })), { ...thresholds });
+    } catch (err) {
+        fail(err.message);
+        return;
+    }
+    if (!out || out.ok !== true) {
+        fail((out && (out.reason || out.error)) || 'error desconocido');
+        return;
+    }
+    if (!Array.isArray(out.benchMeta) || out.benchMeta.length === 0 || (out.downhillSign !== 1 && out.downhillSign !== -1)) {
+        fail('la medición devolvió un resultado inválido');
+        return;
+    }
+    app._benchProfile = {
+        source: 'medido', benchMeta: out.benchMeta.map(b => ({ ...b })), pointsKey: JSON.stringify(app.terrain.points),
+        downhillSign: out.downhillSign, thresholds: { ...(out.thresholds || thresholds) },
+        schemaVersion: out.schemaVersion || 'bench-measure.v2'
+    };
+    renderBenchMeta(app._benchProfile.benchMeta);
+    const status = document.getElementById('simulation-status');
+    if (status) status.textContent = `${out.benchMeta.length} bancos medidos (umbrales provisionales; los define el responsable geotécnico)`;
+}
+
+// Copia campo por campo de benchGeometry (§5 del contrato P1.2).
+function copyBenchGeometry(g) {
+    return {
+        source: g.source, schemaVersion: g.schemaVersion, downhillSign: g.downhillSign,
+        benchMeta: g.benchMeta.map(b => ({ ...b })), thresholds: g.thresholds ? { ...g.thresholds } : null,
+        profileMinX: g.profileMinX, profileMaxX: g.profileMaxX, pointsKey: g.pointsKey
+    };
+}
+
+// Geometría de bancos de la corrida que empieza: solo si _benchProfile existe y
+// su pointsKey coincide con el perfil. Si no, devuelve el motivo (I-F).
+function runBenchGeometry(app) {
+    const profile = app._benchProfile;
+    if (!profile) return { reason: 'no hay geometría de bancos (genera un perfil banco–berma o usa «Medir bancos» antes de simular)' };
+    const points = Array.isArray(app.terrain?.points) ? app.terrain.points : [];
+    const pointsKey = JSON.stringify(points);
+    if (profile.pointsKey !== pointsKey) return { reason: 'la geometría de bancos no corresponde al perfil de la corrida' };
+    if (!Array.isArray(profile.benchMeta) || profile.benchMeta.length === 0) return { reason: 'la geometría de bancos no tiene bancos' };
+    const measured = profile.source === 'medido';
+    const xs = points.map(p => p.x);
+    return { geometry: copyBenchGeometry({
+        source: measured ? 'medido' : 'generado',
+        schemaVersion: profile.schemaVersion || (measured ? 'bench-measure.v2' : 'bench-profile.v1'),
+        downhillSign: measured ? profile.downhillSign : 1,
+        benchMeta: profile.benchMeta, thresholds: measured ? profile.thresholds : null,
+        profileMinX: Math.min(...xs), profileMaxX: Math.max(...xs), pointsKey
+    }) };
+}
+
+// Motivo de «No disponible» de la corrida vigente; no viaja en _runInfo (I-A).
+let benchRunReason = { epoch: null, reason: '' };
+
+const BENCH_CENSOR_LABELS = { culled: 'salida del dominio', maxTime: 'tiempo máximo', maxSteps: 'pasos máximos' };
+
+// Tabla «Retención por banco». result nulo la limpia; sin results.benchRetention
+// dice «No disponible» con su motivo (ausente no es cero).
+function renderBenchRetention(result, geometry, reason) {
+    const block = document.getElementById('bench-retention-block');
+    const table = document.getElementById('bench-retention-table');
+    const title = document.getElementById('bench-retention-title');
+    if (!table) return;
+    if (title) title.textContent = 'Retención por banco';
+    if (!result) {
+        table.innerHTML = '';
+        if (block) block.style.display = 'none';
+        return;
+    }
+    if (block) block.style.display = '';
+    const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const retention = result.benchRetention;
+    let missing = null;
+    if (!geometry) missing = reason || 'no hay geometría de bancos';
+    else if (!retention) missing = 'Stats no publicó la retención (geometría de bancos inválida)';
+    else if (retention.ok === false || !Array.isArray(retention.zones)) missing = retention.reason || 'retención inválida';
+    if (missing) {
+        table.innerHTML = `<tbody><tr><td>No disponible: ${esc(missing)}</td></tr></tbody>`;
+        return;
+    }
+    if (title) title.textContent = `Retención por banco (geometría: ${geometry.source === 'medido' ? 'medida' : 'generada'})`;
+    const den = retention.denominators || {};
+    const censored = retention.censored || {};
+    const count = v => (Number.isFinite(v) ? String(v) : '—');
+    const pct = (v, total) => (Number.isFinite(v) && total > 0 ? (100 * v / total).toFixed(1) : '—');
+    const mass = v => (Number.isFinite(v) ? v.toFixed(1) : '—');
+    let rows = retention.zones.map(z => `<tr><td>${esc(z.label)}${z.note ? ` (${esc(z.note)})` : ''}</td><td>${count(z.primaries)}</td>` +
+        `<td>${pct(z.primaries, den.released)}</td><td>${pct(z.primaries, den.known)}</td>` +
+        `<td>${count(z.pieces)}</td><td>${mass(z.mass)}</td></tr>`).join('');
+    const byReason = censored.byReason || {};
+    for (const key of ['culled', 'maxTime', 'maxSteps']) {
+        // Forma del §7: { primaries, pieces, mass } por motivo.
+        const cell = byReason[key] && typeof byReason[key] === 'object' ? byReason[key] : {};
+        rows += `<tr><td>Censuradas: ${BENCH_CENSOR_LABELS[key]}</td><td>${count(cell.primaries)}</td>` +
+            `<td>${pct(cell.primaries, den.released)}</td><td>—</td><td>${count(cell.pieces)}</td><td>${mass(cell.mass)}</td></tr>`;
+    }
+    rows += `<tr><td>Censuradas (total, sin zona)</td><td>${count(censored.primaries)}</td><td>${pct(censored.primaries, den.released)}</td>` +
+        `<td>—</td><td>${count(censored.pieces)}</td><td>${mass(censored.mass)}</td></tr>`;
+    if (retention.discardedMass > 0) rows += `<tr><td>Masa descartada (sin zona)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>${mass(retention.discardedMass)}</td></tr>`;
+    const closure = retention.closure || {};
+    const closed = closure.primariesOk === true && closure.piecesOk === true && closure.massOk === true;
+    rows += `<tr><td colspan="6">Σ zonas + censuradas = N: ${closed ? 'verificado' : 'NO verificado'} ` +
+        `(N lanzadas: ${count(den.released)}; con destino conocido: ${count(den.known)}; piezas: ${count(den.releasedPieces)})</td></tr>`;
+    table.innerHTML = '<thead><tr><th>Zona</th><th>Rocas</th><th>% de lanzadas</th><th>% con destino conocido</th>' +
+        `<th>Piezas</th><th>Masa (kg)</th></tr></thead><tbody>${rows}</tbody>`;
+}
+
 // Para los mixins app-stl.js y app-profile3d.js (funciones de módulo: App.prototype no gana métodos).
 SimRocas.ProfileEdit = { blocked: profileEditBlocked, changed: profileChanged };
 
@@ -437,6 +565,9 @@ class App {
     setupTerrainControls() {
         // P1.1: generador paramétrico banco–berma.
         document.getElementById('btn-bench-generate').addEventListener('click', () => generateBenchProfile(this));
+        // P1.2: medición de bancos del perfil actual.
+        const measureBtn = document.getElementById('btn-bench-measure');
+        if (measureBtn) measureBtn.addEventListener('click', () => measureBenchProfile(this));
 
         document.getElementById('btn-add-point').addEventListener('click', () => {
             const x = parseFloat(document.getElementById('input-x').value);
@@ -1227,6 +1358,22 @@ class App {
             URL.revokeObjectURL(url);
         });
 
+        // P1.2: una fila por pieza final; no depende de la geometría de bancos.
+        const destinationsBtn = document.getElementById('btn-export-destinations');
+        if (destinationsBtn) destinationsBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
+            if (typeof this.stats.generateDestinationsCSV !== 'function') return;
+            const csv = this.stats.generateDestinationsCSV();
+            if (csv === null || csv === undefined) return;
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas_destinos.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
         const reportBtn = document.getElementById('btn-export-report');
         if (reportBtn) reportBtn.addEventListener('click', () => {
             if (!this._resultsValid) return;
@@ -1882,6 +2029,7 @@ class App {
         const warnings = document.getElementById('stats-warnings');
         if (warnings) warnings.textContent = '';
         updateLineageBlock(null);
+        renderBenchRetention(null);
         const dashboard = document.getElementById('results-dashboard');
         if (dashboard) {
             dashboard.classList.add('hidden');
@@ -1893,7 +2041,7 @@ class App {
         const content = document.getElementById('results-sidebar-content');
         if (placeholder) placeholder.style.display = 'block';
         if (content) content.style.display = 'none';
-        ['btn-export-csv', 'btn-export-report', 'btn-export-impacts', 'btn-dashboard-csv', 'btn-dashboard-report',
+        ['btn-export-csv', 'btn-export-report', 'btn-export-impacts', 'btn-export-destinations', 'btn-dashboard-csv', 'btn-dashboard-report',
             'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
             const el = document.getElementById(id); if (el) el.disabled = true;
         });
@@ -2050,6 +2198,8 @@ class App {
                     seed: this._runInfo.seed, rngAlgorithm: this._runInfo.rngAlgorithm,
                     engineVersion: this._runInfo.engineVersion, correlatedParams: this._runInfo.correlatedParams
                 } : null;
+            // P1.2: la geometría de bancos viaja solo si se congeló al iniciar esta corrida.
+            if (info && this._runInfo.benchGeometry) info.benchGeometry = copyBenchGeometry(this._runInfo.benchGeometry);
             this.stats.compute(rocks, this.releasePoint, info);
             const result = this.stats.results;
             if (result.status === 'bloqueado') {
@@ -2059,6 +2209,8 @@ class App {
             } else {
                 this.stats.updateUI();
                 updateLineageBlock(result);
+                renderBenchRetention(result, info ? info.benchGeometry : null,
+                    benchRunReason.epoch === this._runEpoch ? benchRunReason.reason : '');
                 this.renderer.renderHistogram(this.histogramCanvas, result);
                 const population = result.population;
                 const sign = rocks[0].downhillSign;
@@ -2079,7 +2231,7 @@ class App {
                 const content = document.getElementById('results-sidebar-content');
                 if (placeholder) placeholder.style.display = 'none';
                 if (content) content.style.display = 'block';
-                ['btn-export-csv', 'btn-export-report', 'btn-dashboard-csv', 'btn-dashboard-report',
+                ['btn-export-csv', 'btn-export-report', 'btn-export-destinations', 'btn-dashboard-csv', 'btn-dashboard-report',
                     'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
                     const el = document.getElementById(id); if (el) el.disabled = false;
                 });
@@ -2244,6 +2396,10 @@ class App {
             engineVersion: typeof WORKER_VERSION === 'number' ? WORKER_VERSION : null,
             correlatedParams: this.simulation.physics.correlatedParams === true
         };
+        // P1.2 (I-G): copia congelada de la geometría de bancos, solo si corresponde a este perfil.
+        const bench = runBenchGeometry(this);
+        if (bench.geometry) this._runInfo.benchGeometry = bench.geometry;
+        benchRunReason = { epoch: runEpoch, reason: bench.reason || '' };
         showSeedUsed(seed);
 
         document.getElementById('btn-run').disabled = true;

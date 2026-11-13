@@ -188,19 +188,104 @@ globalThis.SimRocas = globalThis.SimRocas || {};
         return { ok: true, value };
     }
 
+    const MEASURE_SCHEMA_VERSION = 'bench-measure.v2';
+    // Diferencia mínima de cota entre extremos para decidir el sentido de
+    // bajada: el mismo umbral que usa la simulación.
+    const DOWNHILL_MIN_DROP = 0.5;
+
     /**
-     * Mide los bancos de una polilínea con descenso hacia +X.
+     * Sentido de bajada por la cota de los extremos: +1 si el extremo derecho
+     * está al menos DOWNHILL_MIN_DROP más bajo, −1 si está al menos eso más
+     * alto y 0 si no se puede decidir.
+     */
+    function resolveDownhillSign(points) {
+        const drop = points[0].y - points[points.length - 1].y;
+        if (drop >= DOWNHILL_MIN_DROP) return 1;
+        if (-drop >= DOWNHILL_MIN_DROP) return -1;
+        return 0;
+    }
+
+    /**
+     * Copia de los puntos en el marco de bajada (u = s·x, u creciente).
+     * Con s = −1 refleja la X e invierte el orden.
+     */
+    function toDownhillFrame(points, sign) {
+        const frame = [];
+        if (sign > 0) {
+            for (let k = 0; k < points.length; k++) frame.push({ u: points[k].x, y: points[k].y });
+        } else {
+            for (let k = points.length - 1; k >= 0; k--) frame.push({ u: -points[k].x, y: points[k].y });
+        }
+        return frame;
+    }
+
+    /**
+     * Caras en el marco de bajada: cadenas maximales de tramos consecutivos
+     * que bajan con pendiente mayor que slopeDeg. Las cadenas con caída menor
+     * que minHeight no son cara.
+     * @returns {{crest: number, toe: number}[]} índices de cresta y pata
+     */
+    function findFaces(frame, slopeDeg, minHeight) {
+        const isSteepDescent = (k) => {
+            const drop = frame[k].y - frame[k + 1].y;
+            if (!(drop > 0)) return false;
+            return Math.atan2(drop, frame[k + 1].u - frame[k].u) / DEG > slopeDeg;
+        };
+        const faces = [];
+        let k = 0;
+        while (k < frame.length - 1) {
+            if (!isSteepDescent(k)) {
+                k++;
+                continue;
+            }
+            let end = k + 1;
+            while (end < frame.length - 1 && isSteepDescent(end)) end++;
+            if (frame[k].y - frame[end].y >= minHeight) faces.push({ crest: k, toe: end });
+            k = end;
+        }
+        return faces;
+    }
+
+    /**
+     * Índice del último punto de la berma efectiva que nace en la pata:
+     * tramos contiguos con |pendiente| ≤ slopeDeg y |y − y_pata| ≤ toleranceY.
+     */
+    function findBermEnd(frame, toe, slopeDeg, toleranceY) {
+        let end = toe;
+        for (let j = toe; j < frame.length - 1; j++) {
+            const angle = Math.atan2(Math.abs(frame[j + 1].y - frame[j].y),
+                frame[j + 1].u - frame[j].u) / DEG;
+            if (angle > slopeDeg) break;
+            if (Math.abs(frame[j + 1].y - frame[toe].y) > toleranceY) break;
+            end = j + 1;
+        }
+        return end;
+    }
+
+    /**
+     * Mide los bancos de una polilínea importada o medida (measure v2).
      *
-     * Cara: cada tramo descendente (un tramo por banco). Con umbrales, los
-     * tramos descendentes de pendiente menor o igual que bermSlopeDeg no son
-     * cara. Ancho efectivo: largo horizontal de los tramos contiguos desde la
-     * pata con |pendiente| ≤ bermSlopeDeg y |y − y_pata| ≤ bermToleranceY.
-     * Si falta algún umbral, effectiveWidth y bermEndX valen null.
-     * El ancho nominal es un dato de entrada y no se mide: siempre es null.
+     * Sentido: se decide por la cota de los extremos (umbral 0,5 m). Si el
+     * perfil baja hacia −X se refleja la X, se mide y se des-refleja; los
+     * bancos se numeran siempre desde arriba.
+     * Cara: cadena maximal de tramos con pendiente de bajada mayor que
+     * bermSlopeDeg y caída total de al menos minFaceHeight. Cresta = primer
+     * punto de la cadena; pata = último; el ángulo es el de la cuerda.
+     * Berma efectiva: desde la pata, tramos contiguos con |pendiente| ≤
+     * bermSlopeDeg y |y − y_pata| ≤ bermToleranceY. Un escalón absorbido (no
+     * es cara) queda dentro del ancho nominal, pero corta la berma efectiva.
+     * Ancho nominal: de la pata a la cresta siguiente; null en el último banco.
      *
-     * @param {{x: number, y: number}[]} points
-     * @param {{bermSlopeDeg?: number, bermToleranceY?: number}} [options]
-     * @returns {{ok: true, benchMeta: object[]} | {ok: false, error: string}}
+     * Umbrales ausentes: sin bermSlopeDeg, cualquier tramo descendente es de
+     * cara; sin minFaceHeight no se absorbe ninguna cadena; si falta
+     * bermSlopeDeg o bermToleranceY, effectiveWidth y bermEndX valen null.
+     *
+     * @param {{x: number, y: number}[]} points X estrictamente creciente
+     * @param {{bermSlopeDeg?: number, bermToleranceY?: number,
+     *          minFaceHeight?: number}} [options]
+     * @returns {{ok: true, downhillSign: number, benchMeta: object[],
+     *            thresholds: object, schemaVersion: string}
+     *          | {ok: false, error: string}}
      */
     function measure(points, options) {
         if (!Array.isArray(points)) {
@@ -222,45 +307,59 @@ globalThis.SimRocas = globalThis.SimRocas || {};
         if (!slope.ok) return slope;
         const tolY = readThreshold(options, 'bermToleranceY', 'de cota de berma (bermToleranceY)', Infinity);
         if (!tolY.ok) return tolY;
-        const hasThresholds = slope.value !== null && tolY.value !== null;
+        const minFace = readThreshold(options, 'minFaceHeight', 'de altura mínima de cara (minFaceHeight)', Infinity);
+        if (!minFace.ok) return minFace;
+        const hasBermThresholds = slope.value !== null && tolY.value !== null;
 
-        const angleDeg = (k) => Math.atan2(Math.abs(points[k + 1].y - points[k].y),
-            points[k + 1].x - points[k].x) / DEG;
+        const sign = resolveDownhillSign(points);
+        if (sign === 0) {
+            return fail('El sentido de bajada no resuelto: la diferencia de cota entre los extremos ' +
+                'del perfil es menor que 0,5 m.');
+        }
+        const frame = toDownhillFrame(points, sign);
+        const faces = findFaces(frame, slope.value === null ? 0 : slope.value,
+            minFace.value === null ? 0 : minFace.value);
+        if (faces.length === 0) {
+            return fail('No se encontró ninguna cara de banco en el perfil con los umbrales indicados.');
+        }
 
         const benchMeta = [];
-        for (let k = 0; k < points.length - 1; k++) {
-            const crest = points[k];
-            const toe = points[k + 1];
-            if (!(toe.y < crest.y)) continue;
-            const faceAngle = angleDeg(k);
-            if (hasThresholds && faceAngle <= slope.value) continue;
-
+        for (let i = 0; i < faces.length; i++) {
+            const crest = frame[faces[i].crest];
+            const toe = frame[faces[i].toe];
+            const height = crest.y - toe.y;
             let bermEndX = null;
             let effectiveWidth = null;
-            if (hasThresholds) {
-                bermEndX = toe.x;
-                for (let j = k + 1; j < points.length - 1; j++) {
-                    if (angleDeg(j) > slope.value) break;
-                    if (Math.abs(points[j + 1].y - toe.y) > tolY.value) break;
-                    bermEndX = points[j + 1].x;
-                }
-                effectiveWidth = bermEndX - toe.x;
+            if (hasBermThresholds) {
+                const bermEnd = frame[findBermEnd(frame, faces[i].toe, slope.value, tolY.value)];
+                bermEndX = sign * bermEnd.u;
+                effectiveWidth = bermEnd.u - toe.u;
             }
             benchMeta.push({
-                index: benchMeta.length + 1,
-                crestX: crest.x,
+                index: i + 1,
+                crestX: sign * crest.u,
                 crestY: crest.y,
-                toeX: toe.x,
+                toeX: sign * toe.u,
                 toeY: toe.y,
-                height: crest.y - toe.y,
-                faceAngleDeg: faceAngle,
-                bermStartX: toe.x,
+                height,
+                faceAngleDeg: Math.atan2(height, toe.u - crest.u) / DEG,
+                bermStartX: sign * toe.u,
                 bermEndX,
-                nominalWidth: null,
+                nominalWidth: i < faces.length - 1 ? frame[faces[i + 1].crest].u - toe.u : null,
                 effectiveWidth
             });
         }
-        return { ok: true, benchMeta };
+        return {
+            ok: true,
+            downhillSign: sign,
+            benchMeta,
+            thresholds: {
+                bermSlopeDeg: slope.value,
+                bermToleranceY: tolY.value,
+                minFaceHeight: minFace.value
+            },
+            schemaVersion: MEASURE_SCHEMA_VERSION
+        };
     }
 
     SimRocas.BenchProfile = { generate, measure };

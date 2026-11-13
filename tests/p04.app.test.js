@@ -233,8 +233,8 @@ test('versionado E1.1: suben solo los ?v= del §5 y WORKER_VERSION pasa de 9 a 1
     const now = versions(htmlNow);
     const rendererChanged = head('js/renderer.js') !== fs.readFileSync(path.join(ROOT, 'js/renderer.js'), 'utf8');
     // P1.1: app 19, app-worker 11, terrain 9, app-stl 3, app-profile3d 3 y el script nuevo bench-profile 1.
-    const expected = { ...before, 'js/physics.js': 14, 'js/simulation.js': 13, 'js/app-worker.js': 11, 'js/app.js': 19, 'js/stats.js': 11,
-        'js/terrain.js': 9, 'js/app-stl.js': 3, 'js/app-profile3d.js': 3, 'js/bench-profile.js': 1,
+    const expected = { ...before, 'js/physics.js': 14, 'js/simulation.js': 13, 'js/app-worker.js': 11, 'js/app.js': 20, 'js/stats.js': 12,
+        'js/terrain.js': 9, 'js/app-stl.js': 3, 'js/app-profile3d.js': 3, 'js/bench-profile.js': 2, 'js/bench-retention.js': 1, // P1.2: app 20, stats 12, bench-profile 2 y el script nuevo bench-retention 1
         'js/renderer.js': rendererChanged ? 8 : 7 };
     assert.deepEqual(before['js/physics.js'], 12);
     assert.deepEqual(now, expected);
@@ -251,9 +251,16 @@ test('versionado E1.1: suben solo los ?v= del §5 y WORKER_VERSION pasa de 9 a 1
     // P1.1: además se admiten SOLO el grupo «Generar banco–berma» y el <script> de bench-profile.js.
     const benchBlock = /^ {24}<div class="control-group" id="bench-generator">\n[\s\S]*?id="bench-meta-table"[^\n]*\n {24}<\/div>\n/m;
     assert.match(htmlNow, benchBlock);
-    const benchScript = '    <script src="js/bench-profile.js?v=1"></script>\n';
+    const benchScript = '    <script src="js/bench-profile.js?v=2"></script>\n'; // P1.2: 1→2
     assert.equal(htmlNow.split(benchScript).length, 2);
-    assert.equal(strip(htmlNow.replace(block, '').replace(seedBlock, '').replace(benchBlock, '').replace(benchScript, '').replace(labelNow, labelBase)), strip(head('index.html')));
+    // P1.2: además se admiten SOLO el grupo «Medir bancos», el bloque «Retención por banco», el botón de destinos y el <script> de bench-retention.js.
+    const measureBlock = /^ {24}<div class="control-group" id="bench-measure">\n[\s\S]*?id="btn-bench-measure"[^\n]*\n {24}<\/div>\n/m;
+    const retentionBlock = /^ {12}<div id="bench-retention-block" style="display:none;">\n[^\n]*id="bench-retention-title"[^\n]*\n[^\n]*id="bench-retention-table"[^\n]*\n {12}<\/div>\n/m;
+    const destinationsButton = /^ {32}<button id="btn-export-destinations"[^\n]*>Exportar destinos \(CSV\)<\/button>\n/m;
+    const retentionScript = '    <script src="js/bench-retention.js?v=1"></script>\n';
+    for (const admitted of [measureBlock, retentionBlock, destinationsButton]) assert.match(htmlNow, admitted);
+    assert.equal(htmlNow.split(retentionScript).length, 2);
+    assert.equal(strip(htmlNow.replace(block, '').replace(seedBlock, '').replace(benchBlock, '').replace(benchScript, '').replace(measureBlock, '').replace(retentionBlock, '').replace(destinationsButton, '').replace(retentionScript, '').replace(labelNow, labelBase)), strip(head('index.html')));
     const workerVersion = source => Number(/const WORKER_VERSION = (\d+);/.exec(source)[1]);
     assert.equal(workerVersion(head('js/app-worker.js')), 9);
     assert.equal(workerVersion(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8')), 12); // P1.1

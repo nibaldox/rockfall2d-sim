@@ -31,6 +31,108 @@ function csvQuote(value) {
     return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
+// P1.2: sección condicional «Retención por banco» y CSV de destinos (CONTRATO_P12 §4, §5 y §7).
+const BENCH_TITLE = 'RETENCIÓN POR BANCO';
+const BENCH_SOURCES = { generado: 'generada', medido: 'medida' };
+const BENCH_THRESHOLDS = ['bermSlopeDeg', 'bermToleranceY', 'minFaceHeight'];
+const BENCH_CENSORED = ['culled', 'maxTime', 'maxSteps'];
+// I10: la columna «Límite» del CSV de destinos usa rótulos en español.
+const BOUNDARY_NAMES = { minX: 'izquierdo', maxX: 'derecho', minY: 'inferior' };
+const DESTINATIONS_HEADER = ['Roca', 'Raíz', 'Padre', 'Tipo de pieza', 'Fuente', 'X liberación', 'Y liberación',
+    'X final', 'Y final', 'Motivo', 'Límite', 'Zona', 'Banco', 'Masa (kg)'];
+
+/**
+ * Sanea y valida `runInfo.benchGeometry`: copia campo por campo, sin referencias a la entrada.
+ *
+ * @param {*} raw - valor recibido en `runInfo.benchGeometry`
+ * @returns {{geometry: Object}|{error: string}} copia saneada o el motivo del rechazo
+ */
+function sanitizeBenchGeometry(raw) {
+    try {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'no es un objeto' };
+        if (!Object.hasOwn(BENCH_SOURCES, raw.source)) return { error: 'origen desconocido' };
+        if (typeof raw.schemaVersion !== 'string' || raw.schemaVersion === '') return { error: 'falta la versión del esquema' };
+        const s = raw.downhillSign;
+        if (s !== 1 && s !== -1) return { error: 'sentido de bajada no resuelto' };
+        if (!Array.isArray(raw.benchMeta) || raw.benchMeta.length === 0) return { error: 'no hay bancos' };
+        const benchMeta = [];
+        for (const item of raw.benchMeta) {
+            if (!item || typeof item !== 'object' || !Number.isFinite(item.crestX) || !Number.isFinite(item.toeX)) {
+                return { error: 'cresta o pata no finitas' };
+            }
+            const copy = {};
+            for (const [key, value] of Object.entries(item)) {
+                if (value === null || typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value)) copy[key] = value;
+            }
+            const previous = benchMeta[benchMeta.length - 1];
+            if (!(s * copy.crestX < s * copy.toeX) || (previous && !(s * previous.toeX <= s * copy.crestX))) {
+                return { error: 'crestas y patas desordenadas en el sentido de bajada' };
+            }
+            benchMeta.push(copy);
+        }
+        let thresholds = null;
+        if (raw.thresholds !== null && raw.thresholds !== undefined) {
+            const t = raw.thresholds;
+            if (typeof t !== 'object' || !BENCH_THRESHOLDS.every(key => Number.isFinite(t[key]))) return { error: 'umbrales de medición inválidos' };
+            thresholds = Object.fromEntries(BENCH_THRESHOLDS.map(key => [key, t[key]]));
+        }
+        if (!Number.isFinite(raw.profileMinX) || !Number.isFinite(raw.profileMaxX) || !(raw.profileMinX < raw.profileMaxX)) {
+            return { error: 'extremos del perfil inválidos' };
+        }
+        if (typeof raw.pointsKey !== 'string' || raw.pointsKey === '') return { error: 'falta la clave del perfil' };
+        return { geometry: { source: raw.source, schemaVersion: raw.schemaVersion, downhillSign: s, benchMeta, thresholds,
+            profileMinX: raw.profileMinX, profileMaxX: raw.profileMaxX, pointsKey: raw.pointsKey } };
+    } catch (error) {
+        return { error: 'no se pudo leer' };
+    }
+}
+
+// Filas de 2 elementos de la sección «Retención por banco» (nunca 14 ni 15).
+function benchRetentionRows(b) {
+    const d = b.denominators || {}, c = b.censored || {}, by = c.byReason || {}, closure = b.closure || {};
+    const pct = (n, total) => Number.isFinite(n) && total > 0 ? `${(100 * n / total).toFixed(2)} %` : 'No disponible';
+    const meta = b.geometry.benchMeta, s = b.geometry.downhillSign;
+    const rows = [[`${BENCH_TITLE} (geometría: ${BENCH_SOURCES[b.source]})`,
+        `esquema ${b.schemaVersion}; zona de detención de cada hoja en reposo; primarias por su pieza representante`]];
+    const zoneRow = (label, z, note = '') => rows.push([`Retención: ${label}`,
+        `primarias ${z.primaries} (${pct(z.primaries, d.released)} de ${d.released} lanzadas; ${pct(z.primaries, d.known)} de ${d.known} con destino conocido); ` +
+        `piezas ${z.pieces} (${pct(z.pieces, d.releasedPieces)} de ${d.releasedPieces}; ${pct(z.pieces, d.knownPieces)} de ${d.knownPieces} con destino conocido); ` +
+        `masa ${z.mass} kg${note}`]);
+    const total = { primaries: 0, pieces: 0 };
+    for (const z of b.zones) {
+        const i = typeof z.key === 'string' && z.key.startsWith('berm:') ? Number(z.key.slice(5)) : null;
+        const noBerm = i !== null && meta[i - 1] && meta[i] && !(s * meta[i - 1].toeX < s * meta[i].crestX);
+        zoneRow(z.label, z, noBerm ? '; sin berma' : '');
+        total.primaries += z.primaries;
+        total.pieces += z.pieces;
+    }
+    for (let i = 1; i <= meta.length; i++) {
+        const parts = b.zones.filter(z => z.key === `face:${i}` || z.key === `berm:${i}`);
+        if (!parts.length) continue;
+        const sum = key => parts.reduce((acc, z) => acc + z[key], 0);
+        zoneRow(`retenida en banco ${i} (${i < meta.length ? 'cara + berma' : 'solo cara'})`,
+            { primaries: sum('primaries'), pieces: sum('pieces'), mass: sum('mass') });
+    }
+    const boundary = c.cullBoundary || {};
+    for (const reason of BENCH_CENSORED) {
+        const count = by[reason] && typeof by[reason] === 'object' ? `primarias ${by[reason].primaries}; piezas ${by[reason].pieces}; masa ${by[reason].mass} kg` : by[reason];
+        rows.push([`Retención: censuradas por ${REASON_NAMES[reason]} (N)`, reason === 'culled' ?
+            `${count}; piezas por límite: ${Object.entries(boundary).map(([key, n]) => `${BOUNDARY_NAMES[key] ?? key} ${n && typeof n === 'object' ? n.pieces : n}`).join(', ')}` : count]);
+    }
+    rows.push(['Retención: censuradas en total (sin zona)', `primarias ${c.primaries}; piezas ${c.pieces}; masa ${c.mass} kg`]);
+    rows.push(['Retención: masa descartada sin simular', `${b.discardedMass} kg (sin zona)`]);
+    const check = (zones, censored, n, ok) => `${zones} + ${censored} = ${n} (${zones + censored === n && ok !== false ? 'cumple' : 'NO cumple'})`;
+    rows.push(['Retención: cierre Σ zonas + censuradas = N',
+        `primarias ${check(total.primaries, c.primaries, d.released, closure.primariesOk)}; ` +
+        `piezas ${check(total.pieces, c.pieces, d.releasedPieces, closure.piecesOk)}; ` +
+        `masa en zonas + censurada + descartada = liberada (${closure.massOk === true ? 'cumple' : 'NO cumple'}; residuo ${closure.massResidual} kg)`]);
+    rows.push(['Retención: definición de las zonas', 'se clasifica la X final de cada hoja en reposo, en el sentido de bajada; ' +
+        'la cresta pertenece a la cara y la pata a la berma (intervalos semiabiertos); retenida en banco i = cara i + berma i, ' +
+        'y en el último banco solo la cara; el piso, la plataforma superior, aguas arriba de la fuente y fuera del perfil van aparte; ' +
+        'las censuradas nunca cuentan en una zona']);
+    return rows;
+}
+
 class Stats {
     constructor() {
         this.results = null;
@@ -131,7 +233,15 @@ class Stats {
             reachBounds: null, impactEnergies: []
         };
         this.results = result;
-        if (blockedReason) return result;
+        // P1.2 (I-A): sin `benchGeometry` no se agrega ninguna clave enumerable.
+        const rawBench = readField('benchGeometry');
+        const bench = rawBench === null || rawBench === undefined ? null : sanitizeBenchGeometry(rawBench);
+        if (bench && bench.geometry) result.runInfo.benchGeometry = bench.geometry;
+        if (blockedReason) {
+            if (bench) result.benchRetentionUnavailable = bench.geometry ? 'corrida no publicable' : `geometría de bancos inválida (${bench.error})`;
+            return result;
+        }
+        this.attachDestinations(result, entities, input, tree, bench);
         if (tree) {
             result.lineage = tree.lineage;
             if (!directionResolved) result.lineage.finalRunout = null;
@@ -256,6 +366,68 @@ class Stats {
                 message: `Se descartaron valores no finitos de las métricas (${Object.entries(counts).map(([key, count]) => `${NON_FINITE_NAMES[key]}: ${count}`).join('; ')}); revise la corrida.` });
         }
         return result;
+    }
+
+    /**
+     * P1.2: destinos por hoja (propiedad no enumerable) y, con geometría válida, `benchRetention`.
+     *
+     * @param {Object} result - resultado publicable en construcción
+     * @param {Array} entities - todas las entidades de la corrida
+     * @param {Array} input - población principal (filas envolventes o rocas)
+     * @param {Object|null} tree - linaje validado, si hubo fragmentación
+     * @param {Object|null} bench - salida de `sanitizeBenchGeometry`, o null sin geometría
+     */
+    attachDestinations(result, entities, input, tree, bench) {
+        const number = value => Number.isFinite(value) ? value : null;
+        const rootOf = r => Number.isInteger(r.rootId) && r.rootId >= 0 ? r.rootId : r.id;
+        const leaves = entities.filter(r => r.stopReason !== 'fragmented');
+        let summary = null, unavailable = null;
+        if (bench && !bench.geometry) {
+            unavailable = `geometría de bancos inválida (${bench.error})`;
+        } else if (bench) {
+            const classifier = typeof SimRocas !== 'undefined' && SimRocas ? SimRocas.BenchRetention : null;
+            if (!classifier || typeof classifier.summarize !== 'function') {
+                unavailable = 'el clasificador de retención no está cargado';
+            } else {
+                try {
+                    summary = classifier.summarize({
+                        primaries: input.map(r => ({ id: r.id, finalX: r.finalX, stopReason: r.stopReason, cullBoundary: r.cullBoundary, releaseX: r.releaseX })),
+                        leaves: leaves.map(r => ({ id: r.id, rootId: rootOf(r), finalX: r.finalX, stopReason: r.stopReason,
+                            cullBoundary: r.cullBoundary, releaseX: r.releaseX, mass: number(r.mass) })),
+                        discardedMass: tree ? tree.lineage.mass.discarded : 0,
+                        releasedMass: tree ? tree.lineage.mass.original : leaves.reduce((sum, r) => sum + (Number.isFinite(r.mass) ? r.mass : 0), 0),
+                        geometry: bench.geometry
+                    });
+                } catch (error) {
+                    summary = null;
+                }
+                if (!summary || summary.ok !== true || !Array.isArray(summary.zones)) {
+                    unavailable = summary && typeof summary.reason === 'string' && summary.reason !== '' ? summary.reason : 'el clasificador de retención falló';
+                    summary = null;
+                }
+            }
+        }
+        if (unavailable) result.benchRetentionUnavailable = unavailable;
+        const perLeaf = summary ? summary.perLeaf : null;
+        const zoneOf = id => !perLeaf ? null : (perLeaf instanceof Map || typeof perLeaf.get === 'function' ? perLeaf.get(id) : perLeaf[id]) || null;
+        const labels = summary ? Object.fromEntries(summary.zones.map(z => [z.key, z.label])) : {};
+        if (summary) {
+            result.benchRetention = { schemaVersion: 'bench-retention.v1', source: bench.geometry.source, geometry: bench.geometry,
+                zones: summary.zones.map(z => ({ key: z.key, label: z.label, bench: z.bench ?? null, primaries: z.primaries, pieces: z.pieces, mass: z.mass })),
+                censored: summary.censored, denominators: summary.denominators, discardedMass: summary.discardedMass, closure: summary.closure };
+        }
+        const fragmented = tree !== null;
+        const destinations = leaves.map(r => {
+            const zone = zoneOf(r.id);
+            return { id: r.id, rootId: rootOf(r), parentId: Number.isInteger(r.parentId) ? r.parentId : null,
+                fragmentKind: Object.hasOwn(KIND_NAMES, r.fragmentKind) ? r.fragmentKind : (fragmented ? null : 'primary'),
+                sourceIndex: r.sourceIndex, releaseX: r.releaseX, releaseY: r.releaseY, finalX: r.finalX, finalY: r.finalY,
+                stopReason: r.stopReason, cullBoundary: r.cullBoundary,
+                zone: zone ? zone.zone : null, zoneLabel: zone ? (labels[zone.zone] ?? zone.zone) : null,
+                bench: zone ? (zone.bench ?? null) : null, mass: number(r.mass) };
+        });
+        // No enumerable: no altera las claves ni el JSON de `results` (I-A).
+        Object.defineProperty(result, 'destinations', { value: destinations, enumerable: false, writable: true, configurable: true });
     }
 
     /**
@@ -579,6 +751,9 @@ class Stats {
                 rows.push([`Valores no finitos descartados: ${NON_FINITE_NAMES[key] ?? key} (N)`, count]);
             }
         }
+        // P1.2: sección condicional, siempre al final; sin geometría no agrega filas (I-A).
+        if (r.benchRetention) rows.push(...benchRetentionRows(r.benchRetention));
+        else if (typeof r.benchRetentionUnavailable === 'string') rows.push([BENCH_TITLE, `No disponible: ${r.benchRetentionUnavailable}`]);
         return rows;
     }
 
@@ -597,6 +772,22 @@ class Stats {
                 SURFACE_NAMES[event.surface] ?? null, event.index, event.vn, event.speed, event.contactSpeed,
                 Number.isFinite(event.energy) ? event.energy / 1000 : null, event.cnEff, event.ctEff, event.flightHeightBefore,
                 event.rootId, KIND_NAMES[event.fragmentKind] ?? null]);
+        }
+        return rows.map(row => row.map(csvQuote).join(',')).join('\n') + '\n';
+    }
+
+    /**
+     * CSV de destinos: una fila por hoja (pieza final), con su origen, motivo y zona.
+     *
+     * @returns {string|null} null si no hay resultados o la corrida no es publicable
+     */
+    generateDestinationsCSV() {
+        const r = this.results;
+        if (!r || r.blockedReason || !Array.isArray(r.destinations)) return null;
+        const rows = [DESTINATIONS_HEADER];
+        for (const d of r.destinations) {
+            rows.push([d.id, d.rootId, d.parentId, KIND_NAMES[d.fragmentKind] ?? null, d.sourceIndex, d.releaseX, d.releaseY,
+                d.finalX, d.finalY, REASON_NAMES[d.stopReason] ?? d.stopReason, BOUNDARY_NAMES[d.cullBoundary] ?? d.cullBoundary, d.zoneLabel, d.bench, d.mass]);
         }
         return rows.map(row => row.map(csvQuote).join(',')).join('\n') + '\n';
     }
