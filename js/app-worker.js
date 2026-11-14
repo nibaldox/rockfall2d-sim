@@ -5,7 +5,7 @@
 
 // Cache-busting del worker: al cambiar el protocolo o los scripts cargados
 // por js/worker.js, subir este número y el ?v= de los <script> de index.html.
-const WORKER_VERSION = 12;
+const WORKER_VERSION = 13;
 
 Object.assign(SimRocas.App.prototype, {
     runSimulationWithWorker(diameter, density, initVel, angle, shapeType, aspectRatio, params, multiPoints) {
@@ -111,14 +111,21 @@ Object.assign(SimRocas.App.prototype, {
             this.render();
         };
 
-        this._worker.postMessage({
+        const message = {
             type: 'start',
             terrainJSON: this.terrain.toJSON(),
             simParams: params,
             physicsParams,
             barriers: (this.barriers || []).map(b => ({ ...b })),
             startArgs
-        });
+        };
+        // P1.3: los colectores congelados de esta corrida viajan al nivel de
+        // barriers, campo por campo. Sin colectores el mensaje no cambia (I-A).
+        const runInfo = this._runInfo && this._runInfo.epoch === runEpoch ? this._runInfo : null;
+        if (runInfo && Array.isArray(runInfo.collectors) && runInfo.collectors.length > 0) {
+            message.collectors = runInfo.collectors.map(c => ({ id: c.id, x: c.x, label: c.label }));
+        }
+        this._worker.postMessage(message);
     },
 
     // Vértigos de mundo de un Rock (misma fórmula que js/physics.js) para las

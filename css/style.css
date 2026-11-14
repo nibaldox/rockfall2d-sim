@@ -1436,3 +1436,34 @@ body:not(.mode-3d) .tab[data-tab="sim3d"] {
 #bench-retention-table td:first-child {
     text-align: left;
 }
+
+/* P1.3: tabla «Envolventes por colector» y lista de colectores */
+#collector-envelopes-title {
+    color: var(--text-secondary);
+    margin: 8px 0;
+}
+
+#collector-envelopes-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 8px;
+}
+
+#collector-envelopes-table th,
+#collector-envelopes-table td {
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    text-align: right;
+}
+
+#collector-envelopes-table th:first-child,
+#collector-envelopes-table td:first-child,
+#collector-envelopes-table td[colspan] {
+    text-align: left;
+}
+
+#collector-envelopes-table .collector-head td {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    font-weight: bold;
+}

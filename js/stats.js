@@ -133,6 +133,69 @@ function benchRetentionRows(b) {
     return rows;
 }
 
+// P1.3: envolventes por colector y CSV de cruces (CONTRATO_P13 §4); todo condicional a `runInfo.collectors`.
+const COLLECTORS_TITLE = 'COLECTORES';
+const COLLECTOR_ENVELOPES = { height: 'altura del centro (m)', top: 'altura del tope (m)', speed: 'velocidad (m/s)', energy: 'energía total (kJ)' };
+// Mínimo n ≥ 1/(1 − p): por debajo se publica «insuficiente», nunca un número (I-D).
+const COLLECTOR_MIN_N = { p95: 20, p99: 100 };
+const COLLECTOR_SAMPLES = { 'first-downhill-per-piece': 'primer cruce de bajada de cada pieza',
+    'first-any-per-piece': 'primer cruce en cualquier sentido de cada pieza, porque el sentido de bajada no está resuelto' };
+const CROSSINGS_HEADER = ['Colector', 'X colector', 'Roca', 'Raíz', 'Tipo de pieza', 'Ordinal', 'Sentido', 'Por corrección',
+    't (s)', 'Y (m)', 'Altura centro (m)', 'Altura tope (m)', 'Vx', 'Vy', 'Velocidad (m/s)', 'Omega (rad/s)',
+    'E traslación (kJ)', 'E rotación (kJ)', 'E total (kJ)', 'Masa (kg)'];
+
+/**
+ * Sanea `runInfo.collectors`: copia `id`, `x` y `label`, y descarta entradas inválidas o con `id` repetido.
+ *
+ * @param {*} raw - valor recibido en `runInfo.collectors`
+ * @returns {Array<{id: string|number, x: number, label: string}>} lista saneada (vacía si no hay ninguno válido)
+ */
+function sanitizeStatsCollectors(raw) {
+    const list = [];
+    try {
+        if (!Array.isArray(raw)) return list;
+        for (let i = 0; i < raw.length; i++) {
+            try {
+                const item = raw[i];
+                if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+                const id = item.id, x = item.x, label = item.label;
+                if (!((typeof id === 'string' && id !== '') || Number.isFinite(id)) || !Number.isFinite(x)) continue;
+                if (list.some(c => c.id === id)) continue;
+                list.push({ id, x, label: typeof label === 'string' && label !== '' ? label : `Colector ${id}` });
+            } catch (error) {
+                continue;
+            }
+        }
+    } catch (error) {
+        return [];
+    }
+    return list;
+}
+
+// Filas de 2 elementos de la sección «COLECTORES» (nunca 14 ni 15).
+function collectorRows(collectors) {
+    const rows = [[COLLECTORS_TITLE, 'envolventes P50, P95 y P99 en cada línea vertical x = X; una muestra por pieza']];
+    for (const c of collectors) {
+        const name = `${c.label.startsWith('Colector') ? c.label : `Colector ${c.label}`} (X = ${c.x} m)`;
+        const k = c.counts, w = k.censoredWithoutCrossing;
+        rows.push([`${name}: muestra`, `${COLLECTOR_SAMPLES[c.sample]}; n = ${c.n}`]);
+        for (const [key, label] of Object.entries(COLLECTOR_ENVELOPES)) {
+            const e = c.envelopes[key];
+            const show = p => e[p] === null ? `insuficiente (n = ${e.n})` : e[p];
+            rows.push([`${name}: ${label}`, `P50 = ${show('p50')}; P95 = ${show('p95')}; P99 = ${show('p99')}; n = ${e.n}`]);
+        }
+        const censored = w.culled + w.maxTime + w.maxSteps;
+        rows.push([`${name}: conteos`, `cruces ${k.crossingsTotal}; piezas con cruce ${k.piecesCrossing}; ` +
+            `raíces que cruzan ${k.rootsCrossing} de ${k.released} lanzadas${censored ? ' (cota inferior, por las censuradas)' : ''}; ` +
+            `en reposo sin cruzar ${k.restBeforeLine}; ` +
+            `censuradas sin cruce: ${BENCH_CENSORED.map(reason => `${REASON_NAMES[reason]} ${w[reason]}`).join(', ')}; ` +
+            `cruces por corrección de posición ${k.byCorrection}; cruces de subida ${k.upward === null ? 'No disponible' : k.upward}; ` +
+            `cruces omitidos por el tope por roca (total de la corrida) ${k.dropped}`]);
+        rows.push([`${name}: definición`, c.definition]);
+    }
+    return rows;
+}
+
 class Stats {
     constructor() {
         this.results = null;
@@ -237,6 +300,8 @@ class Stats {
         const rawBench = readField('benchGeometry');
         const bench = rawBench === null || rawBench === undefined ? null : sanitizeBenchGeometry(rawBench);
         if (bench && bench.geometry) result.runInfo.benchGeometry = bench.geometry;
+        // P1.3 (I-A, I-F): sin colectores válidos no se agrega nada.
+        const collectors = sanitizeStatsCollectors(readField('collectors'));
         if (blockedReason) {
             if (bench) result.benchRetentionUnavailable = bench.geometry ? 'corrida no publicable' : `geometría de bancos inválida (${bench.error})`;
             return result;
@@ -365,7 +430,90 @@ class Stats {
             warnings.push({ code: 'metricasNoFinitas', counts,
                 message: `Se descartaron valores no finitos de las métricas (${Object.entries(counts).map(([key, count]) => `${NON_FINITE_NAMES[key]}: ${count}`).join('; ')}); revise la corrida.` });
         }
+        if (collectors.length) this.attachCollectors(result, entities, input, tree, collectors);
         return result;
+    }
+
+    /**
+     * P1.3: `results.collectors` (envolventes y conteos por colector) y las filas del CSV de cruces
+     * (propiedad no enumerable). La muestra es el primer cruce de bajada de cada pieza, incluidos
+     * los padres fragmentados; si algún sentido no está resuelto, el primero en cualquier sentido.
+     *
+     * @param {Object} result - resultado publicable en construcción
+     * @param {Array} entities - todas las entidades de la corrida, con `crossings` según CONTRATO_P13 §3
+     * @param {Array} input - población principal (filas envolventes o rocas)
+     * @param {Object|null} tree - linaje validado, si hubo fragmentación
+     * @param {Array} collectors - salida no vacía de `sanitizeStatsCollectors`
+     */
+    attachCollectors(result, entities, input, tree, collectors) {
+        const resolved = entities.every(r => r.downhillSign === 1 || r.downhillSign === -1);
+        const sample = resolved ? 'first-downhill-per-piece' : 'first-any-per-piece';
+        const crossingsOf = r => {
+            try {
+                return Array.isArray(r.crossings) ? r.crossings.filter(k => k && typeof k === 'object' && !Array.isArray(k)) : [];
+            } catch (error) {
+                return [];
+            }
+        };
+        const lists = entities.map(crossingsOf);
+        // Clave de raíz: con linaje, el `id` de la primaria; sin linaje, la posición de la roca.
+        const rootKey = (r, position) => tree ? r.rootId : position;
+        const dropped = entities.reduce((sum, r) => sum + (Number.isInteger(r.crossingsDropped) && r.crossingsDropped > 0 ? r.crossingsDropped : 0), 0);
+        const envelope = values => {
+            const sorted = values.filter(Number.isFinite).sort((a, b) => a - b), n = sorted.length;
+            const insufficient = { p95: n < COLLECTOR_MIN_N.p95, p99: n < COLLECTOR_MIN_N.p99 };
+            return { p50: this.percentile(sorted, 50), p95: insufficient.p95 ? null : this.percentile(sorted, 95),
+                p99: insufficient.p99 ? null : this.percentile(sorted, 99), n, insufficient };
+        };
+        const definition = 'Percentil tipo 7 de Hyndman–Fan (interpolación lineal en el índice p·(n − 1)) sobre el ' +
+            `${COLLECTOR_SAMPLES[sample]}; P95 exige n ≥ ${COLLECTOR_MIN_N.p95} y P99 exige n ≥ ${COLLECTOR_MIN_N.p99}; ` +
+            'la altura del centro es Y del centro menos el terreno en la línea y la del tope le suma el radio; ' +
+            'la energía es traslación más rotación; los conteos de raíces son sobre las rocas lanzadas';
+        result.collectors = collectors.map(c => {
+            const picked = [], roots = new Set();
+            const counts = { crossingsTotal: 0, piecesCrossing: 0, rootsCrossing: 0, released: input.length, restBeforeLine: 0,
+                censoredWithoutCrossing: { culled: 0, maxTime: 0, maxSteps: 0 }, byCorrection: 0, upward: resolved ? 0 : null, dropped };
+            entities.forEach((r, position) => {
+                const own = lists[position].filter(k => k.collector === c.id);
+                if (!own.length) return;
+                counts.crossingsTotal += own.length;
+                counts.piecesCrossing++;
+                counts.byCorrection += own.filter(k => k.byCorrection === true).length;
+                if (resolved) counts.upward += own.filter(k => k.direction === -r.downhillSign).length;
+                const first = resolved ? own.find(k => k.direction === r.downhillSign) : own[0];
+                if (!first) return;
+                picked.push(first);
+                roots.add(rootKey(r, position));
+            });
+            counts.rootsCrossing = roots.size;
+            input.forEach((r, position) => {
+                if (roots.has(tree ? r.id : position)) return;
+                if (r.stopReason === 'rest') counts.restBeforeLine++;
+                else if (Object.hasOwn(counts.censoredWithoutCrossing, r.stopReason)) counts.censoredWithoutCrossing[r.stopReason]++;
+            });
+            return { id: c.id, label: c.label, x: c.x, sample, n: picked.length,
+                envelopes: { height: envelope(picked.map(k => k.height)), top: envelope(picked.map(k => k.top)),
+                    speed: envelope(picked.map(k => k.speed)), energy: envelope(picked.map(k => Number.isFinite(k.energy) ? k.energy / 1000 : null)) },
+                counts, definition };
+        });
+        const kJ = value => Number.isFinite(value) ? value / 1000 : null;
+        const rows = [];
+        entities.forEach((r, position) => {
+            const rockId = Number.isInteger(r.id) && r.id >= 0 ? r.id : position;
+            const kind = Object.hasOwn(KIND_NAMES, r.fragmentKind) ? r.fragmentKind : (tree ? null : 'primary');
+            const s = r.downhillSign === 1 || r.downhillSign === -1 ? r.downhillSign : null;
+            for (const k of lists[position]) {
+                const c = collectors.find(item => item.id === k.collector);
+                if (!c) continue;
+                const direction = k.direction === 1 || k.direction === -1 ? k.direction : null;
+                rows.push([c.id, c.x, rockId, Number.isInteger(r.rootId) && r.rootId >= 0 ? r.rootId : rockId, KIND_NAMES[kind] ?? null,
+                    k.ordinal, direction === null ? null : s === null ? (direction === 1 ? '+X' : '-X') : (direction === s ? 'bajada' : 'subida'),
+                    k.byCorrection === true ? 'Sí' : 'No', k.t, k.y, k.height, k.top, k.vx, k.vy, k.speed, k.omega,
+                    kJ(k.energyTrans), kJ(k.energyRot), kJ(k.energy), k.mass]);
+            }
+        });
+        // No enumerable: no altera las claves ni el JSON de `results`.
+        Object.defineProperty(result, 'crossingRows', { value: rows, enumerable: false, writable: true, configurable: true });
     }
 
     /**
@@ -754,6 +902,8 @@ class Stats {
         // P1.2: sección condicional, siempre al final; sin geometría no agrega filas (I-A).
         if (r.benchRetention) rows.push(...benchRetentionRows(r.benchRetention));
         else if (typeof r.benchRetentionUnavailable === 'string') rows.push([BENCH_TITLE, `No disponible: ${r.benchRetentionUnavailable}`]);
+        // P1.3: sección condicional, después de la de retención; sin colectores no agrega filas (I-A).
+        if (Array.isArray(r.collectors) && r.collectors.length) rows.push(...collectorRows(r.collectors));
         return rows;
     }
 
@@ -790,6 +940,17 @@ class Stats {
                 d.finalX, d.finalY, REASON_NAMES[d.stopReason] ?? d.stopReason, BOUNDARY_NAMES[d.cullBoundary] ?? d.cullBoundary, d.zoneLabel, d.bench, d.mass]);
         }
         return rows.map(row => row.map(csvQuote).join(',')).join('\n') + '\n';
+    }
+
+    /**
+     * CSV de cruces: una fila por cruce registrado en un colector de la corrida.
+     *
+     * @returns {string|null} null si no hay resultados, no hay colectores o la corrida no es publicable
+     */
+    generateCrossingsCSV() {
+        const r = this.results;
+        if (!r || r.blockedReason || !Array.isArray(r.collectors) || !r.collectors.length || !Array.isArray(r.crossingRows)) return null;
+        return [CROSSINGS_HEADER, ...r.crossingRows].map(row => row.map(csvQuote).join(',')).join('\n') + '\n';
     }
 
     generateReport() {

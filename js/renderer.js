@@ -10,6 +10,7 @@ class Renderer {
         this.releaseMode = 'freefall';
         this.multiReleasePoints = null;
         this.barriers = [];
+        this.collectors = [];
         this._cssVars = {};
         this._getCssVar = (name, defaultValue = '') => {
             if (!(name in this._cssVars)) {
@@ -492,6 +493,34 @@ class Renderer {
         ctx.fillText(`(${point.x.toFixed(1)}, ${point.y.toFixed(1)})`, cx + 12, cy + 8);
     }
 
+    // P1.3: cada colector es una línea vertical punteada x = xc con su rótulo.
+    drawCollectors(collectors) {
+        if (!collectors || collectors.length === 0) return;
+        const ctx = this.ctx;
+        const scale = this.terrain.scale;
+        const offsetX = this.terrain.offsetX;
+        const canvasH = this.canvas.height;
+
+        for (let i = 0; i < collectors.length; i++) {
+            const c = collectors[i];
+            if (!c || !Number.isFinite(c.x)) continue;
+            const cx = c.x * scale + offsetX;
+
+            ctx.beginPath();
+            ctx.setLineDash([6, 4]);
+            ctx.moveTo(cx, 0);
+            ctx.lineTo(cx, canvasH);
+            ctx.strokeStyle = '#f1c40f';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = '#f1c40f';
+            ctx.font = 'bold 9px sans-serif';
+            ctx.fillText(String(c.label), cx + 4, 12 + (i % 3) * 11);
+        }
+    }
+
     drawBarriers(barriers) {
         if (!barriers || barriers.length === 0) return;
         const ctx = this.ctx;
@@ -679,6 +708,7 @@ class Renderer {
         }
 
         this.drawBarriers(this.barriers);
+        this.drawCollectors(this.collectors);
 
         // Draw probability map after simulation
         if (this.showProbabilityMap) {

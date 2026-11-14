@@ -8,6 +8,30 @@ function effectiveNumber(value, fallback, allowZero, requireInteger) {
     return value;
 }
 
+// P1.3: valida y copia la lista de colectores pasivos `[{ id, x, label }]`.
+// `undefined` o `null` equivalen a la lista vacía. Lanza un Error en español
+// si la lista no es válida; no sortea.
+function sanitizeCollectors(collectors) {
+    if (collectors === undefined || collectors === null) return [];
+    if (!Array.isArray(collectors)) throw new Error('Colectores inválidos: se esperaba una lista.');
+    const seen = new Set();
+    return collectors.map((collector, index) => {
+        if (!collector || typeof collector !== 'object') {
+            throw new Error(`Colector ${index + 1} inválido: se esperaba un objeto con id y x.`);
+        }
+        const { id, x, label } = collector;
+        const validId = (typeof id === 'string' && id.length > 0) || (typeof id === 'number' && Number.isFinite(id));
+        if (!validId) throw new Error(`Colector ${index + 1} inválido: el id debe ser un texto no vacío o un número finito.`);
+        if (typeof x !== 'number' || !Number.isFinite(x)) {
+            throw new Error(`Colector ${index + 1} inválido: la X debe ser un número finito.`);
+        }
+        const key = `${typeof id}:${id}`;
+        if (seen.has(key)) throw new Error(`Colector ${index + 1} inválido: el id «${id}» está repetido.`);
+        seen.add(key);
+        return { id, x, label: label === undefined || label === null ? '' : String(label) };
+    });
+}
+
 class Simulation {
     constructor(terrain, physics) {
         this.terrain = terrain;
@@ -34,6 +58,8 @@ class Simulation {
         this.maxFrames = 5000; // Hard cap to prevent OOM
         // Barriers (line segments for containment structures)
         this.barriers = [];
+        // P1.3: colectores pasivos (líneas verticales x = xc), ya saneados.
+        this.collectors = [];
         // P0.5: semilla opcional de la corrida y su generador (null = Math.random).
         this.seed = undefined;
         this._rng = null;
@@ -63,7 +89,10 @@ class Simulation {
         // inválida lanza antes de cambiar la configuración; `undefined` deja
         // la corrida con `Math.random`.
         if (params.seed !== undefined) globalThis.SimRocas.createRng(params.seed);
+        // P1.3: una lista de colectores inválida también lanza antes de cambiar nada.
+        const collectors = sanitizeCollectors(params.collectors);
         this.seed = params.seed;
+        this.collectors = collectors;
         this.totalRocks = effectiveNumber(params.numRocks, 100, false, true);
         this.animationSpeed = effectiveNumber(params.animationSpeed, 50, false, false);
         this.physics.gravity = effectiveNumber(params.gravity, 9.81, false, false);
@@ -83,6 +112,14 @@ class Simulation {
         this.physics.fragmentationEnabled = typeof params.fragmentationEnabled === 'boolean' ? params.fragmentationEnabled : true;
         this.physics.fractureEnergy = effectiveNumber(params.fractureEnergy, 25000, false, false);
         this.physics.fractureDissipation = effectiveNumber(params.fractureDissipation, 0.4, true, false);
+    }
+
+    /**
+     * P1.3: reemplaza los colectores (misma validación que `configure`).
+     * @param {Array<{id, x, label}>} collectors
+     */
+    setCollectors(collectors) {
+        this.collectors = sanitizeCollectors(collectors);
     }
 
     start(releaseX, releaseY, diameter, density, initialVelocity, angle, maxDuration, ignoreResting, shapeType, aspectRatio, releaseMode, multiReleasePoints) {
@@ -163,6 +200,7 @@ class Simulation {
                 rock.stepsTaken = 0;
                 rock.elapsedTime = 0;
                 rock.ignoreResting = this.ignoreResting;
+                this._initCrossings(rock);
                 this.rocks.push(rock);
             }
             rocksCreated += count;
@@ -170,6 +208,14 @@ class Simulation {
 
         this.activeRocks = [...this.rocks];
         this.recordFrame();
+    }
+
+    // P1.3: con colectores, toda pieza nace con su registro de cruces vacío.
+    // Sin colectores no se agrega ningún campo (I-A).
+    _initCrossings(rock) {
+        if (this.collectors.length === 0) return;
+        rock.crossings = [];
+        rock.crossingsDropped = 0;
     }
 
     step() {
@@ -185,7 +231,7 @@ class Simulation {
             let rockChildren = null;
 
             for (let s = 0; s < stepsPerRock; s++) {
-                const spawned = this.physics.simulateStep(rock, this.terrain, this.physics.dt, this.barriers);
+                const spawned = this.physics.simulateStep(rock, this.terrain, this.physics.dt, this.barriers, this.collectors);
                 if (spawned) {
                     rockChildren = rockChildren || [];
                     rockChildren.push(...spawned);
@@ -218,6 +264,7 @@ class Simulation {
         // Push new child rocks to activeRocks and total list
         if (allNewChildren.length > 0) {
             for (const child of allNewChildren) {
+                this._initCrossings(child);
                 this.rocks.push(child);
                 // P0.4 E1.2: un hijo nacido con el reloj o los pasos heredados ya
                 // agotados termina al nacer, sin integrar ningún paso.

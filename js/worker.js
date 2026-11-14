@@ -8,7 +8,7 @@
  * paths are relative to js/.
  *
  * Messages IN:
- *   { type: 'start', terrainJSON, simParams, physicsParams, barriers, startArgs }
+ *   { type: 'start', terrainJSON, simParams, physicsParams, barriers, collectors, startArgs }
  *     - terrainJSON:    string — Terrain.toJSON() del hilo principal
  *     - simParams:      objeto params de getSimulationParams (para sim.configure)
  *                       P0.5: `simParams.seed` (entero en [0, 2^32 - 1],
@@ -18,6 +18,10 @@
  *     - physicsParams:  copia de las propiedades primitivas del PhysicsEngine
  *                       del hilo principal (calcMethod, kn/kt, energyModel...)
  *     - barriers:       array de barreras {x1,y1,x2,y2,...} o []
+ *     - collectors:     P1.3, opcional: colectores pasivos [{ id, x, label }].
+ *                       Una lista inválida lanza un error. Con colectores,
+ *                       cada roca de 'complete' agrega `crossings` y
+ *                       `crossingsDropped`; sin ellos no se serializan.
  *     - startArgs:      argumentos exactos y en el mismo orden que la llamada
  *                       a simulation.start del modo normal (js/app.js)
  *   { type: 'stop' } — el worker se termina desde fuera (worker.terminate)
@@ -70,6 +74,10 @@ function runWorkerSimulation(msg) {
     sim.configure(msg.simParams);
     Object.assign(physics, msg.physicsParams);
     sim.barriers = msg.barriers || [];
+    // P1.3: los colectores llegan al nivel de `barriers`; si faltan, valen los
+    // de `simParams.collectors`, que ya validó sim.configure.
+    if (msg.collectors !== undefined) sim.setCollectors(msg.collectors);
+    const withCrossings = sim.collectors.length > 0;
 
     // Mismos argumentos y orden que simulation.start en el modo normal.
     sim.start(...msg.startArgs);
@@ -101,7 +109,7 @@ function runWorkerSimulation(msg) {
         });
     }
 
-    self.postMessage({ type: 'complete', status, rocks: serializeRocks(sim.rocks) });
+    self.postMessage({ type: 'complete', status, rocks: serializeRocks(sim.rocks, withCrossings) });
 }
 
 // Snapshot indexado igual que Simulation.recordFrame: frame[i] <-> rocks[i].
@@ -143,6 +151,35 @@ function copyImpactEvents(events) {
 }
 
 /**
+ * P1.3: copia los cruces de colectores objeto por objeto, campo por campo.
+ *
+ * @param {Array<Object>} crossings
+ * @returns {Array<Object>}
+ */
+function copyCrossings(crossings) {
+    if (!Array.isArray(crossings)) return [];
+    return crossings.map(c => ({
+        collector: c.collector,
+        x: c.x,
+        y: c.y,
+        t: c.t,
+        height: c.height,
+        top: c.top,
+        vx: c.vx,
+        vy: c.vy,
+        speed: c.speed,
+        omega: c.omega,
+        energyTrans: c.energyTrans,
+        energyRot: c.energyRot,
+        energy: c.energy,
+        mass: c.mass,
+        direction: c.direction,
+        ordinal: c.ordinal,
+        byCorrection: c.byCorrection
+    }));
+}
+
+/**
  * Serializa las rocas terminadas para el hilo principal. Campos conforme a
  * sus consumidores:
  *   - js/stats.js compute(): maxKineticEnergy, maxBounceHeight, finalX,
@@ -159,9 +196,11 @@ function copyImpactEvents(events) {
  *   - P0.2-β: impactCount, maxImpactNormalSpeed, maxImpactSpeed,
  *     maxImpactContactSpeed, maxImpactEnergy, maxFlightHeight, impactEvents,
  *     droppedImpactEvents
+ *   - P1.3: crossings y crossingsDropped, al final y solo si `withCrossings`
+ *     (la corrida tiene colectores); sin colectores no se serializan (I-A).
  */
-function serializeRocks(rocks) {
-    return rocks.map(r => ({
+function serializeRocks(rocks, withCrossings) {
+    const serialized = rocks.map(r => ({
         id: r.id,
         generation: r.generation,
         parentId: r.parentId,
@@ -218,4 +257,11 @@ function serializeRocks(rocks) {
         _colorResting: r._colorResting,
         _colorStroke: r._colorStroke
     }));
+    if (withCrossings) {
+        for (let i = 0; i < rocks.length; i++) {
+            serialized[i].crossings = copyCrossings(rocks[i].crossings);
+            serialized[i].crossingsDropped = rocks[i].crossingsDropped || 0;
+        }
+    }
+    return serialized;
 }

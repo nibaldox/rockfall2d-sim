@@ -72,7 +72,7 @@ test('cadena real: Generar (N=3, H=10, α=70, W=8) -> corrida con semilla -> nor
         assert.ok(r.rocks.every(rock => rock.downhillSign === 1), 'downhillSign resuelto (+x) en todas las rocas');
         assert.equal(r.results.population.directionResolved, true);
         assert.ok(!r.results.warnings.some(w => JSON.stringify(w).includes('direccionAmbigua')), 'no es parcial por dirección');
-        assert.match(r.csv, /^Versión del motor,12,/m);
+        assert.match(r.csv, /^Versión del motor,13,/m); // P1.3 X5: WORKER_VERSION 12→13
         assert.match(r.csv, /^Semilla,20261112,/m);
         assert.match(r.csv, /^Versión del contrato de resultados,P0\.5,/m);
         assert.ok(r.csv.split('\n').length > 10, 'CSV general no vacuo');
@@ -96,7 +96,7 @@ test('I-A: perfil fijo sin generador, CSV general y reporte iguales a 1fc23718 s
         const now = runReal(make({ worker }), worker, '20261112');
         const base = runReal(make({ worker, base: true }), worker, '20261112');
         assert.equal(now.print, base.print, 'mismas rocas');
-        assert.equal(now.results.runInfo.engineVersion, 12);
+        assert.equal(now.results.runInfo.engineVersion, 13); // P1.3 X5: WORKER_VERSION 12→13
         assert.equal(base.results.runInfo.engineVersion, 11);
         for (const key of ['csv', 'report']) {
             const a = now[key].split('\n'), b = base[key].split('\n');
@@ -104,7 +104,7 @@ test('I-A: perfil fijo sin generador, CSV general y reporte iguales a 1fc23718 s
             const diff = a.map((line, i) => [line, b[i]]).filter(([x, y]) => x !== y);
             assert.equal(diff.length, 1, `${key}: solo cambia la fila X4`);
             assert.match(diff[0][0], /Versión del motor/);
-            assert.equal(diff[0][0].replace('12', '11'), diff[0][1], `${key}: X4 es 11→12`);
+            assert.equal(diff[0][0].replace('13', '11'), diff[0][1], `${key}: X4 es 11→13`); // P1.3 X5
         }
         const strip = r => { const o = JSON.parse(r.json); delete o.runInfo.engineVersion; return JSON.stringify(o); };
         assert.equal(strip(now), strip(base), 'mismos results salvo X4');

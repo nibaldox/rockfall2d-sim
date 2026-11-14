@@ -316,7 +316,15 @@ test('I-A: sin geometría, con semilla y en los 3 métodos, results, CSV general
             assert.equal(Object.hasOwn(now.results, 'benchRetention'), false);
             assert.equal(Object.hasOwn(now.results, 'benchRetentionUnavailable'), false);
             assert.equal(Object.keys(now.results).includes('destinations'), false, 'destinations no es enumerable');
-            for (const key of ['json', 'csv', 'impacts', 'report']) assert.equal(now[key], base[key], `${label}: ${key} idéntico a ${BASE}`);
+            // P1.3: X5 — se excluyen solo la fila «Versión del motor» y runInfo.engineVersion (12→13); el resto es literal.
+            const x5 = (key, text) => key === 'json' ? JSON.stringify((o => { delete o.runInfo.engineVersion; return o; })(JSON.parse(text)))
+                : text.split('\n').filter(line => !/Versión del motor/.test(line)).join('\n');
+            assert.equal(now.results.runInfo.engineVersion, 13, `${label}: X5`);
+            assert.equal(base.results.runInfo.engineVersion, 12, `${label}: X5`);
+            for (const key of ['json', 'csv', 'impacts', 'report']) {
+                assert.equal(now[key].split('\n').length, base[key].split('\n').length, `${label}: ${key} mismas líneas`);
+                assert.equal(x5(key, now[key]), x5(key, base[key]), `${label}: ${key} idéntico a ${BASE} salvo X5`);
+            }
             assert.ok(now.csv.split('\n').length > 10 && now.report.length > 200, `${label}: no vacuo`);
             assert.equal(typeof base.f.app.stats.generateDestinationsCSV, 'undefined', 'la base no tiene CSV de destinos');
             assert.match(now.table, /No disponible: no hay geometría de bancos/);
