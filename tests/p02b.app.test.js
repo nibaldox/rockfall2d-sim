@@ -330,12 +330,12 @@ test('versionado del §4 coincide y ningún otro ?v= cambia', () => {
     const current = versions(fs.readFileSync(indexPath, 'utf8'));
     const head = versions(execFileSync('git', ['show', '67b34e52:index.html'],
         { cwd: ROOT, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' } }));
-    assert.equal(current['js/physics.js'], 14);
-    assert.equal(current['js/simulation.js'], 13);
-    assert.equal(current['js/stats.js'], 12); // P1.2
-    assert.equal(current['js/renderer.js'], 7);
-    assert.equal(current['js/app.js'], 20); // P1.2
-    assert.equal(current['js/app-worker.js'], 11); // P1.1: WORKER_VERSION 12
+    assert.equal(current['js/physics.js'], 15); // P1.3
+    assert.equal(current['js/simulation.js'], 14); // P1.3
+    assert.equal(current['js/stats.js'], 13); // P1.3
+    assert.equal(current['js/renderer.js'], 8); // P1.3: drawCollectors
+    assert.equal(current['js/app.js'], 21); // P1.3
+    assert.equal(current['js/app-worker.js'], 12); // P1.3: WORKER_VERSION 13
     const changed = ['js/physics.js', 'js/simulation.js', 'js/stats.js', 'js/renderer.js', 'js/app.js', 'js/app-worker.js',
         'js/terrain.js', 'js/app-stl.js', 'js/app-profile3d.js']; // P1.1: terrain 9, app-stl 3 y app-profile3d 3
     assert.equal(Object.keys(current).length, Object.keys(head).length + 2); // P1.1: script nuevo js/bench-profile.js; P1.2: script nuevo js/bench-retention.js?v=1
@@ -346,5 +346,5 @@ test('versionado del §4 coincide y ningún otro ?v= cambia', () => {
         assert.equal(current[file], version, file);
     }
     const worker = fs.readFileSync(path.join(ROOT, 'js', 'app-worker.js'), 'utf8');
-    assert.match(worker, /const WORKER_VERSION = 12;/); // P1.1
+    assert.match(worker, /const WORKER_VERSION = 13;/); // P1.3 (X5)
 });

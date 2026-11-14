@@ -98,9 +98,13 @@ test('index.html: grupo «Medir bancos» con 3 umbrales y <label>, tabla de rete
     assert.ok(order.indexOf('js/bench-retention.js') >= 0 && order.indexOf('js/bench-retention.js') < order.indexOf('js/stats.js'));
     const before = Object.fromEntries([...show('index.html').matchAll(/<script src="(js\/[\w.-]+\.js)\?v=(\d+)"/g)].map(m => [m[1], Number(m[2])]));
     assert.deepEqual(Object.fromEntries(scripts),
-        { ...before, 'js/bench-retention.js': 1, 'js/bench-profile.js': 2, 'js/stats.js': 12, 'js/app.js': 20 });
-    assert.match(read('js/app-worker.js'), /^const WORKER_VERSION = 12;$/m);
-    for (const file of ['js/physics.js', 'js/simulation.js', 'js/worker.js', 'js/terrain.js', 'js/app-worker.js']) assert.equal(show(file), read(file), file);
+        { ...before, 'js/bench-retention.js': 1, 'js/bench-profile.js': 2, 'js/stats.js': 13, 'js/app.js': 21,
+            'js/physics.js': 15, 'js/simulation.js': 14, 'js/renderer.js': 8, 'js/app-worker.js': 12 }); // P1.3
+    assert.match(read('js/app-worker.js'), /^const WORKER_VERSION = 13;$/m); // P1.3 (X5)
+    // P1.3: el invariante I-B de P1.2 se conserva como comparación histórica: 841fe984 (P1.1) contra 733da52d (P1.2).
+    for (const file of ['js/physics.js', 'js/simulation.js', 'js/worker.js', 'js/terrain.js']) assert.equal(show(file),
+        require('node:child_process').execFileSync('git', ['show', `733da52d:${file}`], { cwd: path.join(__dirname, '..'), encoding: 'utf8',
+            env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0' }, maxBuffer: 64 * 1024 * 1024 }), file);
 });
 
 test('Medir bancos: llama a measure con el perfil y los 3 umbrales y llena _benchProfile con source «medido»', () => {
@@ -334,7 +338,10 @@ test('I-A: sin _benchProfile, _runInfo, el mensaje al Worker y los argumentos de
     for (const worker of [false, true]) {
         const now = runBare(worker, false);
         const base = runBare(worker, true);
-        assert.deepEqual(now, base, worker ? 'Worker' : 'hilo');
+        // P1.3: X5 — solo se normaliza engineVersion (12→13) en _runInfo y en los argumentos de compute.
+        assert.ok(now.runInfo.includes('"engineVersion":13') && base.runInfo.includes('"engineVersion":12'), 'X5');
+        const x5 = o => ({ ...o, runInfo: o.runInfo.replace('"engineVersion":13', '"engineVersion":12'), info: o.info.replace('"engineVersion":13', '"engineVersion":12') });
+        assert.deepEqual(x5(now), base, worker ? 'Worker' : 'hilo');
         assert.equal(now.runInfoKeys.includes('benchGeometry'), false);
         assert.equal(now.infoKeys.includes('benchGeometry'), false);
     }

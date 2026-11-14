@@ -7,7 +7,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪨</text></svg>">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-kaEog0AsPo4/9apXRMvp5eF3zpfBg9ltlJNNm2KUPio='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src 'self' blob:; connect-src 'self' blob: data:; object-src 'none'; base-uri 'self'">
     <script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js","three/addons/":"./vendor/three/addons/"}}</script>
-    <link rel="stylesheet" href="css/style.css?v=2">
+    <link rel="stylesheet" href="css/style.css?v=3">
     <script type="module" src="js/three-bridge.js?v=1"></script>
     </head>
 <body>
@@ -193,6 +193,20 @@
                             <button id="btn-clear-barriers" class="btn btn-danger btn-small" data-tooltip="Elimina todas las barreras.">Limpiar</button>
                         </div>
                         <div id="barrier-list" class="segments-list" style="margin-top:4px;max-height:200px;overflow-y:auto;"></div>
+                    </div>
+                    <div class="section" id="collectors-section">
+                        <h3>Colectores</h3>
+                        <p class="help-text">Líneas verticales pasivas (x = constante) que registran altura, velocidad y energía de cada cruce. No alteran la trayectoria.</p>
+                        <div class="control-group">
+                            <label for="collector-x">X del colector (m):</label>
+                            <input type="number" id="collector-x" step="0.5" style="width:70px;">
+                            <label for="collector-label">Nombre:</label>
+                            <input type="text" id="collector-label" maxlength="40" style="width:110px;">
+                        </div>
+                        <div class="button-row">
+                            <button id="btn-add-collector" class="btn btn-small" data-tooltip="Agrega un colector en la X indicada, dentro del perfil. Invalida los resultados vigentes.">Agregar</button>
+                        </div>
+                        <div id="collector-list" class="segments-list" style="margin-top:4px;max-height:200px;overflow-y:auto;"></div>
                     </div>
                 </div>
 
@@ -770,6 +784,7 @@
                                 <button id="btn-open-dashboard" class="btn btn-primary" data-tooltip="Abre el panel completo de resultados con gráficos detallados.">📊 Ver Dashboard Completo</button>
                                 <button id="btn-export-impacts" class="btn btn-small" disabled data-tooltip="Descarga un CSV con los eventos de impacto registrados (200 por roca como máximo).">Exportar impactos (CSV)</button>
                                 <button id="btn-export-destinations" class="btn btn-small" disabled data-tooltip="Descarga un CSV con una fila por pieza final: origen, destino, motivo de detención y zona.">Exportar destinos (CSV)</button>
+                                <button id="btn-export-crossings" class="btn btn-small" disabled data-tooltip="Descarga un CSV con una fila por cruce de colector: altura, velocidad y energía.">Exportar cruces (CSV)</button>
                             </div>
                             <p class="help-text" style="margin-top:8px;font-size:10px;">Los datos de exportación están disponibles en el dashboard.</p>
                         </div>
@@ -928,6 +943,10 @@
                 <h4 id="bench-retention-title">Retención por banco</h4>
                 <table id="bench-retention-table" class="help-text"></table>
             </div>
+            <div id="collector-envelopes-block" style="display:none;">
+                <h4 id="collector-envelopes-title">Envolventes por colector</h4>
+                <table id="collector-envelopes-table" class="help-text"></table>
+            </div>
             <div id="lineage-block" style="display:none;">
                 <h4 style="color:var(--text-secondary);margin:8px 0;">Piezas finales (fragmentación)</h4>
                 <div class="dashboard-stats">
@@ -988,11 +1007,11 @@
     <script src="js/view3d.js?v=3"></script>
     <script src="js/view3d-terrain.js?v=1"></script>
     <script src="js/stl.js?v=7"></script>
-    <script src="js/physics.js?v=14"></script>
-    <script src="js/simulation.js?v=13"></script>
-    <script src="js/renderer.js?v=7"></script>
+    <script src="js/physics.js?v=15"></script>
+    <script src="js/simulation.js?v=14"></script>
+    <script src="js/renderer.js?v=8"></script>
     <script src="js/bench-retention.js?v=1"></script>
-    <script src="js/stats.js?v=12"></script>
+    <script src="js/stats.js?v=13"></script>
     <script src="js/math3d.js?v=1"></script>
     <script src="js/physics3d.js?v=1"></script>
     <script src="js/source-zones.js?v=1"></script>
@@ -1000,9 +1019,9 @@
     <script src="js/sim3d-pool.js?v=1"></script>
     <script src="js/results3d.js?v=1"></script>
     <script src="js/view3d-trajectories.js?v=1"></script>
-    <script src="js/app.js?v=20"></script>
+    <script src="js/app.js?v=21"></script>
     <script src="js/app-stl.js?v=3"></script>
-    <script src="js/app-worker.js?v=11"></script>
+    <script src="js/app-worker.js?v=12"></script>
     <script src="js/app-modes.js?v=2"></script>
     <script src="js/app-import.js?v=4"></script>
     <script src="js/app-profile3d.js?v=3"></script>

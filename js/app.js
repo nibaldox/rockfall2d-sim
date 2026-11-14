@@ -316,6 +316,158 @@ function renderBenchRetention(result, geometry, reason) {
         `<th>Piezas</th><th>Masa (kg)</th></tr></thead><tbody>${rows}</tbody>`;
 }
 
+// --- P1.3: colectores pasivos (líneas verticales x = xc) ---
+
+// Copia campo por campo de la lista de colectores (§5 del contrato P1.3).
+function copyCollectors(list) {
+    return (Array.isArray(list) ? list : []).map(c => ({ id: c.id, x: c.x, label: c.label }));
+}
+
+// Guarda equivalente a profileEditBlocked (I-E): durante la corrida no se editan colectores.
+function collectorEditBlocked(app) {
+    if (!(app.simulation && app.simulation.isRunning) && !app._workerActive) return false;
+    const status = document.getElementById('simulation-status');
+    if (status) status.textContent = 'Edición de colectores bloqueada durante la corrida; detén la simulación para editar';
+    return true;
+}
+
+function profileRangeX(app) {
+    const xs = (app.terrain && Array.isArray(app.terrain.points) ? app.terrain.points : []).map(p => p.x).filter(Number.isFinite);
+    return xs.length ? { minX: Math.min(...xs), maxX: Math.max(...xs) } : null;
+}
+
+function renderCollectorList(app) {
+    const list = document.getElementById('collector-list');
+    if (!list) return;
+    const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const collectors = app.collectors || [];
+    if (collectors.length === 0) {
+        list.innerHTML = '<p class="help-text">Sin colectores definidos.</p>';
+        return;
+    }
+    list.innerHTML = collectors.map(c => '<div class="segment-item" style="display:flex;justify-content:space-between;align-items:center;padding:3px 6px;">' +
+        `<span>X = ${c.x.toFixed(2)} m — ${esc(c.label)}</span>` +
+        `<button class="btn btn-danger btn-small" data-remove-collector="${esc(c.id)}" style="padding:0 6px;">Quitar</button></div>`).join('');
+    list.querySelectorAll('[data-remove-collector]').forEach(btn => {
+        btn.addEventListener('click', () => removeCollector(app, btn.dataset.removeCollector));
+    });
+}
+
+// Agrega un colector con la X y el nombre de los campos. Exige X finita dentro
+// del perfil y sin duplicados (X o nombre); si no cumple, alert y nada cambia.
+function addCollector(app) {
+    if (collectorEditBlocked(app)) return;
+    const raw = String(document.getElementById('collector-x').value).trim().replace(',', '.');
+    const x = raw === '' ? NaN : Number(raw);
+    const range = profileRangeX(app);
+    if (!Number.isFinite(x)) { alert('X del colector inválida. Ingresa un valor numérico.'); return; }
+    if (!range || x < range.minX || x > range.maxX) {
+        alert(range ? `X del colector fuera del perfil: debe estar entre ${range.minX} y ${range.maxX} m.` : 'Define el perfil antes de agregar colectores.');
+        return;
+    }
+    const collectors = app.collectors || [];
+    if (collectors.some(c => c.x === x)) { alert(`Ya existe un colector en X = ${x} m.`); return; }
+    app._collectorSeq = (app._collectorSeq || 0) + 1;
+    const label = String(document.getElementById('collector-label').value || '').trim().slice(0, 40) || `Colector ${app._collectorSeq}`;
+    if (collectors.some(c => c.label === label)) {
+        app._collectorSeq--;
+        alert(`Ya existe un colector llamado «${label}».`);
+        return;
+    }
+    app.collectors = collectors.concat([{ id: `c${app._collectorSeq}`, x, label }]);
+    renderCollectorList(app);
+    app._invalidateResults();
+    app.render();
+}
+
+function removeCollector(app, id) {
+    if (collectorEditBlocked(app)) return;
+    const collectors = app.collectors || [];
+    if (!collectors.some(c => c.id === id)) return;
+    app.collectors = collectors.filter(c => c.id !== id);
+    renderCollectorList(app);
+    app._invalidateResults();
+    app.render();
+}
+
+function setupCollectorControls(app) {
+    app.collectors = [];
+    app._collectorSeq = 0;
+    const add = document.getElementById('btn-add-collector');
+    if (add) add.addEventListener('click', () => addCollector(app));
+    renderCollectorList(app);
+}
+
+// Colectores de la corrida que quedaron fuera del perfil vigente (el perfil pudo cambiar después de agregarlos).
+function collectorsOutsideProfile(app) {
+    const range = profileRangeX(app);
+    return (app.collectors || []).filter(c => !range || !Number.isFinite(c.x) || c.x < range.minX || c.x > range.maxX);
+}
+
+// Cruces de una roca (§3): se aceptan solo si son finitos y de un colector de la corrida.
+function isCompatibleCrossings(rock, collectorIds) {
+    if (rock.crossingsDropped !== undefined && !(Number.isInteger(rock.crossingsDropped) && rock.crossingsDropped >= 0)) return false;
+    if (rock.crossings === undefined) return true;
+    if (!Array.isArray(rock.crossings) || rock.crossings.length > 64) return false;
+    const finite = ['x', 'y', 't', 'height', 'top', 'vx', 'vy', 'speed', 'omega', 'energyTrans', 'energyRot', 'energy', 'mass'];
+    const nonNegative = ['t', 'speed', 'energyTrans', 'energyRot', 'energy', 'mass'];
+    return rock.crossings.every(c => c && typeof c === 'object' && !Array.isArray(c) &&
+        collectorIds.includes(c.collector) &&
+        finite.every(key => Number.isFinite(c[key])) && nonNegative.every(key => c[key] >= 0) &&
+        (c.direction === 1 || c.direction === -1) &&
+        Number.isInteger(c.ordinal) && c.ordinal >= 0 && typeof c.byCorrection === 'boolean');
+}
+
+const APP_COLLECTOR_SAMPLES = {
+    'first-downhill-per-piece': 'primer cruce en sentido de bajada de cada pieza',
+    'first-any-per-piece': 'primer cruce en cualquier sentido de cada pieza (sentido de bajada no resuelto)'
+};
+const APP_COLLECTOR_ROWS = [['height', 'Altura del centro (m)'], ['top', 'Altura del tope (m)'],
+    ['speed', 'Velocidad (m/s)'], ['energy', 'Energía (kJ)']];
+
+// Tabla «Envolventes por colector» (I-D). result nulo o sin results.collectors la
+// limpia; un percentil insuficiente o ausente dice «insuficiente (n = …)», nunca un número.
+function renderCollectorEnvelopes(result) {
+    const block = document.getElementById('collector-envelopes-block');
+    const table = document.getElementById('collector-envelopes-table');
+    if (!table) return;
+    const collectors = result && Array.isArray(result.collectors) ? result.collectors : [];
+    if (collectors.length === 0) {
+        table.innerHTML = '';
+        if (block) block.style.display = 'none';
+        return;
+    }
+    if (block) block.style.display = '';
+    const esc = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const count = v => (Number.isFinite(v) ? String(v) : '—');
+    let rows = '';
+    for (const c of collectors) {
+        const k = c.counts || {};
+        const censored = k.censoredWithoutCrossing || {};
+        const censoredTotal = ['culled', 'maxTime', 'maxSteps'].reduce((sum, key) => sum + (Number.isFinite(censored[key]) ? censored[key] : 0), 0);
+        rows += `<tr class="collector-head"><td colspan="5">${esc(c.label)} — X = ${Number.isFinite(c.x) ? c.x.toFixed(2) : '—'} m (n = ${count(c.n)})</td></tr>`;
+        for (const [key, label] of APP_COLLECTOR_ROWS) {
+            const e = (c.envelopes && c.envelopes[key]) || {};
+            const n = Number.isFinite(e.n) ? e.n : 0;
+            const insufficient = e.insufficient || {};
+            const cell = (p, short) => (short || !Number.isFinite(e[p]) ? `insuficiente (n = ${n})` : e[p].toFixed(2));
+            rows += `<tr><td>${label}</td><td>${cell('p50', n < 1)}</td><td>${cell('p95', insufficient.p95 !== false)}</td>` +
+                `<td>${cell('p99', insufficient.p99 !== false)}</td><td>${n}</td></tr>`;
+        }
+        rows += `<tr><td colspan="5">Muestra: ${esc(APP_COLLECTOR_SAMPLES[c.sample] || c.sample || 'no declarada')}. ` +
+            `Cruces totales: ${count(k.crossingsTotal)}; piezas que cruzan: ${count(k.piecesCrossing)}; ` +
+            `raíces que cruzan: ${count(k.rootsCrossing)} de ${count(k.released)} lanzadas; ` +
+            `en reposo antes de la línea: ${count(k.restBeforeLine)}; ` +
+            `censuradas sin cruce: ${censoredTotal} (salida del dominio: ${count(censored.culled)}; tiempo máximo: ${count(censored.maxTime)}; ` +
+            `pasos máximos: ${count(censored.maxSteps)}); por corrección de posición: ${count(k.byCorrection)}; ` +
+            `en sentido de subida: ${count(k.upward)}; cruces descartados por tope: ${count(k.dropped)}. ` +
+            `${esc(c.definition || 'Definición del percentil no publicada')}.</td></tr>`;
+    }
+    table.innerHTML = '<thead><tr><th>Magnitud</th><th>P50</th><th>P95</th><th>P99</th><th>n</th></tr></thead>' + `<tbody>${rows}</tbody>`;
+}
+
+SimRocas.Collectors = { add: addCollector, remove: removeCollector, copy: copyCollectors, blocked: collectorEditBlocked };
+
 // Para los mixins app-stl.js y app-profile3d.js (funciones de módulo: App.prototype no gana métodos).
 SimRocas.ProfileEdit = { blocked: profileEditBlocked, changed: profileChanged };
 
@@ -1374,6 +1526,22 @@ class App {
             URL.revokeObjectURL(url);
         });
 
+        // P1.3: una fila por cruce de colector; Stats devuelve null si no hay colectores.
+        const crossingsBtn = document.getElementById('btn-export-crossings');
+        if (crossingsBtn) crossingsBtn.addEventListener('click', () => {
+            if (!this._resultsValid) return;
+            if (typeof this.stats.generateCrossingsCSV !== 'function') return;
+            const csv = this.stats.generateCrossingsCSV();
+            if (csv === null || csv === undefined) return;
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'simrocas_cruces.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
         const reportBtn = document.getElementById('btn-export-report');
         if (reportBtn) reportBtn.addEventListener('click', () => {
             if (!this._resultsValid) return;
@@ -1477,6 +1645,7 @@ class App {
 
     setupBarrierControls() {
         this.barriers = [];
+        setupCollectorControls(this); // P1.3
 
         document.getElementById('btn-add-barrier').addEventListener('click', () => {
             const x1 = parseFloat(document.getElementById('barrier-x1').value);
@@ -2030,6 +2199,7 @@ class App {
         if (warnings) warnings.textContent = '';
         updateLineageBlock(null);
         renderBenchRetention(null);
+        renderCollectorEnvelopes(null);
         const dashboard = document.getElementById('results-dashboard');
         if (dashboard) {
             dashboard.classList.add('hidden');
@@ -2041,7 +2211,7 @@ class App {
         const content = document.getElementById('results-sidebar-content');
         if (placeholder) placeholder.style.display = 'block';
         if (content) content.style.display = 'none';
-        ['btn-export-csv', 'btn-export-report', 'btn-export-impacts', 'btn-export-destinations', 'btn-dashboard-csv', 'btn-dashboard-report',
+        ['btn-export-csv', 'btn-export-report', 'btn-export-impacts', 'btn-export-destinations', 'btn-export-crossings', 'btn-dashboard-csv', 'btn-dashboard-report',
             'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
             const el = document.getElementById(id); if (el) el.disabled = true;
         });
@@ -2055,6 +2225,10 @@ class App {
 
     // _completeRun(rocks, status, worker): onComplete normal y mensaje complete del worker.
     _completeRun(rocks, status, worker) {
+        // P1.3: ids de los colectores congelados de la corrida vigente.
+        const runCollectors = this._runInfo && this._runInfo.epoch === this._runEpoch && Array.isArray(this._runInfo.collectors) ?
+            this._runInfo.collectors : [];
+        const collectorIds = runCollectors.map(c => c.id);
         // Barrera común para los consumidores Stats y renderer.
         const isCompatibleResultRock = rock => {
             if (!rock || typeof rock !== 'object' || (!worker && typeof rock.getShapeVertices !== 'function')) return false;
@@ -2105,6 +2279,7 @@ class App {
                 !nonNegative(rock.bornAt) || !nonNegative(rock.discardedMass) ||
                 (rock.parentId === null) !== (rock.fragmentKind === 'primary') ||
                 (rock.parentId === null && rock.rootId !== rock.id)) return false;
+            if (!isCompatibleCrossings(rock, collectorIds)) return false;
             if (!rock.color || !['r', 'g', 'b'].every(key => Number.isFinite(rock.color[key]))) return false;
             return ['_colorActive', '_colorResting', '_colorStroke'].every(key => typeof rock[key] === 'string');
         };
@@ -2200,6 +2375,8 @@ class App {
                 } : null;
             // P1.2: la geometría de bancos viaja solo si se congeló al iniciar esta corrida.
             if (info && this._runInfo.benchGeometry) info.benchGeometry = copyBenchGeometry(this._runInfo.benchGeometry);
+            // P1.3: los colectores viajan solo si la corrida los congeló, campo por campo.
+            if (info && runCollectors.length > 0) info.collectors = copyCollectors(runCollectors);
             this.stats.compute(rocks, this.releasePoint, info);
             const result = this.stats.results;
             if (result.status === 'bloqueado') {
@@ -2211,6 +2388,7 @@ class App {
                 updateLineageBlock(result);
                 renderBenchRetention(result, info ? info.benchGeometry : null,
                     benchRunReason.epoch === this._runEpoch ? benchRunReason.reason : '');
+                renderCollectorEnvelopes(result);
                 this.renderer.renderHistogram(this.histogramCanvas, result);
                 const population = result.population;
                 const sign = rocks[0].downhillSign;
@@ -2235,6 +2413,8 @@ class App {
                     'btn-dashboard-png', 'btn-open-dashboard'].forEach(id => {
                     const el = document.getElementById(id); if (el) el.disabled = false;
                 });
+                const crossingsBtn = document.getElementById('btn-export-crossings');
+                if (crossingsBtn) crossingsBtn.disabled = !(Array.isArray(result.collectors) && result.collectors.length > 0);
                 const impactsBtn = document.getElementById('btn-export-impacts');
                 if (impactsBtn) impactsBtn.disabled = result.impactExportAvailable !== true;
                 const warnings = result.warnings.map(w => w.message).join(' ');
@@ -2269,6 +2449,14 @@ class App {
             alert('Define al menos 2 puntos del perfil del terreno.');
             return;
         }
+
+        // P1.3: los colectores deben seguir dentro del perfil vigente; se congelan aquí.
+        const outside = collectorsOutsideProfile(this);
+        if (outside.length > 0) {
+            alert(`Colector fuera del perfil: «${outside[0].label}» (X = ${outside[0].x} m). Quítalo o corrige el perfil antes de simular.`);
+            return;
+        }
+        const runCollectors = copyCollectors(this.collectors);
 
         // P0.5: la semilla se resuelve antes de cada corrida y antes de tocar
         // cualquier estado; si es inválida, la corrida no arranca.
@@ -2343,7 +2531,8 @@ class App {
         // el modo normal y simParams en el mensaje del Worker.
         const params = this.getSimulationParams();
         params.seed = seed;
-        this.simulation.configure(params);
+        // P1.3: sin colectores la configuración es la de siempre (I-A); en el Worker viajan aparte, al nivel de barriers.
+        this.simulation.configure(runCollectors.length > 0 ? { ...params, collectors: copyCollectors(runCollectors) } : params);
 
         this.simulation.onUpdate = (data) => {
             if (runEpoch !== this._runEpoch) return;
@@ -2400,6 +2589,7 @@ class App {
         const bench = runBenchGeometry(this);
         if (bench.geometry) this._runInfo.benchGeometry = bench.geometry;
         benchRunReason = { epoch: runEpoch, reason: bench.reason || '' };
+        if (runCollectors.length > 0) this._runInfo.collectors = runCollectors;
         showSeedUsed(seed);
 
         document.getElementById('btn-run').disabled = true;
@@ -2535,6 +2725,7 @@ class App {
             this.renderer.multiReleasePoints = (this.multiReleaseEnabled && this.multiReleasePoints.length > 0)
                 ? this.multiReleasePoints : null;
             this.renderer.barriers = this.barriers || [];
+            this.renderer.collectors = this.collectors || [];
             this.renderer.render(
                 this.simulation.isRunning || this.simulation.rocks.length > 0 ? this.simulation : null,
                 this.releasePoint.x,

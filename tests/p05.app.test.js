@@ -146,7 +146,7 @@ for (const worker of [false, true]) {
         for (const info of [a.app._runInfo, a.app.stats.info]) {
             assert.equal(info.seed, 7);
             assert.equal(info.rngAlgorithm, 'mulberry32');
-            assert.equal(info.engineVersion, 12); // P1.1: WORKER_VERSION 11→12
+            assert.equal(info.engineVersion, 13); // P1.3 X5: WORKER_VERSION 12→13 (P1.1: 11→12)
             assert.equal(info.correlatedParams, false);
             assert.equal(typeof info.timeStep, 'number');
         }
@@ -200,11 +200,11 @@ test('versionado P0.5 y campo «Semilla» en index.html', () => {
     const versions = Object.fromEntries([...html.matchAll(/js\/([\w-]+)\.js\?v=(\d+)/g)].map(m => [m[1], Number(m[2])]));
     assert.deepEqual({ physics: versions.physics, simulation: versions.simulation, stats: versions.stats,
         app: versions.app, 'app-worker': versions['app-worker'] },
-    { physics: 14, simulation: 13, stats: 12, app: 20, 'app-worker': 11 }); // P1.1: app-worker 10→11 (WORKER_VERSION 12); P1.2: stats 11→12 y app 19→20
+    { physics: 15, simulation: 14, stats: 13, app: 21, 'app-worker': 12 }); // P1.3; // P1.1: app-worker 10→11 (WORKER_VERSION 12); P1.2: stats 11→12 y app 19→20
     assert.deepEqual({ terrain: versions.terrain, renderer: versions.renderer, stl: versions.stl,
         'app-stl': versions['app-stl'], 'app-modes': versions['app-modes'], 'app-import': versions['app-import'] },
-    { terrain: 9, renderer: 7, stl: 7, 'app-stl': 3, 'app-modes': 2, 'app-import': 4 }); // P1.1: terrain 8→9 y app-stl 2→3
-    assert.match(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8'), /^const WORKER_VERSION = 12;$/m); // P1.1: el Worker carga terrain.js con su ?v=
+    { terrain: 9, renderer: 8, stl: 7, 'app-stl': 3, 'app-modes': 2, 'app-import': 4 }); // P1.1: terrain 8→9 y app-stl 2→3
+    assert.match(fs.readFileSync(path.join(ROOT, 'js/app-worker.js'), 'utf8'), /^const WORKER_VERSION = 13;$/m); // P1.3 (X5); P1.1: el Worker carga terrain.js con su ?v=
     assert.match(html, /<label[^>]*>Semilla:<\/label>\s*<input type="text" id="sim-seed"/);
     assert.match(html, /id="seed-used"[^>]*>Vacía = aleatoria; se muestra la usada</);
 });

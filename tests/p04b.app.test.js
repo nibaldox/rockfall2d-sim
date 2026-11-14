@@ -173,13 +173,13 @@ test('index.html: bloque de piezas finales oculto, en español, y versionado de 
         'Masa en reposo (kg)', 'Masa fuera del perfil (kg)', 'Masa censurada (kg)', 'Masa descartada (kg)',
         'Alcance final ponderado por masa, P50 (m)', 'P83 (m)', 'P95 (m)']) assert.ok(html.includes(label), label);
     const versions = Object.fromEntries([...html.matchAll(/js\/([\w-]+)\.js\?v=(\d+)/g)].map(m => [m[1], Number(m[2])]));
-    assert.equal(versions.stats, 12); // P1.2
-    assert.equal(versions.app, 20); // P1.2
-    assert.equal(versions.physics, 14);
-    assert.equal(versions.simulation, 13);
+    assert.equal(versions.stats, 13); // P1.3
+    assert.equal(versions.app, 21); // P1.3
+    assert.equal(versions.physics, 15); // P1.3
+    assert.equal(versions.simulation, 14); // P1.3
     const appChanged = name => fs.readFileSync(path.join(ROOT, 'js', `${name}.js`), 'utf8');
     assert.ok(appChanged('app').includes('lineage-block'));
     // renderer no cambia de bytes; app-worker sube a 11 en P1.1 (WORKER_VERSION 12).
-    assert.equal(versions['app-worker'], 11);
-    assert.equal(versions.renderer, 7);
+    assert.equal(versions['app-worker'], 12); // P1.3: WORKER_VERSION 13
+    assert.equal(versions.renderer, 8); // P1.3: drawCollectors
 });

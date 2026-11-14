@@ -1502,6 +1502,10 @@ class Rock {
 }
 
 class PhysicsEngine {
+    // P1.3: tope de cruces de colector por roca; el resto se cuenta en
+    // `rock.crossingsDropped`.
+    static MAX_CROSSINGS = 64;
+
     constructor() {
         this.gravity = 9.81;
         this.dt = 0.005;
@@ -1613,9 +1617,18 @@ class PhysicsEngine {
      * @param {Rock} rock
      * @param {Terrain} terrain
      * @param {number} dt - Time step (s)
+     * @param {Array<Object>} [barriers]
+     * @param {Array<{id, x, label}>} [collectors] - P1.3: líneas verticales
+     *     pasivas `x = xc`. Solo lectura: sin sorteos ni cambios de trayectoria.
      */
-    simulateStep(rock, terrain, dt, barriers) {
+    simulateStep(rock, terrain, dt, barriers, collectors) {
         if (rock.isResting) return null;
+        // P1.3: sin colectores no se agrega ningún campo a la roca (I-A).
+        const hasCollectors = Array.isArray(collectors) && collectors.length > 0;
+        if (hasCollectors && !Array.isArray(rock.crossings)) {
+            rock.crossings = [];
+            rock.crossingsDropped = 0;
+        }
         rock.stepsTaken++;
         const subSteps = this.subStepsFor(rock, dt);
         const subDt = dt / subSteps;
@@ -1645,7 +1658,12 @@ class PhysicsEngine {
             // Reset collision tracking at each sub-step
             rock._lastCollision = null;
 
+            // P1.3: estado al inicio del subpaso y `x` tras la integración.
+            const x0 = rock.x;
+            const y0 = rock.y;
+            const t0 = rock.elapsedTime;
             rock.update(subDt, this.gravity);
+            const xUpdate = rock.x;
             // Sum a whole dt exactly once, with compensation; an interrupted
             // step retains only the substeps actually integrated.
             const integrated = i + 1 === subSteps ? dt : subDt * (i + 1);
@@ -1694,12 +1712,16 @@ class PhysicsEngine {
                             rock.isFragmented = true;
                             rock.finish('fragmented');
                         }
+                        if (hasCollectors) this._recordCrossings(rock, terrain, collectors, x0, y0, t0, xUpdate, subDt);
                         break;
                     }
                 }
             }
 
             rock.applyRollingFriction(terrain, this.rollingFriction, subDt, this.rollingModel, this.deformationCoef, this.calcMethod);
+
+            // P1.3: fin de todo el subpaso (update, colisión, barreras y rodadura).
+            if (hasCollectors) this._recordCrossings(rock, terrain, collectors, x0, y0, t0, xUpdate, subDt);
 
             if (rock.isResting) break;
 
@@ -1711,6 +1733,73 @@ class PhysicsEngine {
         }
 
         return spawnedChildren;
+    }
+
+    /**
+     * P1.3: registra los cruces de `x = xc` de un subpaso completo. Pasivo
+     * (I-B): solo lee la roca y el terreno, no sortea y solo escribe en
+     * `rock.crossings` y `rock.crossingsDropped`.
+     *
+     * Hay cruce si `x0` y `x1` quedan estrictamente a lados opuestos de `xc`,
+     * o si `x1 === xc` y `x0 !== xc`. Las velocidades son las del final del
+     * subpaso; `byCorrection` marca los cruces que `update` no produjo.
+     *
+     * @param {Rock} rock
+     * @param {Terrain} terrain
+     * @param {Array<{id, x, label}>} collectors
+     * @param {number} x0 - `x` al inicio del subpaso
+     * @param {number} y0 - `y` al inicio del subpaso
+     * @param {number} t0 - `elapsedTime` al inicio del subpaso
+     * @param {number} xUpdate - `x` justo después de `rock.update`
+     * @param {number} subDt - Duración del subpaso (s)
+     */
+    _recordCrossings(rock, terrain, collectors, x0, y0, t0, xUpdate, subDt) {
+        const x1 = rock.x;
+        if (x1 === x0 || !Number.isFinite(x0) || !Number.isFinite(x1)) return;
+        const y1 = rock.y;
+        for (let k = 0; k < collectors.length; k++) {
+            const collector = collectors[k];
+            const xc = collector.x;
+            if (!((x0 < xc && x1 > xc) || (x0 > xc && x1 < xc) || (x1 === xc && x0 !== xc))) continue;
+            if (rock.crossings.length >= PhysicsEngine.MAX_CROSSINGS) {
+                rock.crossingsDropped++;
+                continue;
+            }
+            const f = (xc - x0) / (x1 - x0);
+            const y = y0 + f * (y1 - y0);
+            const height = y - terrain.getHeightAt(xc);
+            const vx = rock.vx;
+            const vy = rock.vy;
+            const omega = rock.angularVelocity;
+            // Misma aritmética que el getter `kineticEnergy`, en joules.
+            const v = Math.sqrt(vx * vx + vy * vy);
+            const energyTrans = 0.5 * rock.mass * v * v;
+            const energyRot = 0.5 * rock.momentOfInertia * omega * omega;
+            let ordinal = 1;
+            for (let j = 0; j < rock.crossings.length; j++) {
+                if (rock.crossings[j].collector === collector.id) ordinal++;
+            }
+            const updateCrossed = (x0 < xc && xUpdate > xc) || (x0 > xc && xUpdate < xc) || (xUpdate === xc && x0 !== xc);
+            rock.crossings.push({
+                collector: collector.id,
+                x: xc,
+                y,
+                t: t0 + f * subDt,
+                height,
+                top: height + rock.radius,
+                vx,
+                vy,
+                speed: Math.hypot(vx, vy),
+                omega,
+                energyTrans,
+                energyRot,
+                energy: energyTrans + energyRot,
+                mass: rock.mass,
+                direction: x1 > x0 ? 1 : -1,
+                ordinal,
+                byCorrection: !updateCrossed
+            });
+        }
     }
 
     /**
